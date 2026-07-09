@@ -57,6 +57,10 @@ void Error_Handler(void);
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/
+#define TM1650_SDA_Pin GPIO_PIN_14
+#define TM1650_SDA_GPIO_Port GPIOB
+#define TM1650_SCL_Pin GPIO_PIN_15
+#define TM1650_SCL_GPIO_Port GPIOB
 
 /* USER CODE BEGIN Private defines */
 

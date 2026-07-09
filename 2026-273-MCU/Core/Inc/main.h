@@ -75,6 +75,10 @@ void Error_Handler(void);
 #define BUTON_DW_GPIO_Port GPIOC
 #define BUTON_UP_Pin GPIO_PIN_8
 #define BUTON_UP_GPIO_Port GPIOC
+#define LED_2_Pin GPIO_PIN_4
+#define LED_2_GPIO_Port GPIOB
+#define LED_1_Pin GPIO_PIN_5
+#define LED_1_GPIO_Port GPIOB
 
 /* USER CODE BEGIN Private defines */
 

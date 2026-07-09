@@ -9,6 +9,7 @@
 #include "app_Show.h"
 #include "app_Data.h"
 #include "app_Menu.h"
+#include "app_Ctllogic.h"
 
 void APP_Init(void);
 

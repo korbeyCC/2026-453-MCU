@@ -46,11 +46,24 @@ void MX_GPIO_Init(void)
 
   /* GPIO Ports Clock Enable */
   __HAL_RCC_GPIOD_CLK_ENABLE();
-  __HAL_RCC_GPIOB_CLK_ENABLE();
   __HAL_RCC_GPIOA_CLK_ENABLE();
+  __HAL_RCC_GPIOC_CLK_ENABLE();
+  __HAL_RCC_GPIOB_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOB, TM1650_SDA_Pin|TM1650_SCL_Pin, GPIO_PIN_RESET);
+
+  /*Configure GPIO pins : REMOT_1_Pin REMOT_2_Pin REMOT_3_Pin */
+  GPIO_InitStruct.Pin = REMOT_1_Pin|REMOT_2_Pin|REMOT_3_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+
+  /*Configure GPIO pins : REMOT_4_Pin REMOT_5_Pin BUTON_DW_Pin BUTON_UP_Pin */
+  GPIO_InitStruct.Pin = REMOT_4_Pin|REMOT_5_Pin|BUTON_DW_Pin|BUTON_UP_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
 
   /*Configure GPIO pins : TM1650_SDA_Pin TM1650_SCL_Pin */
   GPIO_InitStruct.Pin = TM1650_SDA_Pin|TM1650_SCL_Pin;

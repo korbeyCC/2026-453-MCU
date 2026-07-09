@@ -9,6 +9,7 @@
 #include "mid_TM1650.h"
 #include "mid_Key.h"
 #include "mid_FLASH.h"
+#include "mid_signal.h"
 
 void MID_Init(void);
 

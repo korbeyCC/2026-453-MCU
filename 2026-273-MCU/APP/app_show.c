@@ -2,6 +2,7 @@
 #include "app_Data.h"
 #include "mid_Key.h"
 #include "app_Menu.h"
+#include "mid_signal.h"
 
 extern volatile uint8_t tm1650_raw_key;
 
@@ -60,19 +61,31 @@ void APP_ShowTask(void *pvParameters)
         {
             uint8_t val = tm1650_raw_key;
             
-            SEG_W[0] = 26; // H / K 键的象形字
-            SEG_W[1] = 18; // -
+            // 1. 第一位：显示板载按键状态 (K1~K6, 空闲显示 -)
+            if (val == 84)       SEG_W[0] = 1; // K1
+            else if (val == 92)  SEG_W[0] = 2; // K2
+            else if (val == 100) SEG_W[0] = 3; // K3
+            else if (val == 108) SEG_W[0] = 4; // K4
+            else if (val == 76)  SEG_W[0] = 5; // K5
+            else if (val == 68)  SEG_W[0] = 6; // K6
+            else                 SEG_W[0] = 18; // - (空闲)
             
-            // 0x54=84 (K1), 0x5c=92 (K2), 0x64=100 (K3), 0x6c=108 (K4), 0x4c=76 (K5), 0x44=68 (K6)
-            if (val == 84)       SEG_W[2] = 1; // K1 (A)
-            else if (val == 92)  SEG_W[2] = 2; // K2 (B)
-            else if (val == 100) SEG_W[2] = 3; // K3 (C)
-            else if (val == 108) SEG_W[2] = 4; // K4 (D)
-            else if (val == 76)  SEG_W[2] = 5; // K5 (方向)
-            else if (val == 68)  SEG_W[2] = 6; // K6 (设置)
-            else                 SEG_W[2] = 18; // - (空闲)
+            // 2. 第二位：显示遥控信号状态 (R1~R5, 空闲显示 -)
+            if (MID_Signal_GetState(MID_SIGNAL_REMOT_1))      SEG_W[1] = 1;
+            else if (MID_Signal_GetState(MID_SIGNAL_REMOT_2)) SEG_W[1] = 2;
+            else if (MID_Signal_GetState(MID_SIGNAL_REMOT_3)) SEG_W[1] = 3;
+            else if (MID_Signal_GetState(MID_SIGNAL_REMOT_4)) SEG_W[1] = 4;
+            else if (MID_Signal_GetState(MID_SIGNAL_REMOT_5)) SEG_W[1] = 5;
+            else                                              SEG_W[1] = 18; // -
             
-            SEG_W[3] = 19; // 灭
+            // 3. 第三位：显示外接下按键状态 (触发显示 d, 空闲显示 -)
+            if (MID_Signal_GetState(MID_SIGNAL_BUTON_DW))     SEG_W[2] = 13; // d
+            else                                              SEG_W[2] = 18; // -
+            
+            // 4. 第四位：显示外接上按键状态 (触发显示 U, 空闲显示 -)
+            if (MID_Signal_GetState(MID_SIGNAL_BUTON_UP))     SEG_W[3] = 21; // U
+            else                                              SEG_W[3] = 18; // -
+            
             SEG_Flag[0] = SEG_Flag[1] = SEG_Flag[2] = SEG_Flag[3] = 0;
         }
         

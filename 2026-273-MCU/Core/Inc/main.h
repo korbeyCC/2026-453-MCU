@@ -57,10 +57,24 @@ void Error_Handler(void);
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/
+#define REMOT_1_Pin GPIO_PIN_5
+#define REMOT_1_GPIO_Port GPIOA
+#define REMOT_2_Pin GPIO_PIN_6
+#define REMOT_2_GPIO_Port GPIOA
+#define REMOT_3_Pin GPIO_PIN_7
+#define REMOT_3_GPIO_Port GPIOA
+#define REMOT_4_Pin GPIO_PIN_4
+#define REMOT_4_GPIO_Port GPIOC
+#define REMOT_5_Pin GPIO_PIN_5
+#define REMOT_5_GPIO_Port GPIOC
 #define TM1650_SDA_Pin GPIO_PIN_14
 #define TM1650_SDA_GPIO_Port GPIOB
 #define TM1650_SCL_Pin GPIO_PIN_15
 #define TM1650_SCL_GPIO_Port GPIOB
+#define BUTON_DW_Pin GPIO_PIN_7
+#define BUTON_DW_GPIO_Port GPIOC
+#define BUTON_UP_Pin GPIO_PIN_8
+#define BUTON_UP_GPIO_Port GPIOC
 
 /* USER CODE BEGIN Private defines */
 

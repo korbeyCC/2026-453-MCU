@@ -8,6 +8,9 @@ extern UART_HandleTypeDef huart2;
 extern UART_HandleTypeDef huart3;
 extern UART_HandleTypeDef huart4;
 
+// 4路电机的PID控制器结构体实例，用于升降同步的高度修偏
+static APP_PID_Handle_t motor_pids[4];
+
 /**
  * @brief 核心业务控制逻辑任务
  * @note 负责接收外接信号和无线遥控事件，处理灯带与升降状态逻辑，并发送 485 链路测试包
@@ -23,6 +26,14 @@ void APP_CtllogicTask(void *pvParameters)
     uint8_t tx_data4[] = "UART4 485 Test\r\n";
     
     uint32_t last_tx_tick = 0;
+
+    // 初始化 4 路立柱电机的同步 PI 控制器 (使用导入的 app_pid.c 算法)
+    // 暂定默认参数：Kp = 2.5f, Ki = 0.1f, Kd = 0.0f (不启用微分项)
+    // 高度差目标 Target = 0.0f, 速度微调限幅范围 [-150.0f, 150.0f], 积分饱和限幅 20.0f
+    for (int i = 0; i < 4; i++)
+    {
+        APP_PID_Init(&motor_pids[i], 2.5f, 0.1f, 0.0f, 0.0f, 150.0f, -150.0f, 20.0f);
+    }
 
     // 初始化中间层灯带控制
     MID_LED_Init();

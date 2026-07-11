@@ -1,6 +1,7 @@
 #include "app_Ctllogic.h"
 #include "mid_signal.h"
 #include "mid_led.h"
+#include "mid_modbus.h"
 #include "usart.h"
 
 extern UART_HandleTypeDef huart1;
@@ -13,19 +14,11 @@ static APP_PID_Handle_t motor_pids[4];
 
 /**
  * @brief 核心业务控制逻辑任务
- * @note 负责接收外接信号和无线遥控事件，处理灯带与升降状态逻辑，并发送 485 链路测试包
+ * @note 负责接收外接信号和无线遥控事件，处理灯带与升降状态逻辑，并周期发起 Modbus 链路测试
  */
 void APP_CtllogicTask(void *pvParameters)
 {
     MID_SIGNAL_Msg sig_msg;
-    
-    // 准备 485 测试数据
-    uint8_t tx_data1[] = "USART1 485 Test\r\n";
-    uint8_t tx_data2[] = "USART2 485 Test\r\n";
-    uint8_t tx_data3[] = "USART3 485 Test\r\n";
-    uint8_t tx_data4[] = "UART4 485 Test\r\n";
-    
-    uint32_t last_tx_tick = 0;
 
     // 初始化 4 路立柱电机的同步 PI 控制器 (使用导入的 app_pid.c 算法)
     // 暂定默认参数：Kp = 2.5f, Ki = 0.1f, Kd = 0.0f (不启用微分项)
@@ -85,16 +78,5 @@ void APP_CtllogicTask(void *pvParameters)
             }
         }
         
-        // 485 链路硬件循环测试：每 1000ms 自动向 4 路 485 发送一次测试报文
-        uint32_t current_tick = xTaskGetTickCount();
-        if (current_tick - last_tx_tick >= pdMS_TO_TICKS(1000))
-        {
-            last_tx_tick = current_tick;
-            
-            HAL_UART_Transmit(&huart1, tx_data1, sizeof(tx_data1) - 1, 100);
-            HAL_UART_Transmit(&huart2, tx_data2, sizeof(tx_data2) - 1, 100);
-            HAL_UART_Transmit(&huart3, tx_data3, sizeof(tx_data3) - 1, 100);
-            HAL_UART_Transmit(&huart4, tx_data4, sizeof(tx_data4) - 1, 100);
-        }
     }
 }

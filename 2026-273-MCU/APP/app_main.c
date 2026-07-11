@@ -17,4 +17,6 @@ void APP_Init(void)
     xTaskCreate(MID_Signal_ScanTask, "MID_SigScan", 128, NULL, 2, NULL);
     // 创建核心业务控制逻辑任务
     xTaskCreate(APP_CtllogicTask, "APP_Ctllogic", 128, NULL, 2, NULL);
+    // 创建485串口并行通信超时管理任务
+    xTaskCreate(APP_CommTask, "APP_Comm", 128, NULL, 3, NULL);
 }

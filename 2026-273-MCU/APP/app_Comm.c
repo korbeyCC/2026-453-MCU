@@ -38,102 +38,56 @@ static void Check_Hall_Breakpoint(uint8_t motor_idx)
 #define Check_Hall_Breakpoint(motor_idx) ((void)0)
 #endif
 
-// ========================== 1号电机回调函数 ==========================
-static void Motor1_Config_Callback(uint8_t success)
+// ========================== 通用电机回调函数 ==========================
+
+/**
+ * @brief  通用电机配置写入完成回调
+ * @param  motor_idx  电机索引 (0-3)
+ * @param  success    执行结果
+ */
+static void Motor_Config_Callback_Generic(uint8_t motor_idx, uint8_t success)
 {
     if (success) {
-        if (g_motor_status[0].init_step < MOTOR_INIT_STEP_DONE) {
-            g_motor_status[0].init_step++;
+        if (g_motor_status[motor_idx].init_step < MOTOR_INIT_STEP_DONE) {
+            g_motor_status[motor_idx].init_step++;
         }
-        g_motor_status[0].retry_cnt = 0;
+        g_motor_status[motor_idx].retry_cnt = 0;
     } else {
-        g_motor_status[0].retry_cnt++;
+        g_motor_status[motor_idx].retry_cnt++;
     }
 }
 
-static void Motor1_ReadHall_Callback(uint16_t *pData, uint8_t success)
+/**
+ * @brief  通用电机霍尔脉冲读取回调
+ * @param  motor_idx  电机索引 (0-3)
+ * @param  pData      寄存器数据指针
+ * @param  success    执行结果
+ */
+static void Motor_ReadHall_Callback_Generic(uint8_t motor_idx, uint16_t *pData, uint8_t success)
 {
     if (success && pData != NULL) {
         // 读取霍尔脉冲：高16位由 pData[0] 返回，低16位由 pData[1] 返回，合并为 32 位霍尔脉冲
-        g_motor_status[0].hall_value = ((uint32_t)pData[0] << 16) | pData[1];
-        g_motor_status[0].comm_error = 0;
-        Check_Hall_Breakpoint(0);
+        g_motor_status[motor_idx].hall_value = ((uint32_t)pData[0] << 16) | pData[1];
+        g_motor_status[motor_idx].comm_error = 0;
+        Check_Hall_Breakpoint(motor_idx);
     } else {
-        g_motor_status[0].comm_error = 1; // 标记通讯故障
+        g_motor_status[motor_idx].comm_error = 1; // 标记通讯故障
     }
 }
 
-// ========================== 2号电机回调函数 ==========================
-static void Motor2_Config_Callback(uint8_t success)
-{
-    if (success) {
-        if (g_motor_status[1].init_step < MOTOR_INIT_STEP_DONE) {
-            g_motor_status[1].init_step++;
-        }
-        g_motor_status[1].retry_cnt = 0;
-    } else {
-        g_motor_status[1].retry_cnt++;
+// 利用宏为4路电机生成符合 Modbus 接口的回调包装函数
+#define DEFINE_MOTOR_CALLBACKS(num, idx) \
+    static void Motor##num##_Config_Callback(uint8_t success) { \
+        Motor_Config_Callback_Generic(idx, success); \
+    } \
+    static void Motor##num##_ReadHall_Callback(uint16_t *pData, uint8_t success) { \
+        Motor_ReadHall_Callback_Generic(idx, pData, success); \
     }
-}
 
-static void Motor2_ReadHall_Callback(uint16_t *pData, uint8_t success)
-{
-    if (success && pData != NULL) {
-        g_motor_status[1].hall_value = ((uint32_t)pData[0] << 16) | pData[1];
-        g_motor_status[1].comm_error = 0;
-        Check_Hall_Breakpoint(1);
-    } else {
-        g_motor_status[1].comm_error = 1;
-    }
-}
-
-// ========================== 3号电机回调函数 ==========================
-static void Motor3_Config_Callback(uint8_t success)
-{
-    if (success) {
-        if (g_motor_status[2].init_step < MOTOR_INIT_STEP_DONE) {
-            g_motor_status[2].init_step++;
-        }
-        g_motor_status[2].retry_cnt = 0;
-    } else {
-        g_motor_status[2].retry_cnt++;
-    }
-}
-
-static void Motor3_ReadHall_Callback(uint16_t *pData, uint8_t success)
-{
-    if (success && pData != NULL) {
-        g_motor_status[2].hall_value = ((uint32_t)pData[0] << 16) | pData[1];
-        g_motor_status[2].comm_error = 0;
-        Check_Hall_Breakpoint(2);
-    } else {
-        g_motor_status[2].comm_error = 1;
-    }
-}
-
-// ========================== 4号电机回调函数 ==========================
-static void Motor4_Config_Callback(uint8_t success)
-{
-    if (success) {
-        if (g_motor_status[3].init_step < MOTOR_INIT_STEP_DONE) {
-            g_motor_status[3].init_step++;
-        }
-        g_motor_status[3].retry_cnt = 0;
-    } else {
-        g_motor_status[3].retry_cnt++;
-    }
-}
-
-static void Motor4_ReadHall_Callback(uint16_t *pData, uint8_t success)
-{
-    if (success && pData != NULL) {
-        g_motor_status[3].hall_value = ((uint32_t)pData[0] << 16) | pData[1];
-        g_motor_status[3].comm_error = 0;
-        Check_Hall_Breakpoint(3);
-    } else {
-        g_motor_status[3].comm_error = 1;
-    }
-}
+DEFINE_MOTOR_CALLBACKS(1, 0)
+DEFINE_MOTOR_CALLBACKS(2, 1)
+DEFINE_MOTOR_CALLBACKS(3, 2)
+DEFINE_MOTOR_CALLBACKS(4, 3)
 
 // 整理回调函数指针数组，便于通过循环下标处理
 static const modbus_write_callback_t Motor_Config_Callbacks[4] = {

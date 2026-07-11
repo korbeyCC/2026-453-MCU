@@ -1,4 +1,4 @@
-#include "app_Ctllogic.h"
+#include "app_control.h"
 #include "mid_signal.h"
 #include "mid_led.h"
 #include "mid_modbus.h"
@@ -16,7 +16,7 @@ static APP_PID_Handle_t motor_pids[4];
  * @brief 核心业务控制逻辑任务
  * @note 负责接收外接信号和无线遥控事件，处理灯带与升降状态逻辑，并周期发起 Modbus 链路测试
  */
-void APP_CtllogicTask(void *pvParameters)
+void APP_ControlTask(void *pvParameters)
 {
     MID_SIGNAL_Msg sig_msg;
 

@@ -108,8 +108,7 @@ void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size)
             modbus_masters[i].rx_count = Size;
             modbus_masters[i].rx_complete = 1;
             
-            // 重新开启下一次串口DMA空闲接收 (保证接收连续不间断)
-            HAL_UARTEx_ReceiveToIdle_DMA(huart, modbus_masters[i].rx_buf, sizeof(modbus_masters[i].rx_buf));
+            // 接收已完成，不在此处重新挂载以防止总线杂波和重入锁死，改在下发发送命令后按需开启
             break;
         }
     }
@@ -146,6 +145,9 @@ static bool parse_response(Modbus_Master_t *master, uint16_t *destBuf, uint16_t 
 static void send_read_cmd(Modbus_Master_t *master, uint16_t startAddr, uint16_t regCount)
 {
     uint16_t crc;
+    
+    // 发送前重置 DMA 状态并清空完成标志，彻底杜绝 HAL_BUSY 锁死及脏数据拼接
+    HAL_UART_DMAStop(master->huart);
     master->rx_count      = 0;
     master->rx_complete   = 0;
     master->timeout_cnt = 0;
@@ -163,12 +165,17 @@ static void send_read_cmd(Modbus_Master_t *master, uint16_t startAddr, uint16_t 
     
     // 调用 HAL 库串口发送 (阻塞 100ms 最大超时保护)
     HAL_UART_Transmit(master->huart, master->tx_buf, 8, 100);
+    
+    // 发送完毕，立刻重新挂载 DMA 接收监听本次应答，保障缓冲区的纯净
+    HAL_UARTEx_ReceiveToIdle_DMA(master->huart, master->rx_buf, sizeof(master->rx_buf));
 }
 
 // ========================== 内部：组包发送写单个寄存器命令 ==========================
 static void send_write_single_cmd(Modbus_Master_t *master, uint16_t regAddr, uint16_t value)
 {
     uint16_t crc;
+    
+    HAL_UART_DMAStop(master->huart);
     master->rx_count      = 0;
     master->rx_complete   = 0;
     master->timeout_cnt = 0;
@@ -185,6 +192,8 @@ static void send_write_single_cmd(Modbus_Master_t *master, uint16_t regAddr, uin
     master->tx_buf[7] = crc & 0xFF;
     
     HAL_UART_Transmit(master->huart, master->tx_buf, 8, 100);
+    
+    HAL_UARTEx_ReceiveToIdle_DMA(master->huart, master->rx_buf, sizeof(master->rx_buf));
 }
 
 // ========================== 内部：组包发送写多个寄存器命令 ==========================
@@ -194,6 +203,7 @@ static void send_write_multiple_cmd(Modbus_Master_t *master, uint16_t startAddr,
     uint16_t i;
     uint16_t tx_len;
     
+    HAL_UART_DMAStop(master->huart);
     master->rx_count      = 0;
     master->rx_complete   = 0;
     master->timeout_cnt = 0;
@@ -218,6 +228,8 @@ static void send_write_multiple_cmd(Modbus_Master_t *master, uint16_t startAddr,
     master->tx_buf[tx_len + 1] = crc & 0xFF;
     
     HAL_UART_Transmit(master->huart, master->tx_buf, tx_len + 2, 100);
+    
+    HAL_UARTEx_ReceiveToIdle_DMA(master->huart, master->rx_buf, sizeof(master->rx_buf));
 }
 
 // ========================== 对外接口：主站初始化 ==========================
@@ -248,14 +260,14 @@ void MID_Modbus_Init(void)
         HAL_NVIC_EnableIRQ(irqs[i]);
     }
 
-    // 3. 开启各串口的 DMA 空闲接收
+    // 3. 重置各串口 DMA 为就绪，此时不挂载接收，发送命令时才触发挂载
     for (int i = 0; i < 4; i++)
     {
         memset(modbus_masters[i].rx_buf, 0, sizeof(modbus_masters[i].rx_buf));
         modbus_masters[i].rx_complete = 0;
         modbus_masters[i].rx_count = 0;
         
-        HAL_UARTEx_ReceiveToIdle_DMA(modbus_masters[i].huart, modbus_masters[i].rx_buf, sizeof(modbus_masters[i].rx_buf));
+        HAL_UART_DMAStop(modbus_masters[i].huart);
     }
 }
 
@@ -319,6 +331,7 @@ void MID_Modbus_Process_1ms(void)
                 m->timeout_cnt += MODBUS_INTERVAL_MS;
                 if (m->timeout_cnt >= MODBUS_READ_TIMEOUT_MS)
                 {
+                    HAL_UART_DMAStop(m->huart); // 超时强制关闭本次 DMA，防止污染
                     m->state       = MODBUS_STATE_IDLE;
                     m->rx_complete = 0;
                     if (m->read_cb != NULL)
@@ -353,6 +366,7 @@ void MID_Modbus_Process_1ms(void)
                 m->timeout_cnt += MODBUS_INTERVAL_MS;
                 if (m->timeout_cnt >= MODBUS_WRITE_TIMEOUT_MS)
                 {
+                    HAL_UART_DMAStop(m->huart); // 超时强制关闭 DMA
                     m->state       = MODBUS_STATE_IDLE;
                     m->rx_complete = 0;
                     if (m->write_cb != NULL)
@@ -366,8 +380,8 @@ void MID_Modbus_Process_1ms(void)
                 if (m->rx_complete)
                 {
                     m->rx_complete = 0;
-                    // 写命令回执：响应长度应大于等于6(写单)或8(写多)，并且功能码匹配
-                    if (m->rx_count >= 6 && m->rx_buf[1] == m->tx_buf[1])
+                    // 写命令回执：正常响应应为 8 字节，并且功能码匹配
+                    if (m->rx_count >= 8 && m->rx_buf[1] == m->tx_buf[1])
                     {
                         status_ok = 1;
                     }

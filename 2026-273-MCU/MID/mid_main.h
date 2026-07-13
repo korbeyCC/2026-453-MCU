@@ -11,6 +11,7 @@
 #include "mid_FLASH.h"
 #include "mid_signal.h"
 #include "mid_led.h"
+#include "mid_modbus.h"
 
 void MID_Init(void);
 

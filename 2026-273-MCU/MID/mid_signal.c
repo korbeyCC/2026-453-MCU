@@ -117,6 +117,7 @@ static void MID_Signal_ScanSingle(MID_SIGNAL_HandleTypeDef *sig, uint32_t nowMs)
 
         case SIGNAL_ST_LONG_WAIT:
             if (!is_phys_active) {
+                MID_Signal_Report(sig->ID, MID_SIGNAL_EVT_RELEASE);
                 sig->state = SIGNAL_ST_IDLE;
             } else {
                 uint32_t duration = nowMs - sig->active_start_tick;

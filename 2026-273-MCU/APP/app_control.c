@@ -2,19 +2,14 @@
 #include "mid_signal.h"
 #include "mid_led.h"
 #include "mid_modbus.h"
-#include "usart.h"
-
-extern UART_HandleTypeDef huart1;
-extern UART_HandleTypeDef huart2;
-extern UART_HandleTypeDef huart3;
-extern UART_HandleTypeDef huart4;
+#include "app_Comm.h"
 
 // 4路电机的PID控制器结构体实例，用于升降同步的高度修偏
 static APP_PID_Handle_t motor_pids[4];
 
 /**
- * @brief 核心业务控制逻辑任务
- * @note 负责接收外接信号和无线遥控事件，处理灯带与升降状态逻辑，并周期发起 Modbus 链路测试
+ * @brief 核心业务控制任务
+ * @note  负责监控按键和遥控器信号，运算电机同步控制量，并通过队列向通信任务下发控制指令
  */
 void APP_ControlTask(void *pvParameters)
 {
@@ -36,9 +31,11 @@ void APP_ControlTask(void *pvParameters)
         // 设为 50ms 超时等待，保证按键和事件的响应流畅度，又避免空等轮询消耗 CPU
         if (MID_Signal_GetEvent(&sig_msg, pdMS_TO_TICKS(50)) == pdTRUE)
         {
-            // 仅在信号触发生效(TRIGGER)时执行对应的控制动作
+            // ==================== 1. 按键/遥控器 按下触发 (TRIGGER) ====================
             if (sig_msg.event == MID_SIGNAL_EVT_TRIGGER)
             {
+                Motor_Ctrl_Msg_t ctrl_msg;
+                
                 switch (sig_msg.signal_id)
                 {
                     case MID_SIGNAL_REMOT_1:
@@ -52,31 +49,58 @@ void APP_ControlTask(void *pvParameters)
                         break;
                         
                     case MID_SIGNAL_REMOT_3:
-                        // 遥控下键按下，关闭所有灯带
+                        // 遥控下键按下，关闭所有灯带，并启动电机下行 (反转，速度 150 RPM)
                         MID_LED_Write(MID_LED_1, false);
                         MID_LED_Write(MID_LED_2, false);
+                        
+                        ctrl_msg.cmd_type = CMD_REVERSE;
+                        ctrl_msg.speed_rpm = 150;
+                        xQueueSend(g_motor_ctrl_queue, &ctrl_msg, 0);
                         break;
                         
                     case MID_SIGNAL_REMOT_4:
-                        // 遥控上键按下，开启所有灯带
+                        // 遥控上键按下，开启所有灯带，并启动电机上行 (正转，速度 150 RPM)
                         MID_LED_Write(MID_LED_1, true);
                         MID_LED_Write(MID_LED_2, true);
-                        break;
                         
-                    case MID_SIGNAL_REMOT_5:
+                        ctrl_msg.cmd_type = CMD_FORWARD;
+                        ctrl_msg.speed_rpm = 150;
+                        xQueueSend(g_motor_ctrl_queue, &ctrl_msg, 0);
                         break;
                         
                     case MID_SIGNAL_BUTON_DW:
+                        // 物理下行按键按下，启动电机下行 (反转，速度 150 RPM)
+                        ctrl_msg.cmd_type = CMD_REVERSE;
+                        ctrl_msg.speed_rpm = 150;
+                        xQueueSend(g_motor_ctrl_queue, &ctrl_msg, 0);
                         break;
                         
                     case MID_SIGNAL_BUTON_UP:
+                        // 物理上行按键按下，启动电机上行 (正转，速度 150 RPM)
+                        ctrl_msg.cmd_type = CMD_FORWARD;
+                        ctrl_msg.speed_rpm = 150;
+                        xQueueSend(g_motor_ctrl_queue, &ctrl_msg, 0);
                         break;
                         
                     default:
                         break;
                 }
             }
+            // ==================== 2. 按键/遥控器 松开触发 (RELEASE) ====================
+            else if (sig_msg.event == MID_SIGNAL_EVT_RELEASE)
+            {
+                // 如果是遥控上下键、或者物理上下按键被松开，则发送停机命令 (点动停止)
+                if (sig_msg.signal_id == MID_SIGNAL_REMOT_4 || 
+                    sig_msg.signal_id == MID_SIGNAL_REMOT_3 ||
+                    sig_msg.signal_id == MID_SIGNAL_BUTON_UP ||
+                    sig_msg.signal_id == MID_SIGNAL_BUTON_DW)
+                {
+                    Motor_Ctrl_Msg_t ctrl_msg;
+                    ctrl_msg.cmd_type = CMD_STOP;
+                    ctrl_msg.speed_rpm = 0;
+                    xQueueSend(g_motor_ctrl_queue, &ctrl_msg, 0);
+                }
+            }
         }
-        
     }
 }

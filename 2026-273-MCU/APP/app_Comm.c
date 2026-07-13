@@ -1,12 +1,76 @@
 #include "app_Comm.h"
 #include "mid_modbus.h"
+#include "app_pid.h"
 
 // 实例化全局电机监控及队列变量
 Motor_Status_t g_motor_status[4];
 QueueHandle_t g_motor_ctrl_queue = NULL;
 
+// 全局基准速度，用于 PID 调整基准
+int16_t g_base_speed = 0;
+
+// 4路电机的PID控制器结构体实例 (由 app_pid.c 提供算法底层支持)
+static APP_PID_Handle_t motor_pids[4];
+
 // 调试宏：设置为 1 开启四路电机霍尔值读取完毕后触发断点，设置为 0 恢复正常运行
 #define DEBUG_HALL_BREAKPOINT   1
+
+// ========================== PID 同步控制计算 ==========================
+
+/**
+ * @brief  PID 同步计算，基于平均霍尔位置调节各路电机的目标速度
+ * @param  base_speed 基准转速
+ */
+static void APP_Comm_RunPID(int16_t base_speed)
+{
+    if (base_speed <= 0) return;
+    
+    // 1. 计算 4 路电机的平均当前霍尔计数值
+    float avg_hall = 0.0f;
+    for (int i = 0; i < 4; i++) {
+        avg_hall += (float)g_motor_status[i].hall_value;
+    }
+    avg_hall /= 4.0f;
+    
+    // 2. 依次为每个电机执行 PID 位置同步校正
+    for (int i = 0; i < 4; i++)
+    {
+        // 动态将 PID 控制器的目标位置设定为 4 路电机的平均霍尔值
+        APP_PID_SetTarget(&motor_pids[i], avg_hall);
+        
+        // 反馈输入当前电机的真实霍尔值，计算得出速度修偏量 delta_v
+        float delta_v = APP_PID_Calc(&motor_pids[i], (float)g_motor_status[i].hall_value);
+        
+        float target_v = 0.0f;
+        
+        // 3. 根据运行方向（正向/反向）确定速度调节的极性
+        if (g_motor_status[i].target_cmd == CMD_FORWARD)
+        {
+            // 正转上升段：高度低的（delta_v为正）加速，高度超前的（delta_v为负）减速
+            target_v = (float)base_speed + delta_v;
+        }
+        else if (g_motor_status[i].target_cmd == CMD_REVERSE)
+        {
+            // 反转下降段：高度高的（偏前，delta_v为负）应该加速下降，故用负号取反
+            target_v = (float)base_speed - delta_v;
+        }
+        else
+        {
+            target_v = 0.0f;
+        }
+        
+        // 4. 进行安全防飞车速度限幅 (限制在 30 ~ 200 RPM 之间)
+        if (target_v > 200.0f) target_v = 200.0f;
+        else if (target_v < 30.0f && g_motor_status[i].target_cmd != CMD_STOP) target_v = 30.0f;
+        
+        // 5. 应用修偏后的目标转速
+        if (g_motor_status[i].target_cmd == CMD_STOP) {
+            g_motor_status[i].target_speed = 0;
+        } else {
+            g_motor_status[i].target_speed = (int16_t)target_v;
+        }
+    }
+}
 
 #if DEBUG_HALL_BREAKPOINT
 /**
@@ -22,7 +86,10 @@ static void Check_Hall_Breakpoint(uint8_t motor_idx)
         // 这一轮四路电机均已获取到霍尔值，重置掩码以准备下一轮再次触发
         s_hall_acquired_mask = 0;
         
-        // 触发软断点
+        // ======= 触发 PID 同步控制运算 =======
+        APP_Comm_RunPID(g_base_speed);
+        
+        // 触发软断点供用户调试查看
         #if defined(__CC_ARM)
         __breakpoint(0); // Keil AC5
         #elif defined(__ARMCC_VERSION) && (__ARMCC_VERSION >= 6010050)
@@ -36,7 +103,17 @@ static void Check_Hall_Breakpoint(uint8_t motor_idx)
     }
 }
 #else
-#define Check_Hall_Breakpoint(motor_idx) ((void)0)
+static void Check_Hall_Breakpoint(uint8_t motor_idx)
+{
+    static uint8_t s_hall_acquired_mask = 0;
+    s_hall_acquired_mask |= (1 << motor_idx);
+    if (s_hall_acquired_mask == 0x0F) {
+        s_hall_acquired_mask = 0;
+        
+        // ======= 触发 PID 同步控制运算 =======
+        APP_Comm_RunPID(g_base_speed);
+    }
+}
 #endif
 
 // ========================== Modbus 通用回调泛型函数 ==========================
@@ -90,7 +167,7 @@ static void Motor_ReadHall_Callback_Generic(uint8_t motor_idx, uint16_t *pData, 
     if (success && pData != NULL) {
         g_motor_status[motor_idx].hall_value = ((uint32_t)pData[0] << 16) | pData[1];
         g_motor_status[motor_idx].comm_error = 0;
-        // 成功读取霍尔值，触发调试断点检查
+        // 成功读取霍尔值，触发调试断点检查与 PID 运算
         Check_Hall_Breakpoint(motor_idx);
     } else {
         g_motor_status[motor_idx].comm_error = 1;
@@ -149,7 +226,16 @@ void APP_CommTask(void *pvParameters)
     // 1. 创建控制消息队列 (深度：10)
     g_motor_ctrl_queue = xQueueCreate(10, sizeof(Motor_Ctrl_Msg_t));
     
-    // 2. 初始化电机监控变量为默认停机状态
+    // 2. 初始化 4 路立柱电机的同步 PID 参数
+    // 比例系数 Kp = 0.5f，积分系数 Ki = 0.01f，微分系数 Kd = 0.0f (暂不启用)
+    // 设定目标值初始设为 0.0f
+    // 最大速度调节修偏增量限制在 [-50.0f, 50.0f] RPM，抗积分饱和限制 20.0f
+    for (int i = 0; i < 4; i++)
+    {
+        APP_PID_Init(&motor_pids[i], 0.5f, 0.01f, 0.0f, 0.0f, 50.0f, -50.0f, 20.0f);
+    }
+
+    // 3. 初始化电机监控变量为默认停机状态
     for (int i = 0; i < 4; i++) {
         g_motor_status[i].init_step     = MOTOR_INIT_STEP_WRITE_ENABLE;
         g_motor_status[i].hall_value    = 0;
@@ -167,7 +253,7 @@ void APP_CommTask(void *pvParameters)
     
     while (1)
     {
-        // 3. 动态阻塞机制：判定当前是工作状态还是纯空闲状态
+        // 4. 动态阻塞机制：判定当前是工作状态还是纯空闲状态
         TickType_t block_time = pdMS_TO_TICKS(1); // 默认工作状态下，1ms 唤醒一次，维持 Modbus 超时状态机精度
         bool all_idle = true;
         
@@ -192,24 +278,32 @@ void APP_CommTask(void *pvParameters)
             block_time = pdMS_TO_TICKS(1); // 工作中，1ms 快速唤醒推进状态机
         }
         
-        // 4. 阻塞接收队列消息 (空闲时无限死等，工作时 1ms 超时快速轮询)
+        // 5. 阻塞接收队列消息 (空闲时无限死等，工作时 1ms 超时快速轮询)
         if (xQueueReceive(g_motor_ctrl_queue, &ctrl_msg, block_time) == pdTRUE)
         {
+            g_base_speed = ctrl_msg.speed_rpm;
+            
             // 收到控制台下发的新指令，同步更新 4 路电机的控制目标
             for (int i = 0; i < 4; i++)
             {
+                // 如果运行方向/启停动作发生了改变，立刻清空该通道 PID 积分项，防止带入历史误差
+                if (g_motor_status[i].target_cmd != ctrl_msg.cmd_type)
+                {
+                    APP_PID_Clear(&motor_pids[i]);
+                }
+                
                 g_motor_status[i].target_cmd   = ctrl_msg.cmd_type;
                 g_motor_status[i].target_speed = ctrl_msg.speed_rpm;
             }
         }
         
-        // 5. 推进底层 4 路串口 Modbus 主站的状态机 (非空闲时时基精度维持 1ms)
+        // 6. 推进底层 4 路串口 Modbus 主站的状态机 (非空闲时时基精度维持 1ms)
         if (!all_idle)
         {
             MID_Modbus_Process_1ms();
         }
         
-        // 6. 工作状态下以 20ms 的合理节拍进行 Modbus 并行总线调度
+        // 7. 工作状态下以 20ms 的合理节拍进行 Modbus 并行总线调度
         schedule_cnt++;
         if (schedule_cnt >= 20)
         {

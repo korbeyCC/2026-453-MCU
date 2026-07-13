@@ -16,7 +16,7 @@ void APP_Init(void)
     // 创建外接信号扫描任务
     xTaskCreate(MID_Signal_ScanTask, "MID_SigScan", 128, NULL, 2, NULL);
     // 创建核心业务控制任务
-    xTaskCreate(APP_ControlTask, "APP_Control", 128, NULL, 2, NULL);
+    xTaskCreate(APP_ControlTask, "APP_Control", 256, NULL, 2, NULL);
     // 创建485串口并行通信超时管理任务
-    xTaskCreate(APP_CommTask, "APP_Comm", 128, NULL, 3, NULL);
+    xTaskCreate(APP_CommTask, "APP_Comm", 512, NULL, 3, NULL);
 }

@@ -24,10 +24,13 @@ typedef enum {
     MOTOR_INIT_STEP_DONE             // 电机配置完成，进入正常运行控制及周期霍尔读取阶段
 } MotorInitStep;
 
-// 电机运行与状态监控结构体
+// 电机运行与状态监控结构体 (有符号化升级，支持起点差值与溢出校正)
 typedef struct {
     MotorInitStep init_step;     // 电机当前配置/运行状态步骤
-    uint32_t hall_value;         // 驱动器返回的 32 位霍尔脉冲计数值
+    int32_t base_abs_hall;       // 本次运行起步前的绝对高度基准 (有符号 int32_t)
+    int32_t start_drive_hall;    // 本次起步时驱动器的原始霍尔读数起点 (有符号 int32_t)
+    int32_t current_abs_hall;    // 实时解算出的绝对高度 (有符号 int32_t)
+    uint32_t hall_value;         // 驱动器返回的 32 位原始无符号霍尔脉冲计数值
     uint8_t comm_error;          // 通讯错误标记 (0:正常; 1:通讯超时故障)
     uint8_t retry_cnt;           // 通讯超时重试次数
     

@@ -1,6 +1,7 @@
 #include "app_Comm.h"
 #include "mid_modbus.h"
 #include "app_pid.h"
+#include "app_Data.h"
 #include <stdio.h>
 #include <stdarg.h>
 
@@ -33,43 +34,46 @@ static void Debug_Printf(const char *format, ...)
     int len = vsnprintf(buffer, sizeof(buffer), format, args);
     va_end(args);
     if (len > 0) {
-        HAL_UART_Transmit(&huart5, (uint8_t *)buffer, len, 100);
+        HAL_UART_Transmit(&huart5, (uint8_t *)buffer, len, 10);
     }
 }
 
 // ========================== PID 同步控制计算 ==========================
 
 /**
- * @brief  PID 同步计算，基于平均霍尔位置调节各路电机的目标速度
+ * @brief  PID 同步计算，基于平均相对行程（Travel）调节各路电机的目标速度
  * @param  base_speed 基准转速
  */
 static void APP_Comm_RunPID(int16_t base_speed)
 {
     if (base_speed <= 0) return;
 
-    // 1. 计算 4 路电机的平均当前霍尔计数值
-    float avg_hall = 0.0f;
+    float avg_travel = 0.0f;
+    float travel_rel[4];
+
+    // 1. 计算各个立柱的当前相对位移行程 (绝对高度减去各自安装起点霍尔值) 并计算平均相对位移
     for (int i = 0; i < 4; i++) {
-        avg_hall += (float)g_motor_status[i].hall_value;
+        travel_rel[i] = (float)(g_motor_status[i].current_abs_hall - app_data.min_mount_halls[i]);
+        avg_travel += travel_rel[i];
     }
-    avg_hall /= 4.0f;
+    avg_travel /= 4.0f;
 
-    // 2. 依次为每个电机执行 PID 位置同步校正
+    // 2. 对每个通道单独计算 PID 同步位置修正
     for (int i = 0; i < 4; i++) {
-        // 动态将 PID 控制器的目标位置设定为 4 路电机的平均霍尔值
-        APP_PID_SetTarget(&motor_pids[i], avg_hall);
+        // 动态将 PID 控制器的目标位置设定为 4 路电机的平均相对行程位移
+        APP_PID_SetTarget(&motor_pids[i], avg_travel);
 
-        // 反馈输入当前电机的真实霍尔值，计算得出速度修偏量 delta_v
-        float delta_v = APP_PID_Calc(&motor_pids[i], (float)g_motor_status[i].hall_value);
+        // 反馈输入当前电机的相对位移值，计算得出转速修偏增量 delta_v
+        float delta_v = APP_PID_Calc(&motor_pids[i], travel_rel[i]);
 
         float target_v = 0.0f;
 
-        // 3. 根据运行方向（正向/反向）确定速度调节的极性
+        // 3. 根据运行方向确定速度修偏调节的极性
         if (g_motor_status[i].target_cmd == CMD_FORWARD) {
-            // 正转上升段：高度低的（delta_v为正）加速，高度超前的（delta_v为负）减速
+            // 正转上升段：高度低的（相对位移小，delta_v为正）加速，高度超前（相对位移大，delta_v为负）的减速
             target_v = (float)base_speed + delta_v;
         } else if (g_motor_status[i].target_cmd == CMD_REVERSE) {
-            // 反转下降段：高度高的（偏前，delta_v为负）应该加速下降，故用负号取反
+            // 反转下降段：高度偏高的（下降慢，位移大，delta_v为负）应该加速下降，故用负号取反极性
             target_v = (float)base_speed - delta_v;
         } else {
             target_v = 0.0f;
@@ -89,13 +93,13 @@ static void APP_Comm_RunPID(int16_t base_speed)
         }
     }
 
-    // 6. 打印霍尔实时同步状态与调速波形 (格式适配多通道波形软件，如 VOFA+)
-    Debug_Printf("H0:%u,H1:%u,H2:%u,H3:%u,Avg:%.1f,V0:%d,V1:%d,V2:%d,V3:%d\r\n",
-                 g_motor_status[0].hall_value,
-                 g_motor_status[1].hall_value,
-                 g_motor_status[2].hall_value,
-                 g_motor_status[3].hall_value,
-                 avg_hall,
+    // 6. 打印绝对高度和同步波形 (格式适配多通道波形软件，如 VOFA+，此处输出绝对位置 current_abs_hall 曲线)
+    Debug_Printf("H0:%d,H1:%d,H2:%d,H3:%d,AvgTravel:%.1f,V0:%d,V1:%d,V2:%d,V3:%d\r\n",
+                 g_motor_status[0].current_abs_hall,
+                 g_motor_status[1].current_abs_hall,
+                 g_motor_status[2].current_abs_hall,
+                 g_motor_status[3].current_abs_hall,
+                 avg_travel,
                  g_motor_status[0].target_speed,
                  g_motor_status[1].target_speed,
                  g_motor_status[2].target_speed,
@@ -177,14 +181,20 @@ static void Motor_Speed_Callback_Generic(uint8_t motor_idx, uint8_t success)
 }
 
 /**
- * @brief  通用霍尔读取回调 (更新 32 位霍尔脉冲值)
+ * @brief  通用霍尔读取回调 (更新 32 位绝对霍尔值)
  */
 static void Motor_ReadHall_Callback_Generic(uint8_t motor_idx, uint16_t *pData, uint8_t success)
 {
     if (success && pData != NULL) {
-        g_motor_status[motor_idx].hall_value = ((uint32_t)pData[0] << 16) | pData[1];
-        g_motor_status[motor_idx].comm_error = 0;
+        // 1. 将驱动器返回的 32 位原始无符号数据强转为有符号 int32_t 相对高度值
+        int32_t drive_relative_hall          = (int32_t)(((uint32_t)pData[0] << 16) | pData[1]);
+        g_motor_status[motor_idx].hall_value = (uint32_t)drive_relative_hall; // 保存原始值以备起跑线基准捕获
 
+        // 2. 通过软件差值模型，解算出当前精确的绝对高度
+        g_motor_status[motor_idx].current_abs_hall =
+            g_motor_status[motor_idx].base_abs_hall + (drive_relative_hall - g_motor_status[motor_idx].start_drive_hall);
+
+        g_motor_status[motor_idx].comm_error = 0;
         Check_Hall_Breakpoint(motor_idx);
     } else {
         if (g_motor_status[motor_idx].comm_error == 0) {
@@ -251,13 +261,17 @@ void APP_CommTask(void *pvParameters)
     // 设定目标值初始设为 0.0f
     // 最大速度调节修偏增量限制在 [-50.0f, 50.0f] RPM，抗积分饱和限制 20.0f
     for (int i = 0; i < 4; i++) {
-        APP_PID_Init(&motor_pids[i], 0.3f, 0.005f, 0.0f, 0.0f, 50.0f, -50.0f, 20.0f);
+        APP_PID_Init(&motor_pids[i], 0.5f, 0.01f, 0.0f, 0.0f, 50.0f, -50.0f, 20.0f);
     }
 
-    // 3. 初始化电机监控变量为默认停机状态
+    // 3. 载入并初始化电机绝对高度及监控变量
     for (int i = 0; i < 4; i++) {
+        g_motor_status[i].base_abs_hall    = app_data.motor_abs_halls[i];
+        g_motor_status[i].current_abs_hall = app_data.motor_abs_halls[i];
+        g_motor_status[i].start_drive_hall = 0;
+        g_motor_status[i].hall_value       = 0;
+
         g_motor_status[i].init_step  = MOTOR_INIT_STEP_WRITE_ENABLE;
-        g_motor_status[i].hall_value = 0;
         g_motor_status[i].comm_error = 0;
         g_motor_status[i].retry_cnt  = 0;
 
@@ -300,9 +314,15 @@ void APP_CommTask(void *pvParameters)
 
             // 收到控制台下发的新指令，同步更新 4 路电机的控制目标
             for (int i = 0; i < 4; i++) {
-                // 如果运行方向/启停动作发生了改变，立刻清空该通道 PID 积分项，防止带入历史误差
+                // 如果运行方向/启停动作发生了改变，立刻清空该通道 PID 积分项并锁存起跑线，防止带入历史误差
                 if (g_motor_status[i].target_cmd != ctrl_msg.cmd_type) {
                     APP_PID_Clear(&motor_pids[i]);
+
+                    if (ctrl_msg.cmd_type != CMD_STOP) {
+                        // 起步瞬间，锁存此刻的驱动器读数作为差值基准起点，并同步锁存基准绝对高度
+                        g_motor_status[i].start_drive_hall = (int32_t)g_motor_status[i].hall_value;
+                        g_motor_status[i].base_abs_hall    = g_motor_status[i].current_abs_hall;
+                    }
                 }
 
                 g_motor_status[i].target_cmd   = ctrl_msg.cmd_type;

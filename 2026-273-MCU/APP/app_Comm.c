@@ -251,7 +251,7 @@ void APP_CommTask(void *pvParameters)
     // 设定目标值初始设为 0.0f
     // 最大速度调节修偏增量限制在 [-50.0f, 50.0f] RPM，抗积分饱和限制 20.0f
     for (int i = 0; i < 4; i++) {
-        APP_PID_Init(&motor_pids[i], 0.5f, 0.01f, 0.0f, 0.0f, 50.0f, -50.0f, 20.0f);
+        APP_PID_Init(&motor_pids[i], 0.3f, 0.005f, 0.0f, 0.0f, 50.0f, -50.0f, 20.0f);
     }
 
     // 3. 初始化电机监控变量为默认停机状态

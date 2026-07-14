@@ -11,7 +11,7 @@
 void APP_ControlTask(void *pvParameters)
 {
     MID_SIGNAL_Msg sig_msg;
-    
+
     // 静态状态变量，用于记录应用层当前的运行控制动作
     static uint8_t s_ctrl_state = CMD_STOP;
 
@@ -21,19 +21,19 @@ void APP_ControlTask(void *pvParameters)
     while (1) {
         // 设为 50ms 超时等待，保证按键和事件的响应流畅度，又避免空等轮询消耗 CPU
         if (MID_Signal_GetEvent(&sig_msg, pdMS_TO_TICKS(50)) == pdTRUE) {
-            
+
             // ==================== 仅处理按键按下触发事件 (TRIGGER) ====================
             if (sig_msg.event == MID_SIGNAL_EVT_TRIGGER) {
-                
+
                 // 【规则 1】：如果当前处于运行状态 (上升或下降)，任何按键按下都立即触发停机
                 if (s_ctrl_state != CMD_STOP) {
                     Motor_Ctrl_Msg_t ctrl_msg;
                     ctrl_msg.cmd_type  = CMD_STOP;
                     ctrl_msg.speed_rpm = 0;
                     xQueueSend(g_motor_ctrl_queue, &ctrl_msg, 0);
-                    
+
                     s_ctrl_state = CMD_STOP;
-                    
+
                     // 【消费并清空事件】：成功下发停机指令后，立即非阻塞读空/消费掉队列中由于松手或抖动产生的所有残留事件
                     MID_SIGNAL_Msg dummy_msg;
                     while (MID_Signal_GetEvent(&dummy_msg, 0) == pdTRUE);
@@ -42,7 +42,7 @@ void APP_ControlTask(void *pvParameters)
                 else {
                     Motor_Ctrl_Msg_t ctrl_msg;
                     bool action_valid = false;
-                    
+
                     switch (sig_msg.signal_id) {
                         case MID_SIGNAL_REMOT_1:
                             // 遥控器 1 号键按下，切换灯带 1 状态
@@ -60,7 +60,7 @@ void APP_ControlTask(void *pvParameters)
                             MID_LED_Write(MID_LED_2, false);
 
                             ctrl_msg.cmd_type  = CMD_REVERSE;
-                            ctrl_msg.speed_rpm = 150;
+                            ctrl_msg.speed_rpm = 100;
                             xQueueSend(g_motor_ctrl_queue, &ctrl_msg, 0);
                             s_ctrl_state = CMD_REVERSE;
                             action_valid = true;
@@ -72,7 +72,7 @@ void APP_ControlTask(void *pvParameters)
                             MID_LED_Write(MID_LED_2, true);
 
                             ctrl_msg.cmd_type  = CMD_FORWARD;
-                            ctrl_msg.speed_rpm = 150;
+                            ctrl_msg.speed_rpm = 100;
                             xQueueSend(g_motor_ctrl_queue, &ctrl_msg, 0);
                             s_ctrl_state = CMD_FORWARD;
                             action_valid = true;
@@ -81,7 +81,7 @@ void APP_ControlTask(void *pvParameters)
                         case MID_SIGNAL_BUTON_DW:
                             // 物理下行按键按下，启动电机下行 (反转)
                             ctrl_msg.cmd_type  = CMD_REVERSE;
-                            ctrl_msg.speed_rpm = 150;
+                            ctrl_msg.speed_rpm = 100;
                             xQueueSend(g_motor_ctrl_queue, &ctrl_msg, 0);
                             s_ctrl_state = CMD_REVERSE;
                             action_valid = true;
@@ -90,7 +90,7 @@ void APP_ControlTask(void *pvParameters)
                         case MID_SIGNAL_BUTON_UP:
                             // 物理上行按键按下，启动电机上行 (正转)
                             ctrl_msg.cmd_type  = CMD_FORWARD;
-                            ctrl_msg.speed_rpm = 150;
+                            ctrl_msg.speed_rpm = 100;
                             xQueueSend(g_motor_ctrl_queue, &ctrl_msg, 0);
                             s_ctrl_state = CMD_FORWARD;
                             action_valid = true;
@@ -99,7 +99,7 @@ void APP_ControlTask(void *pvParameters)
                         default:
                             break;
                     }
-                    
+
                     if (action_valid) {
                         // 【消费并清空事件】：成功下发启动指令后，立即非阻塞读空/消费掉后续的释放及抖动残留事件
                         MID_SIGNAL_Msg dummy_msg;

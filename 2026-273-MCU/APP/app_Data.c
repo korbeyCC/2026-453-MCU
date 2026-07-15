@@ -35,24 +35,22 @@ void APP_Data_Init(void)
         APP_Data_Storage();
     }
     
-    // 强制使能 PVD 检测及中断 (最高 PVD 检测阈值 2.9V，确保掉电时以最高优先级抢先处理)
+    // 强制使能 PVD 检测及硬件 PLS 阈值配置 (最高 PVD 检测阈值 2.9V，确保掉电时能尽早检测到)
+    // 注：由于 CubeMX 已经自动生成了 NVIC (PVD_IRQn) 中断使能，此处仅需配置并使能 PVD 硬件外设本身即可
     PWR_PVDTypeDef getConfigPVD;
     getConfigPVD.PVDLevel = PWR_PVDLEVEL_7; 
     getConfigPVD.Mode     = PWR_PVD_MODE_IT_RISING; // 电压跌落至阈值以下触发中断
     HAL_PWR_ConfigPVD(&getConfigPVD);
     HAL_PWR_EnablePVD();
-    
-    // // 配置 EXTI Line 16 PVD 中断抢占优先级并使能
-    // HAL_NVIC_SetPriority(PVD_IRQn, 0, 0); // 抢占优先级 0 (断电紧急保护，特高优先级)
-    // HAL_NVIC_EnableIRQ(PVD_IRQn);
 }
 
 /**
- * @brief  立即同步将参数保存至 Flash 芯片中 (需保证临界区安全)
+ * @brief  立即同步将参数保存至 Flash 芯片中 (使用中断安全的 CPU 级别全局中断开关)
  */
 void APP_Data_Storage(void)
 {
-    taskENTER_CRITICAL();
+    // 使用 CPU 级别的全局中断开关保护 Flash 擦写，避免在 PVD 中断里调用 taskENTER_CRITICAL 触发 FreeRTOS 断言卡死
+    __disable_irq();
     
     uint32_t base_addr = MID_FLASH_AddressTransition(0);
     uint32_t target_addr = base_addr;
@@ -62,7 +60,7 @@ void APP_Data_Storage(void)
     MID_FLASH_WrithData(&target_addr, sizeof(APP_DATA_HandleTypeDef), (uint16_t *)&app_data);
     MID_FLASH_Lock();
     
-    taskEXIT_CRITICAL();
+    __enable_irq();
 }
 
 /**
@@ -94,6 +92,6 @@ void HAL_PWR_PVDCallback(void)
         app_data.motor_abs_halls[i] = g_motor_status[i].current_abs_hall;
     }
     
-    // 2. 紧急执行 Flash 存储擦写 (利用约 20ms 电容维持供电期快速写入)
+    // 2. 紧急执行 Flash 存储擦写 (利用约 20ms EXTI Line 16 中断硬件保护期完成写入)
     APP_Data_Storage();
 }

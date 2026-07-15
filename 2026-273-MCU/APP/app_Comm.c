@@ -285,6 +285,12 @@ void APP_CommTask(void *pvParameters)
     }
 
     Debug_Printf("[SYS] APP_CommTask Started, Waiting for Control Msg...\r\n");
+    Debug_Printf("[SYS] Loaded Flash Abs Halls: H0=%d, H1=%d, H2=%d, H3=%d | MaxTravel=%d\r\n",
+                 app_data.motor_abs_halls[0],
+                 app_data.motor_abs_halls[1],
+                 app_data.motor_abs_halls[2],
+                 app_data.motor_abs_halls[3],
+                 app_data.max_travel_range);
 
     while (1) {
         // 4. 动态阻塞机制：判定当前是工作状态还是纯空闲状态

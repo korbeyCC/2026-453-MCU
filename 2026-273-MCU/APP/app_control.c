@@ -301,7 +301,7 @@ void APP_ControlTask(void *pvParameters)
                         app_data.motor_abs_halls[i] = g_sys_context.g_motor_status[i].current_abs_hall;
                     }
 
-                    EEPROMSet                = 1;
+                    // EEPROMSet                = 1;//感觉每次停止都存fash太折寿了还是注释了吧？
                     g_sys_context.base_speed = 0;
 
                     APP_Control_DebugPrint();

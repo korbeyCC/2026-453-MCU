@@ -111,9 +111,6 @@ void APP_ControlTask(void *pvParameters)
         APP_PID_Init(&motor_pids[i], 0.5f, 0.01f, 0.0f, 0.0f, 50.0f, -50.0f, 20.0f);
     }
 
-    // 2. 初始化中间层灯带控制
-    MID_LED_Init();
-
     TickType_t xLastWakeTime = xTaskGetTickCount();
 
     while (1) {

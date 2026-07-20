@@ -112,7 +112,6 @@ static void App_Comm_InitHardwareSequence(void)
     int num_steps = sizeof(init_steps) / sizeof(init_steps[0]);
 
     for (int step = 0; step < num_steps; step++) {
-        Debug_Printf("[SYS] Init Step %d/%d (%s)... ", step + 1, num_steps, init_steps[step].name);
 
         for (int i = 0; i < 4; i++) {
             Modbus_Master_t *m = &modbus_masters[i];
@@ -120,7 +119,6 @@ static void App_Comm_InitHardwareSequence(void)
         }
 
         uint8_t wait_ms = 0;
-        bool step_ok    = false;
         while (wait_ms < 100) {
             MID_Modbus_Process_1ms();
             vTaskDelay(pdMS_TO_TICKS(1));
@@ -134,15 +132,12 @@ static void App_Comm_InitHardwareSequence(void)
                 }
             }
             if (all_idle) {
-                step_ok = true;
                 break;
             }
         }
-        Debug_Printf(step_ok ? "OK\r\n" : "Done\r\n");
     }
 
     g_sys_context.is_hardware_ready = true;
-    Debug_Printf("[SYS] Hardware Initialization Finished! State -> READY\r\n");
 }
 
 // ========================== 485 并行 Modbus 轮询与调度任务 ==========================
@@ -152,14 +147,6 @@ void APP_CommTask(void *pvParameters)
     Motor_Ctrl_Msg_t ctrl_msg;
 
     g_motor_ctrl_queue = xQueueCreate(20, sizeof(Motor_Ctrl_Msg_t));
-
-    Debug_Printf("[SYS] APP_CommTask Started.\r\n");
-    Debug_Printf("[SYS] Loaded Flash Abs Halls: H0=%d, H1=%d, H2=%d, H3=%d | MaxTravel=%d\r\n",
-                 app_data.motor_abs_halls[0],
-                 app_data.motor_abs_halls[1],
-                 app_data.motor_abs_halls[2],
-                 app_data.motor_abs_halls[3],
-                 app_data.max_travel_range);
 
     // 1. 执行托管的 4 路电机驱动器硬件初始化
     App_Comm_InitHardwareSequence();
@@ -174,7 +161,7 @@ void APP_CommTask(void *pvParameters)
                     Modbus_Master_t *m = &modbus_masters[i];
 
                     switch (ctrl_msg.cmd_type) {
-                        case CMD_INIT_SET_SPEED:
+                        case CMD_SET_SPEED:
                             App_Modbus_WriteSingleReg_Safe(m, 0x2001, ctrl_msg.speed_rpm, Motor_Speed_Callbacks[i], i);
                             break;
 

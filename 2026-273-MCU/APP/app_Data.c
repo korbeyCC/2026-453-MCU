@@ -15,30 +15,28 @@ void APP_Data_Init(void)
 {
     uint32_t addr = MID_FLASH_AddressTransition(0);
     MID_FLASH_ReadData(&addr, sizeof(APP_DATA_HandleTypeDef), (uint16_t *)&app_data);
-    
+
     // 如果 Flash 尚未初始化 (如新烧录固件或 Flash 空白，读取值通常为 0xFFFFFFFF 或 0)
-    if (app_data.min_mount_halls[0] == -1 || 
-        app_data.min_mount_halls[0] == 0x7FFFFFFF || 
-        app_data.max_travel_range <= 0)
-    {
+    if (app_data.min_mount_halls[0] == -1 ||
+        app_data.min_mount_halls[0] == 0x7FFFFFFF ||
+        app_data.max_travel_range <= 0) {
         // 初始安装起点高度默认设为 18000 霍尔计数 (对应约 1.2m 起始点，1200mm * 15hall/mm = 18000)
-        for (int i = 0; i < 4; i++)
-        {
+        for (int i = 0; i < 4; i++) {
             app_data.min_mount_halls[i] = 18000;
             app_data.motor_abs_halls[i] = 18000;
         }
-        
+
         // 默认可升降总行程设为 25500 霍尔计数 (对应 1.7m 行程，1700mm * 15hall/mm = 25500)
         app_data.max_travel_range = 25500;
-        
+
         // 立即写入出厂默认值进行固化
         APP_Data_Storage();
     }
-    
+
     // 强制使能 PVD 检测及硬件 PLS 阈值配置 (PVD 检测阈值调低至 2.6V，防范负载及波动噪声)
     // 注：由于 CubeMX 已经自动生成了 NVIC (PVD_IRQn) 中断使能，此处仅需配置并使能 PVD 硬件外设本身即可
     PWR_PVDTypeDef getConfigPVD;
-    getConfigPVD.PVDLevel = PWR_PVDLEVEL_4; 
+    getConfigPVD.PVDLevel = PWR_PVDLEVEL_4;
     getConfigPVD.Mode     = PWR_PVD_MODE_IT_RISING; // 电压跌落至阈值以下触发中断
     HAL_PWR_ConfigPVD(&getConfigPVD);
     HAL_PWR_EnablePVD();
@@ -51,15 +49,15 @@ void APP_Data_Storage(void)
 {
     // 使用 CPU 级别的全局中断开关保护 Flash 擦写，避免在 PVD 中断里调用 taskENTER_CRITICAL 触发 FreeRTOS 断言卡死
     __disable_irq();
-    
-    uint32_t base_addr = MID_FLASH_AddressTransition(0);
+
+    uint32_t base_addr   = MID_FLASH_AddressTransition(0);
     uint32_t target_addr = base_addr;
-    
+
     MID_FLASH_Unlock();
     MID_FLASH_ErasePage(base_addr);
     MID_FLASH_WrithData(&target_addr, sizeof(APP_DATA_HandleTypeDef), (uint16_t *)&app_data);
     MID_FLASH_Lock();
-    
+
     __enable_irq();
 }
 
@@ -69,10 +67,8 @@ void APP_Data_Storage(void)
 void APP_Data_Task(void *pvParameters)
 {
     TickType_t pxPreviousWakeTime = xTaskGetTickCount();
-    while (1)
-    {
-        if (EEPROMSet == 1)
-        {
+    while (1) {
+        if (EEPROMSet == 1) {
             APP_Data_Storage();
             EEPROMSet = 0;
         }
@@ -88,25 +84,22 @@ void HAL_PWR_PVDCallback(void)
 {
     static uint8_t s_pvd_locked = 0;
     if (s_pvd_locked) return; // 若已锁死，本次掉电中绝不再执行第二次擦写，防范电容回弹及降压复位
-    
+
     // 双保险校验一：只有当检测到 PVDO 标志确实为 SET 时，说明 VDD 供电电压确实已低于 2.6V，发生了真实的物理断电
     // 从而 100% 过滤掉上电时电压爬升期的 EXTI 边沿误触发中断
-    if (__HAL_PWR_GET_FLAG(PWR_FLAG_PVDO) != RESET)
-    {
+    if (__HAL_PWR_GET_FLAG(PWR_FLAG_PVDO) != RESET) {
         // 双保险校验二：只有当系统已完成各电机配置初始化且处于正常霍尔轮询状态时，读出的高度数据才有效
         // 这样可以彻底防止上电初期的 0 高度数据意外覆盖 Flash 历史有效绝对高度
         uint8_t sys_ready = (g_sys_context.system_step >= SYS_STEP_READY) ? 1 : 0;
-        
-        if (sys_ready)
-        {
+
+        if (sys_ready) {
             s_pvd_locked = 1; // 紧急上锁保护
-            
+
             // 1. 紧急归档当前内存中最实时精确的立柱绝对高度
-            for (int i = 0; i < 4; i++)
-            {
+            for (int i = 0; i < 4; i++) {
                 app_data.motor_abs_halls[i] = g_sys_context.g_motor_status[i].current_abs_hall;
             }
-            
+
             // 2. 紧急执行 Flash 存储擦写 (利用约 20ms 电容维持供电期快速写入)
             APP_Data_Storage();
         }

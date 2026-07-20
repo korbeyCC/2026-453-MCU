@@ -13,7 +13,7 @@ typedef enum {
     CMD_INIT_WRITE_ENABLE, // 4: 初始化：0x200E 写使能
     CMD_INIT_RUN_MODE,     // 5: 初始化：0x2006 运行方式选择
     CMD_INIT_SPEED_MODE,   // 6: 初始化：0x2007 速度命令选择
-    CMD_INIT_SET_SPEED,    // 7: 初始化：0x2001 目标速度设为 0
+    CMD_SET_SPEED,         // 7: 初始化：0x2001 目标速度设为 0
     CMD_INIT_START_RUN,    // 8: 初始化：0x2000 启动运转指令
     CMD_READ_HALL          // 9: 周期读取：读取 32 位原始霍尔高度 (0x3013)
 } Motor_Cmd_Type_t;

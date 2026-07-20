@@ -148,7 +148,7 @@ void APP_ControlTask(void *pvParameters)
                         case MID_SIGNAL_REMOT_3: // 遥控下行
                             g_sys_context.base_speed = 100;
 
-                            speed_msg.cmd_type   = CMD_INIT_SET_SPEED;
+                            speed_msg.cmd_type   = CMD_SET_SPEED;
                             speed_msg.motor_mask = 0x0F;
                             speed_msg.speed_rpm  = 100;
 
@@ -170,13 +170,12 @@ void APP_ControlTask(void *pvParameters)
 
                             action_valid              = true;
                             g_sys_context.system_step = SYS_STEP_TOTAL_RUNNING;
-                            Debug_Printf("[SYS] System State -> TOTAL_REVERSE / RUNNING\r\n");
                             break;
 
                         case MID_SIGNAL_REMOT_4: // 遥控上行
                             g_sys_context.base_speed = 100;
 
-                            speed_msg.cmd_type   = CMD_INIT_SET_SPEED;
+                            speed_msg.cmd_type   = CMD_SET_SPEED;
                             speed_msg.motor_mask = 0x0F;
                             speed_msg.speed_rpm  = 100;
 
@@ -198,7 +197,6 @@ void APP_ControlTask(void *pvParameters)
 
                             action_valid              = true;
                             g_sys_context.system_step = SYS_STEP_TOTAL_RUNNING;
-                            Debug_Printf("[SYS] System State -> TOTAL_FORWARD / RUNNING\r\n");
                             break;
 
                         default:
@@ -247,8 +245,8 @@ void APP_ControlTask(void *pvParameters)
                     // 2. 执行定频 PID 位置同步计算
                     APP_Control_RunPID(g_sys_context.base_speed);
 
-                    // 3. 定频 50ms（20Hz）输出波形日志
-                    if (++print_divider >= 100) {
+                    // 3. 定频 100ms(10Hz) 输出波形日志
+                    if (++print_divider >= 10) {
                         print_divider = 0;
                         APP_Control_DebugPrint();
                     }
@@ -257,7 +255,7 @@ void APP_ControlTask(void *pvParameters)
                     for (int i = 0; i < 4; i++) {
                         if (g_sys_context.g_motor_status[i].target_speed != last_sent_speed[i]) {
                             Motor_Ctrl_Msg_t speed_msg;
-                            speed_msg.cmd_type   = CMD_INIT_SET_SPEED;
+                            speed_msg.cmd_type   = CMD_SET_SPEED;
                             speed_msg.motor_mask = (1 << i);
                             speed_msg.speed_rpm  = g_sys_context.g_motor_status[i].target_speed;
 

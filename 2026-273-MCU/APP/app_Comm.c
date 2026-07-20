@@ -96,8 +96,6 @@ static bool App_Modbus_ReadRegs_Safe(Modbus_Master_t *m, uint16_t reg, uint16_t 
 
 static void App_Comm_InitHardwareSequence(void)
 {
-    Debug_Printf("[SYS] Starting 4-Axis Driver Hardware Initialization...\r\n");
-
     struct {
         uint16_t reg;
         uint16_t val;

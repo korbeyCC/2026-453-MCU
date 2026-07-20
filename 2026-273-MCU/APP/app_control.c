@@ -233,7 +233,6 @@ void APP_ControlTask(void *pvParameters)
                     Motor_Ctrl_Msg_t stop_msg = {CMD_STOP, 0x0F, 0};
                     g_sys_context.system_step = SYS_STEP_TOTAL_DONE;
                     xQueueSend(g_motor_ctrl_queue, &stop_msg, pdMS_TO_TICKS(10));
-                    Debug_Printf("[SYS] Stop signal received, sending CMD_STOP, waiting for motors to stop...\r\n");
                 } else {
                     // 1. 从内存缓存层解算 4 路绝对高度
                     for (int i = 0; i < 4; i++) {
@@ -307,7 +306,6 @@ void APP_ControlTask(void *pvParameters)
                     APP_Control_DebugPrint();
 
                     g_sys_context.system_step = SYS_STEP_READY;
-                    Debug_Printf("[SYS] System State -> READY, Halls Fully Stopped & Archived to Flash.\r\n");
                 }
                 break;
             }

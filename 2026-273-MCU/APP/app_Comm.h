@@ -2,45 +2,28 @@
 #define __APP_COMM_H
 
 #include "app_main.h"
+#include "app_control.h" // 导入全局控制状态和结构体
 
-// 控制命令定义
-#define CMD_FORWARD 1  // 启动正转 (0x0001)
-#define CMD_REVERSE 2  // 启动反转 (0x0002)
-#define CMD_STOP    3  // 停机 (0x0005)
+// 核心配置与控制指令字用枚举包装，引入 CMD_READ_HALL 读取指令
+typedef enum {
+    CMD_NONE = 0,
+    CMD_FORWARD,           // 1: 启动正转 (0x0001)
+    CMD_REVERSE,           // 2: 启动反转 (0x0002)
+    CMD_STOP,              // 3: 刹车停机 (0x0009)
+    CMD_INIT_WRITE_ENABLE, // 4: 初始化：0x200E 写使能
+    CMD_INIT_RUN_MODE,     // 5: 初始化：0x2006 运行方式选择
+    CMD_INIT_SPEED_MODE,   // 6: 初始化：0x2007 速度命令选择
+    CMD_SET_SPEED,         // 7: 初始化：0x2001 目标速度设为 0
+    CMD_INIT_START_RUN,    // 8: 初始化：0x2000 启动运转指令
+    CMD_READ_HALL          // 9: 周期读取：读取 32 位原始霍尔高度 (0x3013)
+} Motor_Cmd_Type_t;
 
 // 控制消息队列数据结构
 typedef struct {
-    uint8_t cmd_type;  // CMD_FORWARD, CMD_REVERSE, CMD_STOP
-    int16_t speed_rpm; // 目标转速 (RPM)
+    Motor_Cmd_Type_t cmd_type; // 使用 Motor_Cmd_Type_t 对应的命令值
+    uint8_t motor_mask;        // 目标电机选择掩码 (Bit0~Bit3)
+    int16_t speed_rpm;         // 目标转速 (RPM)
 } Motor_Ctrl_Msg_t;
-
-// 电机初始化及运行状态机步骤
-typedef enum {
-    MOTOR_INIT_STEP_WRITE_ENABLE = 0, // 0x200E 功能码写使能
-    MOTOR_INIT_STEP_RUN_MODE,        // 0x2006 运行命令选通讯方式
-    MOTOR_INIT_STEP_SPEED_MODE,      // 0x2007 速度命令选通讯方式
-    MOTOR_INIT_STEP_SET_SPEED,       // 0x2001 设定目标转速为 50 RPM
-    MOTOR_INIT_STEP_START_RUN,       // 0x2000 启动正转
-    MOTOR_INIT_STEP_DONE             // 电机配置完成，进入正常运行控制及周期霍尔读取阶段
-} MotorInitStep;
-
-// 电机运行与状态监控结构体
-typedef struct {
-    MotorInitStep init_step;     // 电机当前配置/运行状态步骤
-    uint32_t hall_value;         // 驱动器返回的 32 位霍尔脉冲计数值
-    uint8_t comm_error;          // 通讯错误标记 (0:正常; 1:通讯超时故障)
-    uint8_t retry_cnt;           // 通讯超时重试次数
-    
-    // 控制与状态对比机制 (实现异步非阻塞精准控制)
-    uint8_t target_cmd;          // 目标运行指令 (CMD_FORWARD/REVERSE/STOP)
-    int16_t target_speed;        // 目标转速
-    
-    uint8_t current_cmd;         // 驱动器当前真实的运行指令
-    int16_t current_speed;       // 驱动器当前真实的转速配置
-} Motor_Status_t;
-
-// 声明全局 4 路电机监控变量
-extern Motor_Status_t g_motor_status[4];
 
 // 声明 FreeRTOS 电机控制消息队列句柄
 extern QueueHandle_t g_motor_ctrl_queue;

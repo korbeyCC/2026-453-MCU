@@ -3,13 +3,13 @@
 
 #include "app_main.h"
 
-// 掉电保存高度行程等数据包结构体 (uint16_t 半字自然对齐)
+// 掉电保存高度行程等数据包结构体 (32位对齐)
 typedef struct
 {
-    uint16_t min_height;     // 最低安装高度
-    uint16_t max_height;     // 最大升降高度
-    uint16_t current_height; // 当前高度
-    uint16_t reserved[13];   // 预留空间对齐
+    int32_t  min_mount_halls[4];  // 4路立柱安装起点高度绝对霍尔计数
+    int32_t  motor_abs_halls[4];  // 4路立柱当前运行绝对霍尔位置计数
+    int32_t  max_travel_range;    // 升降总行程范围霍尔计数值
+    uint16_t reserved[12];        // 预留空间对齐
 } APP_DATA_HandleTypeDef;
 
 extern APP_DATA_HandleTypeDef app_data;

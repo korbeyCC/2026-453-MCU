@@ -120,14 +120,11 @@ class RealtimePlotter(tk.Canvas):
             return x_px, y_px
             
         # ==================== 3. 绘制垂直网格线 (以秒为单位滚动) ====================
-        # 计算滑动窗口内整秒的刻度
         sec_start = math.ceil(x_min / 1000.0)
         sec_end = math.floor(x_max / 1000.0)
         for s in range(sec_start, sec_end + 1):
             px, py = to_plot_coords(s * 1000.0, y_min)
             self.create_line(px, pad_top, px, pad_top + plot_height, fill=self.grid_color, dash=(2, 2))
-            
-            # 显示相对时间标签 (例: 5.0s)
             self.create_text(px, pad_top + plot_height + 15, text=f"{s:.1f}s", fill=self.text_color, anchor="n", font=("Consolas", 8))
             
         # ==================== 4. 绘制 Y 轴对称刻度与水平网格 ====================
@@ -163,60 +160,11 @@ class RealtimePlotter(tk.Canvas):
         self.create_text(pad_left + 205, pad_top - 15, text="当前四轴最大偏差", fill=self.text_color, anchor="w", font=("Segoe UI", 8))
 
 
-class PIDSimulator:
-    """
-    一阶闭环同步偏差仿真系统。
-    模拟四个升降轴的霍尔计数值，在动态调节（如加速、减速段）时差值被拉大，稳态时收敛。
-    """
-    def __init__(self):
-        self.dt = 0.02
-        self.time = 0.0
-        self.target = 760.0
-        self.actual = 760.0
-        self.speed = 0.0
-        
-    def reset(self):
-        self.time = 0.0
-        self.actual = 760.0
-        self.speed = 0.0
-
-    def step(self, target):
-        self.target = target
-        
-        # 极简一阶位置惯性系统响应模拟
-        error = self.target - self.actual
-        self.speed += (error * 5.0 - self.speed) * 0.1
-        self.actual += self.speed * self.dt
-        
-        # 模拟四个电机的同步控制，位置差值在运动加速时会因为控制偏差而拉大
-        import random
-        # 偏差动态幅度与速度的绝对值成正比（运动时误差大，静止时收敛）
-        motion_error = abs(self.speed) * 0.12
-        
-        h0 = self.actual + random.gauss(0, 0.2 + motion_error * 0.5)
-        h1 = self.actual + random.gauss(0, 0.4 + motion_error * 1.5) # 2号轴响应偏慢，偏差大
-        h2 = self.actual + random.gauss(0, 0.3 + motion_error * 0.8)
-        h3 = self.actual + random.gauss(0, 0.2 + motion_error * 1.0)
-        
-        avg_val = (h0 + h1 + h2 + h3) / 4.0
-        self.time += self.dt
-        
-        sim_data = {
-            'H0': h0,
-            'H1': h1,
-            'H2': h2,
-            'H3': h3,
-            'Avg': avg_val
-        }
-        t_ms = int(self.time * 1000)
-        return t_ms, sim_data
-
-
 class ModernPIDAnalyzerApp:
     def __init__(self, root):
         self.root = root
         self.root.title("2026-273 升降同步差值监控上位机")
-        self.root.geometry("1100x630")
+        self.root.geometry("1100x650")
         self.root.configure(bg="#121214")
         
         # 通信及监控变量
@@ -227,10 +175,6 @@ class ModernPIDAnalyzerApp:
         
         # 分析指标
         self.peak_sync_error = 0.0 # 历史最大同步差值
-        self.manual_target = 760.0 # 模拟器目标行程
-        
-        self.simulator = PIDSimulator()
-        self.sim_thread = None
         
         self.setup_styles()
         self.create_widgets()
@@ -242,6 +186,7 @@ class ModernPIDAnalyzerApp:
         
         self.style.configure('TFrame', background='#121214')
         self.style.configure('Card.TFrame', background='#1E1E24', relief='flat')
+        self.style.configure('TPanedwindow', background='#121214')
         
         self.style.configure('TLabel', background='#121214', foreground='#EEEEEE', font=("Segoe UI", 9))
         self.style.configure('Title.TLabel', background='#1E1E24', foreground='#00ADB5', font=("Segoe UI", 10, "bold"))
@@ -304,7 +249,7 @@ class ModernPIDAnalyzerApp:
         self.btn_conn = ttk.Button(btn_conn_frame, text="连接设备", style='Action.TButton', command=self.toggle_connection)
         self.btn_conn.pack(side="right", fill="x", expand=True, padx=(4, 0))
         
-        # 2. 同步性能分析指标卡片 (专注于差值指标，去掉单机PID指标)
+        # 2. 同步性能分析指标卡片
         ana_card = ttk.Frame(left_panel, style='Card.TFrame')
         ana_card.pack(fill="both", expand=True, pady=(0, 0))
         
@@ -318,9 +263,9 @@ class ModernPIDAnalyzerApp:
         self.metric_max_sync_diff = self.create_metric_row(metrics_frame, "最大差值 (Peak):", "0", "#EF4444")
         self.metric_status = self.create_metric_row(metrics_frame, "运行状态:", "静止", "#EEEEEE")
         
-        # 触发模拟阶跃按钮 (只在仿真模式有效)
-        self.btn_step = ttk.Button(ana_card, text="模拟施加 800.0 阶跃行程", command=self.trigger_sim_step)
-        self.btn_step.pack(fill="x", padx=15, pady=3)
+        # 清空数据日志窗口按钮
+        self.btn_clear_log = ttk.Button(ana_card, text="清空数据日志窗口", command=self.clear_log)
+        self.btn_clear_log.pack(fill="x", padx=15, pady=6)
         
         # 简易控制区
         btn_ana_frame = ttk.Frame(ana_card, style='TFrame')
@@ -328,13 +273,12 @@ class ModernPIDAnalyzerApp:
         ttk.Button(btn_ana_frame, text="清空曲线", command=self.clear_chart).pack(side="left", fill="x", expand=True, padx=(0, 4))
         ttk.Button(btn_ana_frame, text="重置 Peak", style='Reset.TButton', command=self.reset_metrics).pack(side="right", fill="x", expand=True, padx=(4, 0))
         
-        # -------------------- 右侧波形与日志面板 --------------------
-        right_panel = ttk.Frame(main_container, style='TFrame')
-        right_panel.pack(side="right", fill="both", expand=True, padx=(5, 0), pady=5)
+        # -------------------- 右侧波形与日志面板 (PanedWindow 可上下拉伸) --------------------
+        right_paned = ttk.PanedWindow(main_container, orient=tk.VERTICAL)
+        right_paned.pack(side="right", fill="both", expand=True, padx=(5, 0), pady=5)
         
         # 1. 实时曲线卡片 (滑动示波器)
-        chart_card = ttk.Frame(right_panel, style='Card.TFrame')
-        chart_card.pack(fill="both", expand=True, pady=(0, 4))
+        chart_card = ttk.Frame(right_paned, style='Card.TFrame')
         
         chart_bar = ttk.Frame(chart_card, style='TFrame')
         chart_bar.pack(fill="x", padx=15, pady=6)
@@ -347,11 +291,9 @@ class ModernPIDAnalyzerApp:
         self.plotter.pack(fill="both", expand=True, padx=15, pady=(0, 10))
         
         # 2. 日志流卡片
-        log_card = ttk.Frame(right_panel, style='Card.TFrame', height=150)
-        log_card.pack(fill="x", pady=(4, 0))
-        log_card.pack_propagate(False)
+        log_card = ttk.Frame(right_paned, style='Card.TFrame')
         
-        ttk.Label(log_card, text="【数据流与系统日志】", style='Title.TLabel').pack(anchor="w", padx=15, pady=6)
+        ttk.Label(log_card, text="【数据流与系统日志】 (可拖动分割线调整高度)", style='Title.TLabel').pack(anchor="w", padx=15, pady=6)
         
         self.log_txt = scrolledtext.ScrolledText(log_card, bg="#121214", fg="#EEEEEE", 
                                                  insertbackground="white", font=("Courier New", 9),
@@ -362,6 +304,10 @@ class ModernPIDAnalyzerApp:
         self.log_txt.tag_config("info", foreground="#10B981")
         self.log_txt.tag_config("warn", foreground="#FFC312")
         self.log_txt.tag_config("err", foreground="#EF4444")
+        
+        # 加入 PanedWindow，设置初始权重 proportion
+        right_paned.add(chart_card, weight=3)
+        right_paned.add(log_card, weight=2)
         
     def create_metric_row(self, parent, label_text, val_text, val_color):
         row = ttk.Frame(parent, style='TFrame')
@@ -374,60 +320,44 @@ class ModernPIDAnalyzerApp:
     def refresh_ports(self):
         ports = list(serial.tools.list_ports.comports())
         port_list = [p.device for p in ports]
-        port_list.append("Simulation (模拟器)")
         
         self.port_cb['values'] = port_list
-        if "Simulation (模拟器)" in port_list:
-            self.port_cb.set("Simulation (模拟器)")
-        elif port_list:
+        if port_list:
             self.port_cb.set(port_list[0])
+        else:
+            self.port_cb.set("")
             
-        self.log_message("[系统] 已刷新可用物理及虚拟接口列表。", "sys")
+        self.log_message("[系统] 已刷新可用物理串口列表。", "sys")
 
     def toggle_connection(self):
         if not self.running:
             port = self.port_cb.get()
             if not port:
-                messagebox.showerror("连接错误", "未选择可用接口！")
+                messagebox.showerror("连接错误", "未检测到可用串口！")
                 return
                 
-            self.start_time = None # 每次连接重置时间起点，保证滑动窗口时间计算不溢出
-            
-            if port == "Simulation (模拟器)":
+            self.start_time = None # 每次连接重置时间起点
+            try:
+                self.ser = serial.Serial(
+                    port=port,
+                    baudrate=int(self.baud_cb.get()),
+                    bytesize=serial.EIGHTBITS,
+                    stopbits=serial.STOPBITS_ONE,
+                    timeout=0.1
+                )
                 self.running = True
-                self.conn_status_lbl.configure(text="已连接仿真系统", foreground="#10B981")
-                self.btn_conn.configure(text="断开仿真", style='TButton')
-                self.log_message("[系统] 已成功连接至闭环同步系统仿真器。", "info")
+                self.conn_status_lbl.configure(text=f"已连接: {port}", foreground="#10B981")
+                self.btn_conn.configure(text="断开设备", style='TButton')
+                self.log_message(f"[系统] 成功打开串口 {port}，波特率 {self.baud_cb.get()} bps。", "info")
                 
-                self.simulator.reset()
-                self.simulator.target = self.manual_target
                 self.peak_sync_error = 0.0
                 self.plotter.clear()
                 
-                self.sim_thread = threading.Thread(target=self.simulation_loop, daemon=True)
-                self.sim_thread.start()
-            else:
-                try:
-                    self.ser = serial.Serial(
-                        port=port,
-                        baudrate=int(self.baud_cb.get()),
-                        bytesize=serial.EIGHTBITS,
-                        stopbits=serial.STOPBITS_ONE,
-                        timeout=0.1
-                    )
-                    self.running = True
-                    self.conn_status_lbl.configure(text=f"已连接: {port}", foreground="#10B981")
-                    self.btn_conn.configure(text="断开设备", style='TButton')
-                    self.log_message(f"[系统] 成功打开串口 {port}，波特率 {self.baud_cb.get()} bps。", "info")
-                    
-                    self.peak_sync_error = 0.0
-                    self.plotter.clear()
-                    
-                    self.rx_thread = threading.Thread(target=self.rx_loop, daemon=True)
-                    self.rx_thread.start()
-                except Exception as e:
-                    self.log_message(f"[连接异常]: {str(e)}", "err")
-                    messagebox.showerror("物理连接错误", f"无法打开串口 {port}:\n{str(e)}")
+                self.rx_thread = threading.Thread(target=self.rx_loop, daemon=True)
+                self.rx_thread.start()
+            except Exception as e:
+                self.log_message(f"[连接异常]: {str(e)}", "err")
+                messagebox.showerror("物理连接错误", f"无法打开串口 {port}:\n{str(e)}")
         else:
             self.stop_connection()
 
@@ -439,7 +369,7 @@ class ModernPIDAnalyzerApp:
         self.ser = None
         self.conn_status_lbl.configure(text="未连接", foreground="#EF4444")
         self.btn_conn.configure(text="连接设备", style='Action.TButton')
-        self.log_message("[系统] 已断开串口与仿真器连接。", "sys")
+        self.log_message("[系统] 已断开物理串口连接。", "sys")
         self.plotter.redraw() # 渲染离线状态
 
     def toggle_pause(self):
@@ -453,19 +383,14 @@ class ModernPIDAnalyzerApp:
         self.plotter.clear()
         self.log_message("[系统] 滑动示波器历史缓存已清空。", "sys")
 
+    def clear_log(self):
+        """清空数据日志窗口的文本内容"""
+        self.log_txt.delete('1.0', tk.END)
+
     def reset_metrics(self):
         self.peak_sync_error = 0.0
         self.metric_max_sync_diff.configure(text="0")
         self.log_message("[系统] 最大差值 Peak 峰值监控已重置。", "sys")
-
-    def trigger_sim_step(self):
-        if self.running and self.port_cb.get() == "Simulation (模拟器)":
-            new_target = 800.0 if self.manual_target == 760.0 else 760.0
-            self.manual_target = new_target
-            self.btn_step.configure(text=f"模拟施加 {760.0 if new_target == 800.0 else 800.0:.1f} 阶跃行程")
-            self.log_message(f"[仿真] 给定目标值跳变至 {new_target:.1f}", "sys")
-        else:
-            messagebox.showwarning("操作提示", "该功能仅在“Simulation (模拟器)”连接时可用。")
 
     def process_new_data(self, t_ms, data_dict):
         """
@@ -494,7 +419,7 @@ class ModernPIDAnalyzerApp:
         else:
             self.metric_status.configure(text="稳定运行", foreground="#10B981")
             
-        # 4. 把点提交给滚动示波器 Canvas 绘制 (在 Canvas 中，目标值 0 固定居中，差值波形画为绿线)
+        # 4. 把点提交给滚动示波器 Canvas 绘制
         self.plotter.add_point(t_ms, data_dict)
 
     def rx_loop(self):
@@ -561,28 +486,6 @@ class ModernPIDAnalyzerApp:
             return data_dict
             
         return None
-
-    def simulation_loop(self):
-        """虚拟仿真器后台循环 (步长 20ms)"""
-        last_tick = time.time()
-        while self.running:
-            now = time.time()
-            elapsed = now - last_tick
-            if elapsed >= 0.02:
-                last_tick = now
-                
-                # 步进仿真
-                t_ms, sim_data = self.simulator.step(self.manual_target)
-                
-                # 安全更新主线程
-                self.root.after(0, self.process_new_data, t_ms, sim_data)
-                
-                if int(t_ms / 20) % 25 == 0:  # 每 500ms 打印一次
-                    h_vals = [sim_data[k] for k in ['H0', 'H1', 'H2', 'H3']]
-                    diff = max(h_vals) - min(h_vals)
-                    self.log_message(f"仿真器运行 -> 当前轴偏差: {int(diff)} 脉冲", "info")
-                    
-            time.sleep(0.005)
 
     def log_message(self, text: str, level: str = "sys"):
         time_str = time.strftime("[%H:%M:%S] ")

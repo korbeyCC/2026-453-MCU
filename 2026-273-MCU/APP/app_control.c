@@ -19,22 +19,22 @@ static APP_PID_Handle_t motor_pids[4];
  */
 static void APP_Control_DebugPrint(void)
 {
-    float avg_travel = 0.0f;
-    float travel_rel[4];
+    float avg_delta_h = 0.0f;
+    float delta_h[4];
 
-    // 计算各立柱当前相对行程和平均相对位移
+    // 计算各立柱自本次起跑以来的位移增量 ΔH_i 及平均位移增量
     for (int i = 0; i < 4; i++) {
-        travel_rel[i] = (float)(g_sys_context.g_motor_status[i].current_abs_hall - app_data.min_mount_halls[i]);
-        avg_travel += travel_rel[i];
+        delta_h[i] = (float)(g_sys_context.g_motor_status[i].current_abs_hall - g_sys_context.g_motor_status[i].base_abs_hall);
+        avg_delta_h += delta_h[i];
     }
-    avg_travel /= 4.0f;
+    avg_delta_h /= 4.0f;
 
-    Debug_Printf("H0:%d,H1:%d,H2:%d,H3:%d,AvgTravel:%.1f,V0:%d,V1:%d,V2:%d,V3:%d\r\n",
+    Debug_Printf("H0:%d,H1:%d,H2:%d,H3:%d,AvgDeltaH:%.1f,V0:%d,V1:%d,V2:%d,V3:%d\r\n",
                  g_sys_context.g_motor_status[0].current_abs_hall,
                  g_sys_context.g_motor_status[1].current_abs_hall,
                  g_sys_context.g_motor_status[2].current_abs_hall,
                  g_sys_context.g_motor_status[3].current_abs_hall,
-                 avg_travel,
+                 avg_delta_h,
                  g_sys_context.g_motor_status[0].target_speed,
                  g_sys_context.g_motor_status[1].target_speed,
                  g_sys_context.g_motor_status[2].target_speed,
@@ -44,27 +44,27 @@ static void APP_Control_DebugPrint(void)
 // ========================== PID 控制同步算法 ==========================
 
 /**
- * @brief  PID 同步计算，基于平均相对行程调节各路电机的目标速度
+ * @brief  PID 同步计算，基于本次运动过程中的位移增量 ΔH 调节各路电机的目标速度
  * @param  base_speed 基准转速
  */
 static void APP_Control_RunPID(int16_t base_speed)
 {
     if (base_speed <= 0) return;
 
-    float avg_travel = 0.0f;
-    float travel_rel[4];
+    float avg_delta_h = 0.0f;
+    float delta_h[4];
 
-    // 1. 计算各个立柱的当前相对行程位移
+    // 1. 计算各个立柱自本次起跑以来的位移增量 ΔH_i = current_abs_hall_i - base_abs_hall_i
     for (int i = 0; i < 4; i++) {
-        travel_rel[i] = (float)(g_sys_context.g_motor_status[i].current_abs_hall - app_data.min_mount_halls[i]);
-        avg_travel += travel_rel[i];
+        delta_h[i] = (float)(g_sys_context.g_motor_status[i].current_abs_hall - g_sys_context.g_motor_status[i].base_abs_hall);
+        avg_delta_h += delta_h[i];
     }
-    avg_travel /= 4.0f;
+    avg_delta_h /= 4.0f;
 
-    // 2. 对每个通道单独计算 PID 同步位置修正
+    // 2. 以平均位移增量 avg_delta_h 为 PID 目标，对每个通道单独计算 PID 速度修正
     for (int i = 0; i < 4; i++) {
-        APP_PID_SetTarget(&motor_pids[i], avg_travel);
-        float delta_v  = APP_PID_Calc(&motor_pids[i], travel_rel[i]);
+        APP_PID_SetTarget(&motor_pids[i], avg_delta_h);
+        float delta_v  = APP_PID_Calc(&motor_pids[i], delta_h[i]);
         float target_v = 0.0f;
 
         if (g_sys_context.g_motor_status[i].target_cmd == CMD_FORWARD) {

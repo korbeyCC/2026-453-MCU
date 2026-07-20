@@ -1,5 +1,28 @@
 #include "app_main.h"
+#include <stdio.h>
+#include <stdarg.h>
+
+// 导入调试串口 5 句柄
+extern UART_HandleTypeDef huart5;
+
 long test_APP[7];
+
+/**
+ * @brief  调试串口 5 格式化输出
+ */
+void Debug_Printf(const char *format, ...)
+{
+    char buffer[128];
+    va_list args;
+    va_start(args, format);
+    int len = vsnprintf(buffer, sizeof(buffer), format, args);
+    va_end(args);
+    if (len > 0)
+    {
+        HAL_UART_Transmit(&huart5, (uint8_t *)buffer, len, 10);
+    }
+}
+
 void APP_Init(void)
 {
     MID_Init();

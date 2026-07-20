@@ -35,10 +35,10 @@ void APP_Data_Init(void)
         APP_Data_Storage();
     }
     
-    // 强制使能 PVD 检测及硬件 PLS 阈值配置 (最高 PVD 检测阈值 2.9V，确保掉电时能尽早检测到)
+    // 强制使能 PVD 检测及硬件 PLS 阈值配置 (PVD 检测阈值调低至 2.6V，防范负载及波动噪声)
     // 注：由于 CubeMX 已经自动生成了 NVIC (PVD_IRQn) 中断使能，此处仅需配置并使能 PVD 硬件外设本身即可
     PWR_PVDTypeDef getConfigPVD;
-    getConfigPVD.PVDLevel = PWR_PVDLEVEL_7; 
+    getConfigPVD.PVDLevel = PWR_PVDLEVEL_4; 
     getConfigPVD.Mode     = PWR_PVD_MODE_IT_RISING; // 电压跌落至阈值以下触发中断
     HAL_PWR_ConfigPVD(&getConfigPVD);
     HAL_PWR_EnablePVD();
@@ -86,12 +86,29 @@ void APP_Data_Task(void *pvParameters)
  */
 void HAL_PWR_PVDCallback(void)
 {
-    // 1. 紧急归档当前内存中最实时精确的立柱绝对高度
-    for (int i = 0; i < 4; i++)
-    {
-        app_data.motor_abs_halls[i] = g_motor_status[i].current_abs_hall;
-    }
+    static uint8_t s_pvd_locked = 0;
+    if (s_pvd_locked) return; // 若已锁死，本次掉电中绝不再执行第二次擦写，防范电容回弹及降压复位
     
-    // 2. 紧急执行 Flash 存储擦写 (利用约 20ms EXTI Line 16 中断硬件保护期完成写入)
-    APP_Data_Storage();
+    // 双保险校验一：只有当检测到 PVDO 标志确实为 SET 时，说明 VDD 供电电压确实已低于 2.6V，发生了真实的物理断电
+    // 从而 100% 过滤掉上电时电压爬升期的 EXTI 边沿误触发中断
+    if (__HAL_PWR_GET_FLAG(PWR_FLAG_PVDO) != RESET)
+    {
+        // 双保险校验二：只有当系统已完成各电机配置初始化且处于正常霍尔轮询状态时，读出的高度数据才有效
+        // 这样可以彻底防止上电初期的 0 高度数据意外覆盖 Flash 历史有效绝对高度
+        uint8_t sys_ready = (g_sys_context.system_step >= SYS_STEP_READY) ? 1 : 0;
+        
+        if (sys_ready)
+        {
+            s_pvd_locked = 1; // 紧急上锁保护
+            
+            // 1. 紧急归档当前内存中最实时精确的立柱绝对高度
+            for (int i = 0; i < 4; i++)
+            {
+                app_data.motor_abs_halls[i] = g_sys_context.g_motor_status[i].current_abs_hall;
+            }
+            
+            // 2. 紧急执行 Flash 存储擦写 (利用约 20ms 电容维持供电期快速写入)
+            APP_Data_Storage();
+        }
+    }
 }

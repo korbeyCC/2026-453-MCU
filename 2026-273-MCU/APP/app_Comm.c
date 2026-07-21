@@ -36,22 +36,41 @@ static void Motor_ReadHall_Callback_Generic(uint8_t motor_idx, uint16_t *pData, 
         g_sys_context.g_motor_status[motor_idx].hall_value = (uint32_t)drive_relative_hall;
         g_sys_context.g_motor_status[motor_idx].comm_error = 0;
     } else {
-        g_sys_context.g_motor_status[motor_idx].comm_error = 1;
+        if (g_sys_context.g_motor_status[motor_idx].comm_error < 255) {
+            g_sys_context.g_motor_status[motor_idx].comm_error++;
+        }
     }
 }
 
-#define DEFINE_MOTOR_CALLBACKS(num, idx)                                         \
-    static void Motor##num##_Cmd_Callback(uint8_t success)                       \
-    {                                                                            \
-        Motor_Cmd_Callback_Generic(idx, success);                                \
-    }                                                                            \
-    static void Motor##num##_Speed_Callback(uint8_t success)                     \
-    {                                                                            \
-        Motor_Speed_Callback_Generic(idx, success);                              \
-    }                                                                            \
-    static void Motor##num##_ReadHall_Callback(uint16_t *pData, uint8_t success) \
-    {                                                                            \
-        Motor_ReadHall_Callback_Generic(idx, pData, success);                    \
+static void Motor_ReadCurrent_Callback_Generic(uint8_t motor_idx, uint16_t *pData, uint8_t success)
+{
+    if (success && pData != NULL) {
+        // 抓取驱动器 0x3004 保持寄存器返回的输出电流 (单位: 0.01A)
+        g_sys_context.g_motor_status[motor_idx].current_deciA = pData[0];
+        g_sys_context.g_motor_status[motor_idx].comm_error    = 0;
+    } else {
+        if (g_sys_context.g_motor_status[motor_idx].comm_error < 255) {
+            g_sys_context.g_motor_status[motor_idx].comm_error++;
+        }
+    }
+}
+
+#define DEFINE_MOTOR_CALLBACKS(num, idx)                                            \
+    static void Motor##num##_Cmd_Callback(uint8_t success)                          \
+    {                                                                               \
+        Motor_Cmd_Callback_Generic(idx, success);                                   \
+    }                                                                               \
+    static void Motor##num##_Speed_Callback(uint8_t success)                        \
+    {                                                                               \
+        Motor_Speed_Callback_Generic(idx, success);                                 \
+    }                                                                               \
+    static void Motor##num##_ReadHall_Callback(uint16_t *pData, uint8_t success)    \
+    {                                                                               \
+        Motor_ReadHall_Callback_Generic(idx, pData, success);                       \
+    }                                                                               \
+    static void Motor##num##_ReadCurrent_Callback(uint16_t *pData, uint8_t success) \
+    {                                                                               \
+        Motor_ReadCurrent_Callback_Generic(idx, pData, success);                    \
     }
 
 DEFINE_MOTOR_CALLBACKS(1, 0)
@@ -67,6 +86,9 @@ static const modbus_write_callback_t Motor_Speed_Callbacks[4] = {
 
 static const modbus_read_callback_t Motor_ReadHall_Callbacks[4] = {
     Motor1_ReadHall_Callback, Motor2_ReadHall_Callback, Motor3_ReadHall_Callback, Motor4_ReadHall_Callback};
+
+static const modbus_read_callback_t Motor_ReadCurrent_Callbacks[4] = {
+    Motor1_ReadCurrent_Callback, Motor2_ReadCurrent_Callback, Motor3_ReadCurrent_Callback, Motor4_ReadCurrent_Callback};
 
 // ========================== Modbus 安全发送封装 ==========================
 
@@ -146,10 +168,18 @@ void APP_CommTask(void *pvParameters)
 
     g_motor_ctrl_queue = xQueueCreate(20, sizeof(Motor_Ctrl_Msg_t));
 
+    Debug_Printf("[SYS] Loaded Flash Abs Halls: H0=%d, H1=%d, H2=%d, H3=%d | MaxTravelMM=%dmm\r\n",
+                 app_data.motor_abs_halls[0],
+                 app_data.motor_abs_halls[1],
+                 app_data.motor_abs_halls[2],
+                 app_data.motor_abs_halls[3],
+                 app_data.max_travel_range_mm);
+
     // 1. 执行托管的 4 路电机驱动器硬件初始化
     App_Comm_InitHardwareSequence();
 
     TickType_t xLastPollTick = xTaskGetTickCount();
+    uint8_t poll_turn        = 0; // 0: 读霍尔高度(0x3013), 1: 读输出电流(0x3004)
 
     while (1) {
         // 2. 消费控制队列命令
@@ -179,6 +209,10 @@ void APP_CommTask(void *pvParameters)
                             App_Modbus_ReadRegs_Safe(m, 0x3013, 2, Motor_ReadHall_Callbacks[i], i);
                             break;
 
+                        case CMD_READ_CURRENT:
+                            App_Modbus_ReadRegs_Safe(m, 0x3004, 1, Motor_ReadCurrent_Callbacks[i], i);
+                            break;
+
                         default:
                             break;
                     }
@@ -186,15 +220,21 @@ void APP_CommTask(void *pvParameters)
             }
         }
 
-        // 3. 定频（10ms 周期）自动向 4 路 Modbus 轮询读取当前最新霍尔高度
+        // 3. 定频（10ms 周期交替轮询）读取 0x3013 霍尔位置与 0x3004 输出电流
         if (xTaskGetTickCount() - xLastPollTick >= pdMS_TO_TICKS(10)) {
             xLastPollTick = xTaskGetTickCount();
+
             for (int i = 0; i < 4; i++) {
                 Modbus_Master_t *m = &modbus_masters[i];
                 if (m->state == MODBUS_STATE_IDLE) {
-                    MID_Modbus_ReadRegs(m, 0x3013, 2, Motor_ReadHall_Callbacks[i]);
+                    if (poll_turn == 0) {
+                        MID_Modbus_ReadRegs(m, 0x3013, 2, Motor_ReadHall_Callbacks[i]);
+                    } else {
+                        MID_Modbus_ReadRegs(m, 0x3004, 1, Motor_ReadCurrent_Callbacks[i]);
+                    }
                 }
             }
+            poll_turn = !poll_turn; // 交替轮询位变换
         }
 
         // 4. 推进 Modbus 状态机

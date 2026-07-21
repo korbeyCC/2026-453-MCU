@@ -6,10 +6,16 @@
 // 掉电保存高度行程等数据包结构体 (32位对齐)
 typedef struct
 {
-    int32_t  min_mount_halls[4];  // 4路立柱安装起点高度绝对霍尔计数
-    int32_t  motor_abs_halls[4];  // 4路立柱当前运行绝对霍尔位置计数
-    int32_t  max_travel_range;    // 升降总行程范围霍尔计数值
-    uint16_t reserved[12];        // 预留空间对齐
+    int32_t  min_mount_halls[4];       // 4路立柱安装起点高度绝对霍尔计数
+    int32_t  motor_abs_halls[4];       // 4路立柱当前运行绝对霍尔位置计数
+    int32_t  max_travel_range_mm;      // 升降总行程范围 (单位: mm，默认 2000)
+    uint16_t reduction_ratio;          // 减速比 (默认 30)
+    uint16_t target_speed_mm_min;      // 整体运行速度 (单位: mm/min，默认 600)
+    uint16_t stall_current_threshold;  // 堵转电流阈值 (单位: 0.01A，默认 100)
+    uint16_t max_sync_diff_mm;         // 最大同步差阈值 (单位: mm，默认 5)
+    uint16_t lead_mm;                  // 丝杆导程 (单位: mm，默认 6)
+    uint16_t hall_coef;                // 霍尔系数 (默认 30)
+    uint16_t reserved[6];              // 预留空间对齐
 } APP_DATA_HandleTypeDef;
 
 extern APP_DATA_HandleTypeDef app_data;

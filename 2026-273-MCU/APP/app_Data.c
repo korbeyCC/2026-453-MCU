@@ -16,18 +16,27 @@ void APP_Data_Init(void)
     uint32_t addr = MID_FLASH_AddressTransition(0);
     MID_FLASH_ReadData(&addr, sizeof(APP_DATA_HandleTypeDef), (uint16_t *)&app_data);
 
-    // 如果 Flash 尚未初始化 (如新烧录固件或 Flash 空白，读取值通常为 0xFFFFFFFF 或 0)
+    // 如果 Flash 尚未初始化
     if (app_data.min_mount_halls[0] == -1 ||
         app_data.min_mount_halls[0] == 0x7FFFFFFF ||
-        app_data.max_travel_range <= 0) {
-        // 初始安装起点高度默认设为 18000 霍尔计数 (对应约 1.2m 起始点，1200mm * 15hall/mm = 18000)
+        app_data.max_travel_range_mm <= 0 ||
+        app_data.reduction_ratio == 0xFFFF ||
+        app_data.reduction_ratio == 0) {
+
+        // 初始安装起点高度默认设为 180000 霍尔计数 (对应 1200mm 起始高度，1200mm * 150 count/mm = 180000)
         for (int i = 0; i < 4; i++) {
-            app_data.min_mount_halls[i] = 18000;
-            app_data.motor_abs_halls[i] = 18000;
+            app_data.min_mount_halls[i] = 180000;
+            app_data.motor_abs_halls[i] = 180000;
         }
 
-        // 默认可升降总行程设为 25500 霍尔计数 (对应 1.7m 行程，1700mm * 15hall/mm = 25500)
-        app_data.max_travel_range = 25500;
+        // 默认可升降总行程设为 2000mm (对应 2.0m 行程，2000mm * 150 count/mm = 300000 霍尔计数)
+        app_data.max_travel_range_mm     = 2000; // 默认 2000 mm
+        app_data.reduction_ratio         = 30;   // 默认减速比 30
+        app_data.target_speed_mm_min     = 480;  // 默认 480 mm/min (对应电机基准转速 2400 RPM)
+        app_data.stall_current_threshold = 300;  // 默认 100 (1.00A)
+        app_data.max_sync_diff_mm        = 5;    // 默认 5 mm
+        app_data.lead_mm                 = 6;    // 默认 6 mm
+        app_data.hall_coef               = 30;   // 默认 30
 
         // 立即写入出厂默认值进行固化
         APP_Data_Storage();

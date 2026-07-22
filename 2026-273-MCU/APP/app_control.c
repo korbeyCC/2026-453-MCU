@@ -193,7 +193,7 @@ void APP_ControlTask(void *pvParameters)
     g_sys_context.system_fault_code = 0;
 
     for (int i = 0; i < 4; i++) {
-        APP_PID_Init(&motor_pids[i], 0.40f, 0.0005f, 0.0f, 0.0f, 100.0f, -100.0f, 30.0f);
+        APP_PID_Init(&motor_pids[i], 0.40f, 0.001f, 0.0f, 0.0f, 100.0f, -100.0f, 30.0f);
     }
 
     TickType_t xLastWakeTime = xTaskGetTickCount();
@@ -416,7 +416,7 @@ void APP_ControlTask(void *pvParameters)
                     APP_Control_DebugPrint();
 
                     g_sys_context.system_step = SYS_STEP_READY;
-                    Debug_Printf("[SYS] Loaded Flash Abs Halls: H0=%d, H1=%d, H2=%d, H3=%d\r\n",
+                    Debug_Printf("[SYS] Loaded Flash Abs Halls: L0=%dL1=%dL2=%dL3=%d\r\n",
                                  g_sys_context.g_motor_status[0].current_abs_hall,
                                  g_sys_context.g_motor_status[1].current_abs_hall,
                                  g_sys_context.g_motor_status[2].current_abs_hall,

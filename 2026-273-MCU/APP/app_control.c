@@ -1,3 +1,5 @@
+#include <math.h>
+#include <stdlib.h>
 #include "app_control.h"
 #include "mid_signal.h"
 #include "mid_led.h"
@@ -30,10 +32,10 @@ static void APP_Control_DebugPrint(void)
     avg_delta_h /= 4.0f;
 
     Debug_Printf("H0:%dH1:%dH2:%dH3:%dS0:%dS1:%dS2:%dS3:%d\r\n",
-                 g_sys_context.g_motor_status[0].current_abs_hall,
-                 g_sys_context.g_motor_status[1].current_abs_hall,
-                 g_sys_context.g_motor_status[2].current_abs_hall,
-                 g_sys_context.g_motor_status[3].current_abs_hall,
+                 labs(g_sys_context.g_motor_status[0].current_abs_hall - g_sys_context.g_motor_status[0].base_abs_hall),
+                 labs(g_sys_context.g_motor_status[1].current_abs_hall - g_sys_context.g_motor_status[1].base_abs_hall),
+                 labs(g_sys_context.g_motor_status[2].current_abs_hall - g_sys_context.g_motor_status[2].base_abs_hall),
+                 labs(g_sys_context.g_motor_status[3].current_abs_hall - g_sys_context.g_motor_status[3].base_abs_hall),
                  g_sys_context.g_motor_status[0].target_speed,
                  g_sys_context.g_motor_status[1].target_speed,
                  g_sys_context.g_motor_status[2].target_speed,
@@ -48,14 +50,14 @@ static void APP_Control_DebugPrint(void)
  */
 static bool APP_Control_CheckSafety(void)
 {
-    // 1. 通信连续中断检查
-    for (int i = 0; i < 4; i++) {
-        if (g_sys_context.g_motor_status[i].comm_error >= 5) {
-            g_sys_context.system_fault_code = 2; // 2: 通信中断急停
-            Debug_Printf("[ERR] Safety Fault: Motor %d Comm Loss!\r\n", i);
-            return true;
-        }
-    }
+    // // 1. 通信连续中断检查
+    // for (int i = 0; i < 4; i++) {
+    //     if (g_sys_context.g_motor_status[i].comm_error >= 5) {
+    //         g_sys_context.system_fault_code = 2; // 2: 通信中断急停
+    //         Debug_Printf("[ERR] Safety Fault: Motor %d Comm Loss!\r\n", i);
+    //         return true;
+    //     }
+    // }
 
     // 2. 轴间同步差超限检查
     float min_dh = 1e9f, max_dh = -1e9f;
@@ -68,6 +70,15 @@ static bool APP_Control_CheckSafety(void)
         g_sys_context.system_fault_code = 3; // 3: 同步差超限急停
         Debug_Printf("[ERR] Safety Fault: Sync Diff Exceeded! (Diff=%.1f > Limit=%d)\r\n",
                      (max_dh - min_dh), g_sys_context.max_sync_diff_hall);
+        Debug_Printf("[SYS] Delta Halls: DH0=%.0f, DH1=%.0f, DH2=%.0f, DH3=%.0f | AbsHalls: H0=%d, H1=%d, H2=%d, H3=%d\r\n",
+                     (float)(g_sys_context.g_motor_status[0].current_abs_hall - g_sys_context.g_motor_status[0].base_abs_hall),
+                     (float)(g_sys_context.g_motor_status[1].current_abs_hall - g_sys_context.g_motor_status[1].base_abs_hall),
+                     (float)(g_sys_context.g_motor_status[2].current_abs_hall - g_sys_context.g_motor_status[2].base_abs_hall),
+                     (float)(g_sys_context.g_motor_status[3].current_abs_hall - g_sys_context.g_motor_status[3].base_abs_hall),
+                     g_sys_context.g_motor_status[0].current_abs_hall,
+                     g_sys_context.g_motor_status[1].current_abs_hall,
+                     g_sys_context.g_motor_status[2].current_abs_hall,
+                     g_sys_context.g_motor_status[3].current_abs_hall);
         return true;
     }
 
@@ -80,6 +91,11 @@ static bool APP_Control_CheckSafety(void)
                 Debug_Printf("[ERR] Safety Fault: Motor %d OverCurrent Stall! (Curr=%.2fA > Limit=%.2fA)\r\n",
                              i, (float)g_sys_context.g_motor_status[i].current_deciA / 100.0f,
                              (float)app_data.stall_current_threshold / 100.0f);
+                Debug_Printf("[SYS] Loaded Flash Abs Halls: H0=%d, H1=%d, H2=%d, H3=%d \r\n",
+                             g_sys_context.g_motor_status[0].current_abs_hall,
+                             g_sys_context.g_motor_status[1].current_abs_hall,
+                             g_sys_context.g_motor_status[2].current_abs_hall,
+                             g_sys_context.g_motor_status[3].current_abs_hall);
                 return true;
             }
         } else {
@@ -118,7 +134,7 @@ static void APP_Control_RunPID(int16_t base_speed)
     // 2. 算出 4 通道的理论 PID 调速结果
     for (int i = 0; i < 4; i++) {
         APP_PID_SetTarget(&motor_pids[i], avg_delta_h);
-        float delta_v  = APP_PID_Calc(&motor_pids[i], delta_h[i]);
+        float delta_v = APP_PID_Calc(&motor_pids[i], delta_h[i]);
 
         if (g_sys_context.g_motor_status[i].target_cmd == CMD_FORWARD) {
             calc_target_v[i] = (float)base_speed + delta_v;
@@ -201,7 +217,7 @@ void APP_ControlTask(void *pvParameters)
                     uint16_t coef  = (app_data.hall_coef > 0) ? app_data.hall_coef : 30;
 
                     g_sys_context.counts_per_mm      = (uint32_t)(ratio * coef) / lead;                                    // 150 count/mm
-                    g_sys_context.calc_base_rpm      = (int16_t)((app_data.target_speed_mm_min * ratio) / lead);          // 2400 RPM (对应 480 mm/min)
+                    g_sys_context.calc_base_rpm      = (int16_t)((app_data.target_speed_mm_min * ratio) / lead);           // 2400 RPM (对应 480 mm/min)
                     g_sys_context.max_sync_diff_hall = (int32_t)(app_data.max_sync_diff_mm * g_sys_context.counts_per_mm); // 750 counts
                     g_sys_context.max_travel_hall    = (int32_t)(app_data.max_travel_range_mm * g_sys_context.counts_per_mm);
 
@@ -291,8 +307,15 @@ void APP_ControlTask(void *pvParameters)
                 break;
             }
 
-            // === 核心运行调速阶段（定频 10ms 数据驱动 PID 泵 + 安防防线） ===
+            // === 核心运行调速阶段（定频 5ms 数据驱动 PID 泵 + 安防防线） ===
             case SYS_STEP_TOTAL_RUNNING: {
+                // 1. 无条件优先从内存缓存层解算更新 4 路当帧最新绝对高度
+                for (int i = 0; i < 4; i++) {
+                    int32_t drive_relative_hall = (int32_t)g_sys_context.g_motor_status[i].hall_value;
+                    g_sys_context.g_motor_status[i].current_abs_hall =
+                        g_sys_context.g_motor_status[i].base_abs_hall + (drive_relative_hall - g_sys_context.g_motor_status[i].start_drive_hall);
+                }
+
                 if (has_event && sig_msg.event == MID_SIGNAL_EVT_TRIGGER) {
                     // 1. 清空死锁消息队列
                     xQueueReset(g_motor_ctrl_queue);
@@ -328,14 +351,7 @@ void APP_ControlTask(void *pvParameters)
                     g_sys_context.system_step = SYS_STEP_FAULT_STOP;
                     xQueueSend(g_motor_ctrl_queue, &stop_msg, pdMS_TO_TICKS(10));
                 } else {
-                    // 1. 从内存缓存层解算 4 路绝对高度 (10ms 极速解算)
-                    for (int i = 0; i < 4; i++) {
-                        int32_t drive_relative_hall = (int32_t)g_sys_context.g_motor_status[i].hall_value;
-                        g_sys_context.g_motor_status[i].current_abs_hall =
-                            g_sys_context.g_motor_status[i].base_abs_hall + (drive_relative_hall - g_sys_context.g_motor_status[i].start_drive_hall);
-                    }
-
-                    // 2. 10ms 极速 PID 位置同步计算 (防饱和速度平移)
+                    // 2. 极速 PID 位置同步计算 (防饱和速度平移)
                     APP_Control_RunPID(g_sys_context.base_speed);
 
                     // 3. 【按需下发】仅当目标转速发生变化时向队列推送写速度命令
@@ -400,6 +416,11 @@ void APP_ControlTask(void *pvParameters)
                     APP_Control_DebugPrint();
 
                     g_sys_context.system_step = SYS_STEP_READY;
+                    Debug_Printf("[SYS] Loaded Flash Abs Halls: H0=%d, H1=%d, H2=%d, H3=%d\r\n",
+                                 g_sys_context.g_motor_status[0].current_abs_hall,
+                                 g_sys_context.g_motor_status[1].current_abs_hall,
+                                 g_sys_context.g_motor_status[2].current_abs_hall,
+                                 g_sys_context.g_motor_status[3].current_abs_hall);
                     Debug_Printf("[SYS] System State -> READY, Halls Fully Stopped & Archived to Flash.\r\n");
                 }
                 break;
@@ -407,7 +428,6 @@ void APP_ControlTask(void *pvParameters)
 
             // === 故障急停状态 ===
             case SYS_STEP_FAULT_STOP: {
-                Debug_Printf("[SYS] System In Fault State! Code=%d. Press Any Key to Reset Fault.\r\n", g_sys_context.system_fault_code);
                 if (has_event && sig_msg.event == MID_SIGNAL_EVT_TRIGGER) {
                     g_sys_context.system_fault_code = 0;
                     g_sys_context.system_step       = SYS_STEP_READY;

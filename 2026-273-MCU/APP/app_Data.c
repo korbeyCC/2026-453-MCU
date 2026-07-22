@@ -32,7 +32,7 @@ void APP_Data_Init(void)
         // 默认可升降总行程设为 2000mm (对应 2.0m 行程，2000mm * 150 count/mm = 300000 霍尔计数)
         app_data.max_travel_range_mm     = 2000; // 默认 2000 mm
         app_data.reduction_ratio         = 30;   // 默认减速比 30
-        app_data.target_speed_mm_min     = 480;  // 默认 480 mm/min (对应电机基准转速 2400 RPM)
+        app_data.target_speed_mm_min     = 600;  // 默认 600 mm/min (对应电机基准转速 3000 RPM)
         app_data.stall_current_threshold = 300;  // 默认 100 (1.00A)
         app_data.max_sync_diff_mm        = 5;    // 默认 5 mm
         app_data.lead_mm                 = 6;    // 默认 6 mm

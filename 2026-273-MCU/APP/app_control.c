@@ -112,25 +112,42 @@ static void APP_Control_RunPID(int16_t base_speed)
     }
     avg_delta_h /= 4.0f;
 
-    // 2. 以平均位移增量 avg_delta_h 为 PID 目标，对每个通道单独计算 PID 速度修正
+    float calc_target_v[4];
+    float max_v = -1e9f;
+
+    // 2. 算出 4 通道的理论 PID 调速结果
     for (int i = 0; i < 4; i++) {
         APP_PID_SetTarget(&motor_pids[i], avg_delta_h);
         float delta_v  = APP_PID_Calc(&motor_pids[i], delta_h[i]);
-        float target_v = 0.0f;
 
         if (g_sys_context.g_motor_status[i].target_cmd == CMD_FORWARD) {
-            target_v = (float)base_speed + delta_v;
+            calc_target_v[i] = (float)base_speed + delta_v;
         } else if (g_sys_context.g_motor_status[i].target_cmd == CMD_REVERSE) {
-            target_v = (float)base_speed - delta_v;
+            calc_target_v[i] = (float)base_speed - delta_v;
         } else {
-            target_v = 0.0f;
+            calc_target_v[i] = 0.0f;
         }
 
-        // 限制调速范围在 300 ~ 2800 RPM (最高 2800 RPM，距驱动器 3000 上限留 200 RPM 裕量防触顶)
-        if (target_v > 2800.0f)
-            target_v = 2800.0f;
-        else if (target_v < 300.0f && g_sys_context.g_motor_status[i].target_cmd != CMD_STOP)
+        if (calc_target_v[i] > max_v) {
+            max_v = calc_target_v[i];
+        }
+    }
+
+    // 3. 防饱和速度平移：若最高轴理论转速突破 3000 RPM，全局向下平移溢出量，保护打满触顶
+    float shift_offset = 0.0f;
+    if (max_v > 3000.0f) {
+        shift_offset = max_v - 3000.0f;
+    }
+
+    for (int i = 0; i < 4; i++) {
+        float target_v = calc_target_v[i] - shift_offset;
+
+        // 限制下限在 300 ~ 3000 RPM 之间
+        if (target_v > 3000.0f) {
+            target_v = 3000.0f;
+        } else if (target_v < 300.0f && g_sys_context.g_motor_status[i].target_cmd != CMD_STOP) {
             target_v = 300.0f;
+        }
 
         if (g_sys_context.g_motor_status[i].target_cmd == CMD_STOP) {
             g_sys_context.g_motor_status[i].target_speed = 0;
@@ -153,14 +170,14 @@ void APP_ControlTask(void *pvParameters)
     static uint32_t last_check_halls[4] = {0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF};
     static uint8_t stop_stable_cnt      = 0;
 
-    // 1. 初始化系统上下文与 PID
+    // 1. 初始化系统上下文与 PID (匹配 5ms/200Hz 极速控制)
     g_sys_context.system_step       = SYS_STEP_Boot;
     g_sys_context.is_hardware_ready = false;
     g_sys_context.base_speed        = 0;
     g_sys_context.system_fault_code = 0;
 
     for (int i = 0; i < 4; i++) {
-        APP_PID_Init(&motor_pids[i], 0.40f, 0.005f, 0.0f, 0.0f, 50.0f, -50.0f, 20.0f);
+        APP_PID_Init(&motor_pids[i], 0.40f, 0.0005f, 0.0f, 0.0f, 100.0f, -100.0f, 30.0f);
     }
 
     TickType_t xLastWakeTime = xTaskGetTickCount();
@@ -311,36 +328,34 @@ void APP_ControlTask(void *pvParameters)
                     g_sys_context.system_step = SYS_STEP_FAULT_STOP;
                     xQueueSend(g_motor_ctrl_queue, &stop_msg, pdMS_TO_TICKS(10));
                 } else {
-                    // 1. 从内存缓存层解算 4 路绝对高度 (10ms 高频更新)
+                    // 1. 从内存缓存层解算 4 路绝对高度 (10ms 极速解算)
                     for (int i = 0; i < 4; i++) {
                         int32_t drive_relative_hall = (int32_t)g_sys_context.g_motor_status[i].hall_value;
                         g_sys_context.g_motor_status[i].current_abs_hall =
                             g_sys_context.g_motor_status[i].base_abs_hall + (drive_relative_hall - g_sys_context.g_motor_status[i].start_drive_hall);
                     }
 
-                    // 2. 定频 100ms (10帧分频器) 执行 PID 算力计算、调速下发与波形打印
-                    if (++print_divider >= 10) {
-                        print_divider = 0;
+                    // 2. 10ms 极速 PID 位置同步计算 (防饱和速度平移)
+                    APP_Control_RunPID(g_sys_context.base_speed);
 
-                        // 执行 PID 位置同步计算
-                        APP_Control_RunPID(g_sys_context.base_speed);
+                    // 3. 【按需下发】仅当目标转速发生变化时向队列推送写速度命令
+                    for (int i = 0; i < 4; i++) {
+                        if (g_sys_context.g_motor_status[i].target_speed != last_sent_speed[i]) {
+                            Motor_Ctrl_Msg_t speed_msg;
+                            speed_msg.cmd_type   = CMD_SET_SPEED;
+                            speed_msg.motor_mask = (1 << i);
+                            speed_msg.speed_rpm  = g_sys_context.g_motor_status[i].target_speed;
 
-                        // 输出波形日志
-                        APP_Control_DebugPrint();
-
-                        // 【按需下发】仅当目标转速发生变化时向队列推送写速度命令
-                        for (int i = 0; i < 4; i++) {
-                            if (g_sys_context.g_motor_status[i].target_speed != last_sent_speed[i]) {
-                                Motor_Ctrl_Msg_t speed_msg;
-                                speed_msg.cmd_type   = CMD_SET_SPEED;
-                                speed_msg.motor_mask = (1 << i);
-                                speed_msg.speed_rpm  = g_sys_context.g_motor_status[i].target_speed;
-
-                                if (xQueueSend(g_motor_ctrl_queue, &speed_msg, 0) == pdTRUE) {
-                                    last_sent_speed[i] = g_sys_context.g_motor_status[i].target_speed;
-                                }
+                            if (xQueueSend(g_motor_ctrl_queue, &speed_msg, 0) == pdTRUE) {
+                                last_sent_speed[i] = g_sys_context.g_motor_status[i].target_speed;
                             }
                         }
+                    }
+
+                    // 4. 定频 100ms (20帧分频, 10Hz) 输出波形日志
+                    if (++print_divider >= 20) {
+                        print_divider = 0;
+                        APP_Control_DebugPrint();
                     }
                 }
                 break;
@@ -356,7 +371,7 @@ void APP_ControlTask(void *pvParameters)
                         g_sys_context.g_motor_status[i].base_abs_hall + (drive_relative_hall - g_sys_context.g_motor_status[i].start_drive_hall);
                 }
 
-                // 检查 4 路霍尔原始数据是否相比上一次 10ms 无任何变化
+                // 检查 4 路霍尔原始数据是否相比上一次 5ms 无任何变化
                 bool is_all_same = true;
                 for (int i = 0; i < 4; i++) {
                     if (g_sys_context.g_motor_status[i].hall_value != last_check_halls[i]) {
@@ -371,8 +386,8 @@ void APP_ControlTask(void *pvParameters)
                     stop_stable_cnt = 0;
                 }
 
-                // 连续 10 次（100ms 周期）4 路位置全无变化，确认物理电机已完全停稳
-                if (stop_stable_cnt >= 10) {
+                // 连续 20 次（100ms 周期）4 路位置全无变化，确认物理电机已完全停稳
+                if (stop_stable_cnt >= 20) {
                     stop_stable_cnt = 0;
                     for (int i = 0; i < 4; i++) {
                         last_check_halls[i]         = 0xFFFFFFFF;
@@ -405,7 +420,7 @@ void APP_ControlTask(void *pvParameters)
                 break;
         }
 
-        // 严格 10ms 周期挂起
-        vTaskDelayUntil(&xLastWakeTime, pdMS_TO_TICKS(10));
+        // 严格 5ms 周期挂起 (200Hz 极速调度)
+        vTaskDelayUntil(&xLastWakeTime, pdMS_TO_TICKS(5));
     }
 }

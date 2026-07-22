@@ -118,6 +118,24 @@ static bool App_Modbus_ReadRegs_Safe(Modbus_Master_t *m, uint16_t reg, uint16_t 
 
 static void App_Comm_InitHardwareSequence(void)
 {
+    // 1. 以初始 19200 BPS 向驱动器发送 0x2009 = 7 指令，提升驱动器通信波特率至 115200 BPS
+    Debug_Printf("[SYS] Setting Driver Baudrate to 115200 BPS (0x2009 = 7)...\r\n");
+    for (int i = 0; i < 4; i++) {
+        App_Modbus_WriteSingleReg_Safe(&modbus_masters[i], 0x2009, 7, Motor_Cmd_Callbacks[i], i);
+    }
+
+    uint8_t wait_ms = 0;
+    while (wait_ms < 50) {
+        MID_Modbus_Process_1ms();
+        vTaskDelay(pdMS_TO_TICKS(1));
+        wait_ms++;
+    }
+
+    // 2. 单片机本地 4 路 RS485 串口重新初始化切频提升至 115200 BPS
+    MID_Modbus_SetBaudRate(115200);
+    Debug_Printf("[SYS] MCU RS485 Baudrate Switched to 115200 BPS Success!\r\n");
+
+    // 3. 执行后续 5 步硬件初始化序列
     struct {
         uint16_t reg;
         uint16_t val;
@@ -179,7 +197,6 @@ void APP_CommTask(void *pvParameters)
     App_Comm_InitHardwareSequence();
 
     TickType_t xLastPollTick = xTaskGetTickCount();
-    uint8_t poll_turn        = 0; // 0: 读霍尔高度(0x3013), 1: 读输出电流(0x3004)
 
     while (1) {
         // 2. 消费控制队列命令
@@ -220,21 +237,29 @@ void APP_CommTask(void *pvParameters)
             }
         }
 
-        // 3. 定频（10ms 周期交替轮询）读取 0x3013 霍尔位置与 0x3004 输出电流
-        if (xTaskGetTickCount() - xLastPollTick >= pdMS_TO_TICKS(10)) {
+        // 3. 定频（5ms 极速周期轮询：19 帧读霍尔(200Hz)，1 帧插空读电流(100ms)）
+        if (xTaskGetTickCount() - xLastPollTick >= pdMS_TO_TICKS(5)) {
             xLastPollTick = xTaskGetTickCount();
+
+            static uint8_t poll_cnt = 0;
+            poll_cnt++;
+
+            // 每 20 帧 (100ms) 抽样读取一次 0x3004 电流，其余 19 帧以 5ms 极速轮询 0x3013 霍尔位置
+            bool read_current = (poll_cnt >= 20);
+            if (read_current) {
+                poll_cnt = 0;
+            }
 
             for (int i = 0; i < 4; i++) {
                 Modbus_Master_t *m = &modbus_masters[i];
                 if (m->state == MODBUS_STATE_IDLE) {
-                    if (poll_turn == 0) {
-                        MID_Modbus_ReadRegs(m, 0x3013, 2, Motor_ReadHall_Callbacks[i]);
-                    } else {
+                    if (read_current) {
                         MID_Modbus_ReadRegs(m, 0x3004, 1, Motor_ReadCurrent_Callbacks[i]);
+                    } else {
+                        MID_Modbus_ReadRegs(m, 0x3013, 2, Motor_ReadHall_Callbacks[i]);
                     }
                 }
             }
-            poll_turn = !poll_turn; // 交替轮询位变换
         }
 
         // 4. 推进 Modbus 状态机

@@ -404,3 +404,22 @@ void MID_Modbus_Process_1ms(void)
         }
     }
 }
+
+/**
+ * @brief  重新设置 4 路 Modbus RS485 串口的通信波特率
+ * @param  baudrate 目标波特率 (如 115200)
+ */
+void MID_Modbus_SetBaudRate(uint32_t baudrate)
+{
+    UART_HandleTypeDef *huarts[4] = {&huart1, &huart2, &huart3, &huart4};
+    for (int i = 0; i < 4; i++) {
+        HAL_UART_DMAStop(huarts[i]);
+        HAL_UART_DeInit(huarts[i]);
+        huarts[i]->Init.BaudRate = baudrate;
+        HAL_UART_Init(huarts[i]);
+        memset(modbus_masters[i].rx_buf, 0, sizeof(modbus_masters[i].rx_buf));
+        modbus_masters[i].rx_complete = 0;
+        modbus_masters[i].rx_count    = 0;
+        modbus_masters[i].state       = MODBUS_STATE_IDLE;
+    }
+}

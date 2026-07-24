@@ -31,9 +31,8 @@ static void Motor_Speed_Callback_Generic(uint8_t motor_idx, uint8_t success)
 static void Motor_ReadHall_Callback_Generic(uint8_t motor_idx, uint16_t *pData, uint8_t success)
 {
     if (success && pData != NULL) {
-        // 抓取驱动器返回的原始 32 位相对位置值，回写至内存缓存层
-        int32_t drive_relative_hall                        = (int32_t)(((uint32_t)pData[0] << 16) | pData[1]);
-        g_sys_context.g_motor_status[motor_idx].hall_value = (uint32_t)drive_relative_hall;
+        // 抓取驱动器返回的原始 32 位无符号霍尔位置值 (0x3013)，回写至内存缓存层
+        g_sys_context.g_motor_status[motor_idx].hall_value = ((uint32_t)pData[0] << 16) | pData[1];
         g_sys_context.g_motor_status[motor_idx].comm_error = 0;
     } else {
         if (g_sys_context.g_motor_status[motor_idx].comm_error < 255) {
@@ -103,19 +102,6 @@ static bool App_Modbus_WriteSingleReg_Safe(Modbus_Master_t *m, uint16_t reg, uin
     return MID_Modbus_WriteSingleReg(m, reg, val, cb);
 }
 
-static bool App_Modbus_ReadRegs_Safe(Modbus_Master_t *m, uint16_t reg, uint16_t count, modbus_read_callback_t cb, uint8_t motor_idx)
-{
-    uint8_t retry = 0;
-    while (m->state != MODBUS_STATE_IDLE && retry < 30) {
-        MID_Modbus_Process_1ms();
-        vTaskDelay(pdMS_TO_TICKS(1));
-        retry++;
-    }
-    return MID_Modbus_ReadRegs(m, reg, count, cb);
-}
-
-// ========================== 4路驱动器托管上电初始化序列 ==========================
-
 static void App_Comm_InitHardwareSequence(void)
 {
     // 1. 以初始 19200 BPS 向驱动器发送 0x2009 = 7 指令，提升驱动器通信波特率至 115200 BPS
@@ -135,12 +121,13 @@ static void App_Comm_InitHardwareSequence(void)
     MID_Modbus_SetBaudRate(115200);
     Debug_Printf("[SYS] MCU RS485 Baudrate Switched to 115200 BPS Success!\r\n");
 
-    // 3. 执行后续 5 步硬件初始化序列
+    // 3. 执行后续 6 步硬件初始化序列 (含 0x2000=0x0007 上电故障复位)
     struct {
         uint16_t reg;
         uint16_t val;
         const char *name;
     } init_steps[] = {
+        {0x2000, 0x0007, "Fault Reset"},
         {0x200E, 0x0000, "Write Enable"},
         {0x2006, 0x0002, "Run Mode"},
         {0x2007, 0x0003, "Speed Mode"},
@@ -196,48 +183,12 @@ void APP_CommTask(void *pvParameters)
     // 1. 执行托管的 4 路电机驱动器硬件初始化
     App_Comm_InitHardwareSequence();
 
-    TickType_t xLastPollTick = xTaskGetTickCount();
+    static bool pending_set_speed[4]     = {false, false, false, false};
+    static uint16_t pending_speed_rpm[4] = {0, 0, 0, 0};
+    TickType_t xLastPollTick              = xTaskGetTickCount();
 
     while (1) {
-        // 2. 消费控制队列命令
-        if (xQueueReceive(g_motor_ctrl_queue, &ctrl_msg, 0) == pdTRUE) {
-            for (int i = 0; i < 4; i++) {
-                if (ctrl_msg.motor_mask & (1 << i)) {
-                    Modbus_Master_t *m = &modbus_masters[i];
-
-                    switch (ctrl_msg.cmd_type) {
-                        case CMD_SET_SPEED:
-                            App_Modbus_WriteSingleReg_Safe(m, 0x2001, ctrl_msg.speed_rpm, Motor_Speed_Callbacks[i], i);
-                            break;
-
-                        case CMD_FORWARD:
-                            App_Modbus_WriteSingleReg_Safe(m, 0x2000, 0x0001, Motor_Cmd_Callbacks[i], i);
-                            break;
-
-                        case CMD_REVERSE:
-                            App_Modbus_WriteSingleReg_Safe(m, 0x2000, 0x0002, Motor_Cmd_Callbacks[i], i);
-                            break;
-
-                        case CMD_STOP:
-                            App_Modbus_WriteSingleReg_Safe(m, 0x2000, 0x0009, Motor_Cmd_Callbacks[i], i);
-                            break;
-
-                        case CMD_READ_HALL:
-                            App_Modbus_ReadRegs_Safe(m, 0x3013, 2, Motor_ReadHall_Callbacks[i], i);
-                            break;
-
-                        case CMD_READ_CURRENT:
-                            App_Modbus_ReadRegs_Safe(m, 0x3004, 1, Motor_ReadCurrent_Callbacks[i], i);
-                            break;
-
-                        default:
-                            break;
-                    }
-                }
-            }
-        }
-
-        // 3. 定频（5ms 极速周期轮询：19 帧读霍尔(200Hz)，1 帧插空读电流(100ms)）
+        // 2. 5ms 极速周期轮询：最高优先级保障 0x3013 读霍尔位置 (200Hz)
         if (xTaskGetTickCount() - xLastPollTick >= pdMS_TO_TICKS(5)) {
             xLastPollTick = xTaskGetTickCount();
 
@@ -262,10 +213,53 @@ void APP_CommTask(void *pvParameters)
             }
         }
 
-        // 4. 推进 Modbus 状态机
+        // 3. 消费控制队列命令 (写转速命令进入 pending 挂起，绝对不丢包)
+        if (xQueueReceive(g_motor_ctrl_queue, &ctrl_msg, 0) == pdTRUE) {
+            for (int i = 0; i < 4; i++) {
+                if (ctrl_msg.motor_mask & (1 << i)) {
+                    Modbus_Master_t *m = &modbus_masters[i];
+
+                    switch (ctrl_msg.cmd_type) {
+                        case CMD_SET_SPEED:
+                            pending_set_speed[i] = true;
+                            pending_speed_rpm[i] = ctrl_msg.speed_rpm;
+                            break;
+
+                        case CMD_FORWARD:
+                            App_Modbus_WriteSingleReg_Safe(m, 0x2000, 0x0001, Motor_Cmd_Callbacks[i], i);
+                            break;
+
+                        case CMD_REVERSE:
+                            App_Modbus_WriteSingleReg_Safe(m, 0x2000, 0x0002, Motor_Cmd_Callbacks[i], i);
+                            break;
+
+                        case CMD_STOP:
+                            App_Modbus_WriteSingleReg_Safe(m, 0x2000, 0x0009, Motor_Cmd_Callbacks[i], i);
+                            break;
+
+                        default:
+                            break;
+                    }
+                }
+            }
+        }
+
+        // 4. 自动处理 pending 挂起的写转速请求 (串口 IDLE 时补发，确保写转速 100% 成功下发)
+        for (int i = 0; i < 4; i++) {
+            if (pending_set_speed[i]) {
+                Modbus_Master_t *m = &modbus_masters[i];
+                if (m->state == MODBUS_STATE_IDLE) {
+                    if (MID_Modbus_WriteSingleReg(m, 0x2001, pending_speed_rpm[i], Motor_Speed_Callbacks[i])) {
+                        pending_set_speed[i] = false;
+                    }
+                }
+            }
+        }
+
+        // 5. 推进 Modbus 状态机
         MID_Modbus_Process_1ms();
 
-        // 5. 挂起 1ms 定时，释放 CPU
+        // 6. 挂起 1ms 定时，释放 CPU
         vTaskDelay(pdMS_TO_TICKS(1));
     }
 }

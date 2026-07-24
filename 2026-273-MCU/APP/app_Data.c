@@ -33,7 +33,7 @@ void APP_Data_Init(void)
         app_data.max_travel_range_mm     = 2000; // 默认 2000 mm
         app_data.reduction_ratio         = 30;   // 默认减速比 30
         app_data.target_speed_mm_min     = 600;  // 默认 600 mm/min (对应电机基准转速 3000 RPM)
-        app_data.stall_current_threshold = 600;  // 默认 100 (1.00A)
+        app_data.stall_current_threshold = 700;  // 默认 700 (7.00A)
         app_data.max_sync_diff_mm        = 5;    // 默认 5 mm
         app_data.lead_mm                 = 6;    // 默认 6 mm
         app_data.hall_coef               = 30;   // 默认 30

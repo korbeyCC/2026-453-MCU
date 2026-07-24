@@ -59,22 +59,13 @@ static bool APP_Control_CheckSafety(void)
     //     }
     // }
 
-    // 2. 轴间同步差超限检查
-    float min_dh = 1e9f, max_dh = -1e9f;
-    for (int i = 0; i < 4; i++) {
-        float dh = (float)(g_sys_context.g_motor_status[i].current_abs_hall - g_sys_context.g_motor_status[i].base_abs_hall);
-        if (dh < min_dh) min_dh = dh;
-        if (dh > max_dh) max_dh = dh;
-    }
-    if ((max_dh - min_dh) > (float)g_sys_context.max_sync_diff_hall) {
+    // 2. 轴间同步差超限检查 (直接复用 5ms 入口统一解算的 max_dh_diff 与 delta_h)
+    if (g_sys_context.max_dh_diff > (float)g_sys_context.max_sync_diff_hall) {
         g_sys_context.system_fault_code = 3; // 3: 同步差超限急停
         Debug_Printf("[ERR] Safety Fault: Sync Diff Exceeded! (Diff=%.1f > Limit=%d)\r\n",
-                     (max_dh - min_dh), g_sys_context.max_sync_diff_hall);
+                     g_sys_context.max_dh_diff, g_sys_context.max_sync_diff_hall);
         Debug_Printf("[SYS] Delta Halls: DH0=%.0f, DH1=%.0f, DH2=%.0f, DH3=%.0f | AbsHalls: H0=%d, H1=%d, H2=%d, H3=%d\r\n",
-                     (float)(g_sys_context.g_motor_status[0].current_abs_hall - g_sys_context.g_motor_status[0].base_abs_hall),
-                     (float)(g_sys_context.g_motor_status[1].current_abs_hall - g_sys_context.g_motor_status[1].base_abs_hall),
-                     (float)(g_sys_context.g_motor_status[2].current_abs_hall - g_sys_context.g_motor_status[2].base_abs_hall),
-                     (float)(g_sys_context.g_motor_status[3].current_abs_hall - g_sys_context.g_motor_status[3].base_abs_hall),
+                     g_sys_context.delta_h[0], g_sys_context.delta_h[1], g_sys_context.delta_h[2], g_sys_context.delta_h[3],
                      g_sys_context.g_motor_status[0].current_abs_hall,
                      g_sys_context.g_motor_status[1].current_abs_hall,
                      g_sys_context.g_motor_status[2].current_abs_hall,
@@ -118,23 +109,36 @@ static void APP_Control_RunPID(int16_t base_speed)
 {
     if (base_speed <= 0) return;
 
-    float avg_delta_h = 0.0f;
-    float delta_h[4];
-
-    // 1. 计算各个立柱自本次起跑以来的位移增量 ΔH_i = current_abs_hall_i - base_abs_hall_i
-    for (int i = 0; i < 4; i++) {
-        delta_h[i] = (float)(g_sys_context.g_motor_status[i].current_abs_hall - g_sys_context.g_motor_status[i].base_abs_hall);
-        avg_delta_h += delta_h[i];
+    // 1. 根据共享上下文中的轴间最大偏差动态确定 PID 限幅 (Dynamic Output Limits)
+    // 偏差 <= 50 counts (0.33mm): 100 RPM 低平稳限幅
+    // 偏差 50~300 counts (0.33~2.0mm): 线性平滑放大至 100~600 RPM
+    // 偏差 > 300 counts (> 2.0mm): 强力极速拉平模式 600 RPM
+    float dynamic_out_max  = 100.0f;
+    float dynamic_iout_max = 30.0f;
+    if (g_sys_context.max_dh_diff > 300.0f) {
+        dynamic_out_max  = 600.0f;
+        dynamic_iout_max = 150.0f;
+    } else if (g_sys_context.max_dh_diff > 50.0f) {
+        dynamic_out_max  = 100.0f + (g_sys_context.max_dh_diff - 50.0f) * (500.0f / 250.0f);
+        dynamic_iout_max = 30.0f + (g_sys_context.max_dh_diff - 50.0f) * (120.0f / 250.0f);
+    } else {
+        dynamic_out_max  = 100.0f;
+        dynamic_iout_max = 30.0f;
     }
-    avg_delta_h /= 4.0f;
+
+    for (int i = 0; i < 4; i++) {
+        motor_pids[i].Out_Max  = dynamic_out_max;
+        motor_pids[i].Out_Min  = -dynamic_out_max;
+        motor_pids[i].Iout_Max = dynamic_iout_max;
+    }
 
     float calc_target_v[4];
     float max_v = -1e9f;
 
     // 2. 算出 4 通道的理论 PID 调速结果
     for (int i = 0; i < 4; i++) {
-        APP_PID_SetTarget(&motor_pids[i], avg_delta_h);
-        float delta_v = APP_PID_Calc(&motor_pids[i], delta_h[i]);
+        APP_PID_SetTarget(&motor_pids[i], g_sys_context.avg_delta_h);
+        float delta_v = APP_PID_Calc(&motor_pids[i], g_sys_context.delta_h[i]);
 
         if (g_sys_context.g_motor_status[i].target_cmd == CMD_FORWARD) {
             calc_target_v[i] = (float)base_speed + delta_v;
@@ -193,7 +197,7 @@ void APP_ControlTask(void *pvParameters)
     g_sys_context.system_fault_code = 0;
 
     for (int i = 0; i < 4; i++) {
-        APP_PID_Init(&motor_pids[i], 0.40f, 0.001f, 0.0f, 0.0f, 100.0f, -100.0f, 30.0f);
+        APP_PID_Init(&motor_pids[i], 0.60f, 0.001f, 0.0f, 0.0f, 100.0f, -100.0f, 30.0f);
     }
 
     TickType_t xLastWakeTime = xTaskGetTickCount();
@@ -251,19 +255,23 @@ void APP_ControlTask(void *pvParameters)
                             cmd_msg.speed_rpm  = 0;
 
                             for (int i = 0; i < 4; i++) {
-                                g_sys_context.g_motor_status[i].start_drive_hall = (int32_t)g_sys_context.g_motor_status[i].hall_value;
+                                g_sys_context.g_motor_status[i].start_drive_hall = g_sys_context.g_motor_status[i].hall_value;
                                 g_sys_context.g_motor_status[i].base_abs_hall    = g_sys_context.g_motor_status[i].current_abs_hall;
                                 g_sys_context.g_motor_status[i].target_cmd       = CMD_REVERSE;
                                 g_sys_context.g_motor_status[i].target_speed     = run_rpm;
                                 g_sys_context.g_motor_status[i].stall_cnt        = 0;
+                                g_sys_context.delta_h[i]                         = 0.0f;
                                 last_sent_speed[i]                               = run_rpm;
                             }
+                            g_sys_context.avg_delta_h = 0.0f;
+                            g_sys_context.max_dh_diff = 0.0f;
 
                             xQueueReset(g_motor_ctrl_queue);
                             xQueueSend(g_motor_ctrl_queue, &speed_msg, pdMS_TO_TICKS(10));
                             xQueueSend(g_motor_ctrl_queue, &cmd_msg, pdMS_TO_TICKS(10));
 
                             action_valid              = true;
+                            g_sys_context.ramp_cnt    = 0; // 重置 500ms 梯形缓启动计数
                             g_sys_context.system_step = SYS_STEP_TOTAL_RUNNING;
                             break;
 
@@ -279,19 +287,23 @@ void APP_ControlTask(void *pvParameters)
                             cmd_msg.speed_rpm  = 0;
 
                             for (int i = 0; i < 4; i++) {
-                                g_sys_context.g_motor_status[i].start_drive_hall = (int32_t)g_sys_context.g_motor_status[i].hall_value;
+                                g_sys_context.g_motor_status[i].start_drive_hall = g_sys_context.g_motor_status[i].hall_value;
                                 g_sys_context.g_motor_status[i].base_abs_hall    = g_sys_context.g_motor_status[i].current_abs_hall;
                                 g_sys_context.g_motor_status[i].target_cmd       = CMD_FORWARD;
                                 g_sys_context.g_motor_status[i].target_speed     = run_rpm;
                                 g_sys_context.g_motor_status[i].stall_cnt        = 0;
+                                g_sys_context.delta_h[i]                         = 0.0f;
                                 last_sent_speed[i]                               = run_rpm;
                             }
+                            g_sys_context.avg_delta_h = 0.0f;
+                            g_sys_context.max_dh_diff = 0.0f;
 
                             xQueueReset(g_motor_ctrl_queue);
                             xQueueSend(g_motor_ctrl_queue, &speed_msg, pdMS_TO_TICKS(10));
                             xQueueSend(g_motor_ctrl_queue, &cmd_msg, pdMS_TO_TICKS(10));
 
                             action_valid              = true;
+                            g_sys_context.ramp_cnt    = 0; // 重置 500ms 梯形缓启动计数
                             g_sys_context.system_step = SYS_STEP_TOTAL_RUNNING;
                             break;
 
@@ -309,12 +321,26 @@ void APP_ControlTask(void *pvParameters)
 
             // === 核心运行调速阶段（定频 5ms 数据驱动 PID 泵 + 安防防线） ===
             case SYS_STEP_TOTAL_RUNNING: {
-                // 1. 无条件优先从内存缓存层解算更新 4 路当帧最新绝对高度
+                // 1. 无条件优先从内存缓存解算 4 轴最新绝对高度 + 统一计算位移增量及其统计量 (无符号 32 位补码自然溢出减法)
+                float min_dh = 1e9f, max_dh = -1e9f;
+                g_sys_context.avg_delta_h = 0.0f;
                 for (int i = 0; i < 4; i++) {
-                    int32_t drive_relative_hall = (int32_t)g_sys_context.g_motor_status[i].hall_value;
-                    g_sys_context.g_motor_status[i].current_abs_hall =
-                        g_sys_context.g_motor_status[i].base_abs_hall + (drive_relative_hall - g_sys_context.g_motor_status[i].start_drive_hall);
+                    uint32_t now_hall   = g_sys_context.g_motor_status[i].hall_value;
+                    uint32_t start_hall = g_sys_context.g_motor_status[i].start_drive_hall;
+
+                    // 32 位无符号补码减法：跨越 0 / 0xFFFFFFFF 自动自然回绕，强转 int32_t 100% 精确
+                    int32_t delta_drive   = (int32_t)(now_hall - start_hall);
+                    int32_t calc_abs_hall = g_sys_context.g_motor_status[i].base_abs_hall + delta_drive;
+
+                    g_sys_context.g_motor_status[i].current_abs_hall = calc_abs_hall;
+                    g_sys_context.delta_h[i]                          = (float)delta_drive;
+
+                    g_sys_context.avg_delta_h += g_sys_context.delta_h[i];
+                    if (g_sys_context.delta_h[i] < min_dh) min_dh = g_sys_context.delta_h[i];
+                    if (g_sys_context.delta_h[i] > max_dh) max_dh = g_sys_context.delta_h[i];
                 }
+                g_sys_context.avg_delta_h /= 4.0f;
+                g_sys_context.max_dh_diff = max_dh - min_dh;
 
                 if (has_event && sig_msg.event == MID_SIGNAL_EVT_TRIGGER) {
                     // 1. 清空死锁消息队列
@@ -351,12 +377,25 @@ void APP_ControlTask(void *pvParameters)
                     g_sys_context.system_step = SYS_STEP_FAULT_STOP;
                     xQueueSend(g_motor_ctrl_queue, &stop_msg, pdMS_TO_TICKS(10));
                 } else {
-                    // 2. 极速 PID 位置同步计算 (防饱和速度平移)
-                    APP_Control_RunPID(g_sys_context.base_speed);
+                    // 2. 500ms 梯形缓启动基准转速求解 (100 帧 x 5ms = 500ms，起点转速 300 RPM)
+                    int16_t run_base_speed = g_sys_context.base_speed;
+                    if (g_sys_context.ramp_cnt < 100) {
+                        g_sys_context.ramp_cnt++;
+                        int16_t start_rpm = 300; // 缓启动起步起点转速降低至 300 RPM
+                        if (run_base_speed > start_rpm) {
+                            run_base_speed = start_rpm + (int16_t)((int32_t)(run_base_speed - start_rpm) * g_sys_context.ramp_cnt / 100);
+                        }
+                    }
 
-                    // 3. 【按需下发】仅当目标转速发生变化时向队列推送写速度命令
+                    // 3. 极速 PID 位置同步计算 (动态限幅 + 防饱和速度平移)
+                    APP_Control_RunPID(run_base_speed);
+
+                    // 4. 【按需门限下发】转速变动幅度 >= 2 RPM 时才向队列推送写速度命令 (防抖且绝对不压制 PID)
                     for (int i = 0; i < 4; i++) {
-                        if (g_sys_context.g_motor_status[i].target_speed != last_sent_speed[i]) {
+                        int16_t diff_v = g_sys_context.g_motor_status[i].target_speed - last_sent_speed[i];
+                        if (diff_v < 0) diff_v = -diff_v;
+
+                        if (diff_v >= 2 || last_sent_speed[i] == -1) {
                             Motor_Ctrl_Msg_t speed_msg;
                             speed_msg.cmd_type   = CMD_SET_SPEED;
                             speed_msg.motor_mask = (1 << i);

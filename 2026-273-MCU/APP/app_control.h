@@ -21,7 +21,7 @@ typedef enum {
 /* 电机单通道运行与状态监控 */
 typedef struct {
     int32_t base_abs_hall;       // 本次运行起步前的绝对高度基准 (有符号)
-    int32_t start_drive_hall;    // 本次起步时驱动器的原始读数起点 (有符号)
+    uint32_t start_drive_hall;   // 本次起步时驱动器的原始无符号读数起点 (无符号 32 位)
     int32_t current_abs_hall;    // 实时解算的绝对高度 (有符号，用于 PID 控制)
     uint32_t hall_value;         // 驱动器最新原始无符号霍尔读数 (内存数据缓存)
     uint16_t current_deciA;      // 驱动器当前输出电流 (单位: 0.01A)
@@ -41,6 +41,12 @@ typedef struct {
     Motor_Status_t g_motor_status[4];   // 4路立柱电机状态快照
     volatile bool is_hardware_ready;    // 4路 Modbus 硬件初始化完成标志
     int16_t base_speed;                 // 系统全局基准转速 (RPM)
+    uint16_t ramp_cnt;                  // 300ms 缓启动递增计数器 (0~60)
+    
+    // 当帧位移增量与其全局统计量共享字段
+    float delta_h[4];                   // 4 轴当帧最新的位移增量 ΔH_i
+    float avg_delta_h;                  // 4 轴当帧平均位移增量 ΔH_avg
+    float max_dh_diff;                  // 4 轴当帧最大轴间偏差 (max - min)
     
     // 自动物理换算参数与安防状态
     uint32_t counts_per_mm;             // 每 mm 霍尔计数值

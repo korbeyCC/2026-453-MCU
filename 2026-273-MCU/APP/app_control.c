@@ -333,7 +333,7 @@ void APP_ControlTask(void *pvParameters)
                     int32_t calc_abs_hall = g_sys_context.g_motor_status[i].base_abs_hall + delta_drive;
 
                     g_sys_context.g_motor_status[i].current_abs_hall = calc_abs_hall;
-                    g_sys_context.delta_h[i]                          = (float)delta_drive;
+                    g_sys_context.delta_h[i]                         = (float)delta_drive;
 
                     g_sys_context.avg_delta_h += g_sys_context.delta_h[i];
                     if (g_sys_context.delta_h[i] < min_dh) min_dh = g_sys_context.delta_h[i];
@@ -379,11 +379,11 @@ void APP_ControlTask(void *pvParameters)
                 } else {
                     // 2. 500ms 梯形缓启动基准转速求解 (100 帧 x 5ms = 500ms，起点转速 300 RPM)
                     int16_t run_base_speed = g_sys_context.base_speed;
-                    if (g_sys_context.ramp_cnt < 100) {
+                    if (g_sys_context.ramp_cnt < 200) {
                         g_sys_context.ramp_cnt++;
                         int16_t start_rpm = 300; // 缓启动起步起点转速降低至 300 RPM
                         if (run_base_speed > start_rpm) {
-                            run_base_speed = start_rpm + (int16_t)((int32_t)(run_base_speed - start_rpm) * g_sys_context.ramp_cnt / 100);
+                            run_base_speed = start_rpm + (int16_t)((int32_t)(run_base_speed - start_rpm) * g_sys_context.ramp_cnt / 200);
                         }
                     }
 

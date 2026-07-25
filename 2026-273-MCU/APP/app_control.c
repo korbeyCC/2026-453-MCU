@@ -18,15 +18,16 @@ static APP_PID_Handle_t motor_pids[4];
 
 #pragma pack(1)
 typedef struct {
-    uint8_t  header[2];          // 0xAA, 0x55
-    uint8_t  system_step;        // 系统流程状态机 (0~8)
-    uint8_t  system_fault_code;   // 故障代码 (0:正常, 1:过流堵转, 2:通信中断, 3:同步差超限)
+    uint8_t header[2];           // 0xAA, 0x55
+    uint8_t system_step;         // 系统流程状态机 (0~8)
+    uint8_t system_fault_code;   // 故障代码 (0:正常, 1:过流堵转, 2:通信中断, 3:同步差超限)
     uint16_t max_dh_diff;        // 当帧最大轴间偏差 (counts)
     uint16_t max_sync_diff_hall; // 同步差保护上限阀值 (counts)
-    int32_t  delta_h[4];         // 4轴绝对位移增量 ΔH_i (counts)
-    int16_t  target_speed[4];    // 4轴目标转速 RPM (0~3000)
+    int32_t delta_h[4];          // 4轴绝对位移增量 ΔH_i (counts)
+    int16_t target_speed[4];     // 4轴目标转速 RPM (0~3000)
     uint16_t current_deciA[4];   // 4轴实时电流 (0.01A)
-    uint8_t  tail[2];            // 0x0D, 0x0A ('\r\n')
+    uint8_t comm_error[4];       // 4轴通信错误计数
+    uint8_t tail[2];             // 0x0D, 0x0A ('\r\n')
 } Debug_Binary_Frame_t;
 #pragma pack()
 
@@ -36,17 +37,18 @@ typedef struct {
 static void APP_Control_DebugPrint(void)
 {
     Debug_Binary_Frame_t frame;
-    frame.header[0] = 0xAA;
-    frame.header[1] = 0x55;
-    frame.system_step = (uint8_t)g_sys_context.system_step;
-    frame.system_fault_code = g_sys_context.system_fault_code;
-    frame.max_dh_diff = (uint16_t)(g_sys_context.max_dh_diff > 65535.0f ? 65535.0f : g_sys_context.max_dh_diff);
+    frame.header[0]          = 0xAA;
+    frame.header[1]          = 0x55;
+    frame.system_step        = (uint8_t)g_sys_context.system_step;
+    frame.system_fault_code  = g_sys_context.system_fault_code;
+    frame.max_dh_diff        = (uint16_t)(g_sys_context.max_dh_diff > 65535.0f ? 65535.0f : g_sys_context.max_dh_diff);
     frame.max_sync_diff_hall = (uint16_t)(g_sys_context.max_sync_diff_hall > 65535 ? 65535 : g_sys_context.max_sync_diff_hall);
 
     for (int i = 0; i < 4; i++) {
-        frame.delta_h[i] = (int32_t)(g_sys_context.g_motor_status[i].current_abs_hall - g_sys_context.g_motor_status[i].base_abs_hall);
-        frame.target_speed[i] = g_sys_context.g_motor_status[i].target_speed;
+        frame.delta_h[i]       = (int32_t)(g_sys_context.g_motor_status[i].current_abs_hall - g_sys_context.g_motor_status[i].base_abs_hall);
+        frame.target_speed[i]  = g_sys_context.g_motor_status[i].target_speed;
         frame.current_deciA[i] = g_sys_context.g_motor_status[i].current_deciA;
+        frame.comm_error[i]    = g_sys_context.g_motor_status[i].comm_error;
     }
 
     frame.tail[0] = 0x0D;

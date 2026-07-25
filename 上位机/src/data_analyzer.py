@@ -592,9 +592,9 @@ class ModernPIDAnalyzerApp:
         """
         后台多线程串口接收。
         """
-        FRAME_LEN = 42
         HEADER = b'\xaa\x55'
         TAIL = b'\r\n'
+        FRAME_LEN = 46
         
         step_names = {0:"Boot", 1:"READY", 2:"SINGLE_TUNE", 3:"TUNE_DONE", 4:"TOTAL_FWD", 5:"TOTAL_REV", 6:"RUNNING", 7:"TOTAL_DONE", 8:"FAULT_STOP"}
         
@@ -637,11 +637,11 @@ class ModernPIDAnalyzerApp:
                             if frame_data[-2:] == TAIL:
                                 del self.rx_raw_buffer[:FRAME_LEN]
                                 try:
-                                    hdr, sys_step, sys_fault, max_diff, limit_hall, h0, h1, h2, h3, v0, v1, v2, v3, i0, i1, i2, i3, tl = struct.unpack('<2sBBHH4i4h4H2s', frame_data)
+                                    hdr, sys_step, sys_fault, max_diff, limit_hall, h0, h1, h2, h3, v0, v1, v2, v3, i0, i1, i2, i3, e0, e1, e2, e3, tl = struct.unpack('<2sBBHH4i4h4H4B2s', frame_data)
                                     
                                     if not self.has_printed_header_info:
                                         self.has_printed_header_info = True
-                                        desc = "[数据格式说明] 二进制高密度帧(42B): 帧头[0xAA,0x55] | 状态:Step/Fault(2B) | 同步差:MaxDiff/Limit(4B) | 位移:ΔH0~ΔH3(16B) | 转速:V0~V3(8B) | 电流:I0~I3(8B) | 帧尾[\\r\\n]"
+                                        desc = "[数据格式说明] 二进制高密度帧(46B): 帧头[0xAA,0x55] | 状态:Step/Fault(2B) | 同步差:MaxDiff/Limit(4B) | 位移:ΔH0~ΔH3(16B) | 转速:V0~V3(8B) | 电流:I0~I3(8B) | 通信错误:E0~E3(4B) | 帧尾[\r\n]"
                                         self.log_message(desc, "desc", is_stream=False)
                                         
                                     if self.start_time is None:
@@ -652,8 +652,8 @@ class ModernPIDAnalyzerApp:
                                     avg_h = (h0 + h1 + h2 + h3) / 4.0
                                     c0, c1, c2, c3 = i0/100.0, i1/100.0, i2/100.0, i3/100.0
                                     
-                                    log_line = f"[{st_name}] Avg:{avg_h:.0f}c (ΔH:[{h0},{h1},{h2},{h3}]) | MaxDiff:{max_diff}c (Limit:{limit_hall}c) | V:[{v0},{v1},{v2},{v3}]RPM | I:[{c0:.2f},{c1:.2f},{c2:.2f},{c3:.2f}]A"
-                                    log_level = "warn" if sys_fault != 0 or max_diff > 15 else "info"
+                                    log_line = f"[{st_name}] Avg:{avg_h:.0f}c (ΔH:[{h0},{h1},{h2},{h3}]) | MaxDiff:{max_diff}c (Limit:{limit_hall}c) | V:[{v0},{v1},{v2},{v3}]RPM | I:[{c0:.2f},{c1:.2f},{c2:.2f},{c3:.2f}]A | CommErr:[{e0},{e1},{e2},{e3}]"
+                                    log_level = "warn" if sys_fault != 0 or max_diff > 15 or (e0+e1+e2+e3) > 0 else "info"
                                     
                                     self.log_message(log_line, log_level, is_stream=True)
                                     

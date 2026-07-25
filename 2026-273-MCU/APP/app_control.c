@@ -201,7 +201,6 @@ void APP_ControlTask(void *pvParameters)
 {
     MID_SIGNAL_Msg sig_msg;
     static int16_t last_sent_speed[4]   = {-1, -1, -1, -1};
-    static uint8_t print_divider        = 0;
     static uint32_t last_check_halls[4] = {0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF};
     static uint8_t stop_stable_cnt      = 0;
 
@@ -263,7 +262,7 @@ void APP_ControlTask(void *pvParameters)
 
                             speed_msg.cmd_type   = CMD_SET_SPEED;
                             speed_msg.motor_mask = 0x0F;
-                            speed_msg.speed_rpm  = run_rpm;
+                            speed_msg.speed_rpm  = 300; // 起点转速 300 RPM
 
                             cmd_msg.cmd_type   = CMD_REVERSE;
                             cmd_msg.motor_mask = 0x0F;
@@ -273,10 +272,10 @@ void APP_ControlTask(void *pvParameters)
                                 g_sys_context.g_motor_status[i].start_drive_hall = g_sys_context.g_motor_status[i].hall_value;
                                 g_sys_context.g_motor_status[i].base_abs_hall    = g_sys_context.g_motor_status[i].current_abs_hall;
                                 g_sys_context.g_motor_status[i].target_cmd       = CMD_REVERSE;
-                                g_sys_context.g_motor_status[i].target_speed     = run_rpm;
+                                g_sys_context.g_motor_status[i].target_speed     = 300;
                                 g_sys_context.g_motor_status[i].stall_cnt        = 0;
                                 g_sys_context.delta_h[i]                         = 0.0f;
-                                last_sent_speed[i]                               = run_rpm;
+                                last_sent_speed[i]                               = 300;
                             }
                             g_sys_context.avg_delta_h = 0.0f;
                             g_sys_context.max_dh_diff = 0.0f;
@@ -286,7 +285,7 @@ void APP_ControlTask(void *pvParameters)
                             xQueueSend(g_motor_ctrl_queue, &cmd_msg, pdMS_TO_TICKS(10));
 
                             action_valid              = true;
-                            g_sys_context.ramp_cnt    = 0; // 重置 500ms 梯形缓启动计数
+                            g_sys_context.ramp_cnt    = 0; // 重置 1000ms 缓启动计数
                             g_sys_context.system_step = SYS_STEP_TOTAL_RUNNING;
                             break;
 
@@ -295,7 +294,7 @@ void APP_ControlTask(void *pvParameters)
 
                             speed_msg.cmd_type   = CMD_SET_SPEED;
                             speed_msg.motor_mask = 0x0F;
-                            speed_msg.speed_rpm  = run_rpm;
+                            speed_msg.speed_rpm  = 300; // 起点转速 300 RPM
 
                             cmd_msg.cmd_type   = CMD_FORWARD;
                             cmd_msg.motor_mask = 0x0F;
@@ -305,10 +304,10 @@ void APP_ControlTask(void *pvParameters)
                                 g_sys_context.g_motor_status[i].start_drive_hall = g_sys_context.g_motor_status[i].hall_value;
                                 g_sys_context.g_motor_status[i].base_abs_hall    = g_sys_context.g_motor_status[i].current_abs_hall;
                                 g_sys_context.g_motor_status[i].target_cmd       = CMD_FORWARD;
-                                g_sys_context.g_motor_status[i].target_speed     = run_rpm;
+                                g_sys_context.g_motor_status[i].target_speed     = 300;
                                 g_sys_context.g_motor_status[i].stall_cnt        = 0;
                                 g_sys_context.delta_h[i]                         = 0.0f;
-                                last_sent_speed[i]                               = run_rpm;
+                                last_sent_speed[i]                               = 300;
                             }
                             g_sys_context.avg_delta_h = 0.0f;
                             g_sys_context.max_dh_diff = 0.0f;
@@ -318,7 +317,7 @@ void APP_ControlTask(void *pvParameters)
                             xQueueSend(g_motor_ctrl_queue, &cmd_msg, pdMS_TO_TICKS(10));
 
                             action_valid              = true;
-                            g_sys_context.ramp_cnt    = 0; // 重置 500ms 梯形缓启动计数
+                            g_sys_context.ramp_cnt    = 0; // 重置 1000ms 缓启动计数
                             g_sys_context.system_step = SYS_STEP_TOTAL_RUNNING;
                             break;
 
@@ -334,7 +333,7 @@ void APP_ControlTask(void *pvParameters)
                 break;
             }
 
-            // === 核心运行调速阶段（定频 5ms 数据驱动 PID 泵 + 安防防线） ===
+            // === 核心运行调速阶段（定频 20ms 数据驱动 PID 泵 + 安防防线） ===
             case SYS_STEP_TOTAL_RUNNING: {
                 // 1. 无条件优先从内存缓存解算 4 轴最新绝对高度 + 统一计算位移增量及其统计量 (无符号 32 位补码自然溢出减法)
                 float min_dh = 1e9f, max_dh = -1e9f;
@@ -392,13 +391,13 @@ void APP_ControlTask(void *pvParameters)
                     g_sys_context.system_step = SYS_STEP_FAULT_STOP;
                     xQueueSend(g_motor_ctrl_queue, &stop_msg, pdMS_TO_TICKS(10));
                 } else {
-                    // 2. 500ms 梯形缓启动基准转速求解 (100 帧 x 5ms = 500ms，起点转速 300 RPM)
+                    // 2. 1000ms 直线斜坡缓启动 (50 帧 x 20ms = 1000ms，起点 300 RPM 直线斜坡升速)
                     int16_t run_base_speed = g_sys_context.base_speed;
-                    if (g_sys_context.ramp_cnt < 200) {
+                    if (g_sys_context.ramp_cnt < 50) {
                         g_sys_context.ramp_cnt++;
-                        int16_t start_rpm = 300; // 缓启动起步起点转速降低至 300 RPM
+                        int16_t start_rpm = 300; 
                         if (run_base_speed > start_rpm) {
-                            run_base_speed = start_rpm + (int16_t)((int32_t)(run_base_speed - start_rpm) * g_sys_context.ramp_cnt / 200);
+                            run_base_speed = start_rpm + (int16_t)((int32_t)(run_base_speed - start_rpm) * g_sys_context.ramp_cnt / 50);
                         }
                     }
 
@@ -422,11 +421,8 @@ void APP_ControlTask(void *pvParameters)
                         }
                     }
 
-                    // 4. 定频 20ms 极速下发 (4帧分频, 50Hz 极速波形推送)
-                    if (++print_divider >= 4) {
-                        print_divider = 0;
-                        APP_Control_DebugPrint();
-                    }
+                    // 5. 每 20ms 实时推送上位机数据 (50Hz 零抖动连续平滑数据流)
+                    APP_Control_DebugPrint();
                 }
                 break;
             }
@@ -441,7 +437,7 @@ void APP_ControlTask(void *pvParameters)
                         g_sys_context.g_motor_status[i].base_abs_hall + (drive_relative_hall - g_sys_context.g_motor_status[i].start_drive_hall);
                 }
 
-                // 检查 4 路霍尔原始数据是否相比上一次 5ms 无任何变化
+                // 检查 4 路霍尔原始数据是否相比上一次 20ms 无任何变化
                 bool is_all_same = true;
                 for (int i = 0; i < 4; i++) {
                     if (g_sys_context.g_motor_status[i].hall_value != last_check_halls[i]) {
@@ -456,8 +452,8 @@ void APP_ControlTask(void *pvParameters)
                     stop_stable_cnt = 0;
                 }
 
-                // 连续 20 次（100ms 周期）4 路位置全无变化，确认物理电机已完全停稳
-                if (stop_stable_cnt >= 20) {
+                // 连续 5 次（100ms 周期）4 路位置全无变化，确认物理电机已完全停稳
+                if (stop_stable_cnt >= 5) {
                     stop_stable_cnt = 0;
                     for (int i = 0; i < 4; i++) {
                         last_check_halls[i]         = 0xFFFFFFFF;
@@ -494,7 +490,7 @@ void APP_ControlTask(void *pvParameters)
                 break;
         }
 
-        // 严格 5ms 周期挂起 (200Hz 极速调度)
-        vTaskDelayUntil(&xLastWakeTime, pdMS_TO_TICKS(5));
+        // 严格 20.0ms 绝对周期挂起 (50Hz 定频调度)
+        vTaskDelayUntil(&xLastWakeTime, pdMS_TO_TICKS(20));
     }
 }

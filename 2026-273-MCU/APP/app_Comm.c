@@ -89,25 +89,14 @@ static const modbus_read_callback_t Motor_ReadHall_Callbacks[4] = {
 static const modbus_read_callback_t Motor_ReadCurrent_Callbacks[4] = {
     Motor1_ReadCurrent_Callback, Motor2_ReadCurrent_Callback, Motor3_ReadCurrent_Callback, Motor4_ReadCurrent_Callback};
 
-// ========================== Modbus 安全发送封装 ==========================
-
-static bool App_Modbus_WriteSingleReg_Safe(Modbus_Master_t *m, uint16_t reg, uint16_t val, modbus_write_callback_t cb, uint8_t motor_idx)
-{
-    uint8_t retry = 0;
-    while (m->state != MODBUS_STATE_IDLE && retry < 30) {
-        MID_Modbus_Process_1ms();
-        vTaskDelay(pdMS_TO_TICKS(1));
-        retry++;
-    }
-    return MID_Modbus_WriteSingleReg(m, reg, val, cb);
-}
+// ========================== 485 并行 Modbus 硬件初始化序列 ==========================
 
 static void App_Comm_InitHardwareSequence(void)
 {
     // 1. 以初始 19200 BPS 向驱动器发送 0x2009 = 7 指令，提升驱动器通信波特率至 115200 BPS
     Debug_Printf("[SYS] Setting Driver Baudrate to 115200 BPS (0x2009 = 7)...\r\n");
     for (int i = 0; i < 4; i++) {
-        App_Modbus_WriteSingleReg_Safe(&modbus_masters[i], 0x2009, 7, Motor_Cmd_Callbacks[i], i);
+        MID_Modbus_WriteSingleReg(&modbus_masters[i], 0x2009, 7, Motor_Cmd_Callbacks[i]);
     }
 
     uint8_t wait_ms = 0;
@@ -131,23 +120,22 @@ static void App_Comm_InitHardwareSequence(void)
         {0x200E, 0x0000, "Write Enable"},
         {0x2006, 0x0002, "Run Mode"},
         {0x2007, 0x0003, "Speed Mode"},
-        {0x2001, 0x0000, "Set Speed 0"},
+        {0x2001, 300,    "Set Speed 300"},
         {0x2000, 0x0005, "Start Drive"}};
 
     int num_steps = sizeof(init_steps) / sizeof(init_steps[0]);
 
     for (int step = 0; step < num_steps; step++) {
-
         for (int i = 0; i < 4; i++) {
             Modbus_Master_t *m = &modbus_masters[i];
-            App_Modbus_WriteSingleReg_Safe(m, init_steps[step].reg, init_steps[step].val, Motor_Cmd_Callbacks[i], i);
+            MID_Modbus_WriteSingleReg(m, init_steps[step].reg, init_steps[step].val, Motor_Cmd_Callbacks[i]);
         }
 
-        uint8_t wait_ms = 0;
-        while (wait_ms < 100) {
+        uint8_t wait_cnt = 0;
+        while (wait_cnt < 100) {
             MID_Modbus_Process_1ms();
             vTaskDelay(pdMS_TO_TICKS(1));
-            wait_ms++;
+            wait_cnt++;
 
             bool all_idle = true;
             for (int i = 0; i < 4; i++) {
@@ -156,9 +144,7 @@ static void App_Comm_InitHardwareSequence(void)
                     break;
                 }
             }
-            if (all_idle) {
-                break;
-            }
+            if (all_idle) break;
         }
     }
 
@@ -183,83 +169,93 @@ void APP_CommTask(void *pvParameters)
     // 1. 执行托管的 4 路电机驱动器硬件初始化
     App_Comm_InitHardwareSequence();
 
-    static bool pending_set_speed[4]     = {false, false, false, false};
-    static uint16_t pending_speed_rpm[4] = {0, 0, 0, 0};
-    TickType_t xLastPollTick              = xTaskGetTickCount();
+    TickType_t xLastWakeTime = xTaskGetTickCount();
+    static uint8_t timer_5ms_cnt = 0;
+    static uint8_t poll_cnt      = 0;
+
+    static Motor_Ctrl_Msg_t pending_ctrl[4];
+    static bool has_pending_ctrl[4] = {false, false, false, false};
 
     while (1) {
-        // 2. 5ms 极速周期轮询：最高优先级保障 0x3013 读霍尔位置 (200Hz)
-        if (xTaskGetTickCount() - xLastPollTick >= pdMS_TO_TICKS(5)) {
-            xLastPollTick = xTaskGetTickCount();
+        // 1. 1ms 无延迟实时推进 Modbus 接收解析与状态机释放 (ACK 收到后最快 1ms 解锁 IDLE)
+        MID_Modbus_Process_1ms();
 
-            static uint8_t poll_cnt = 0;
+        // 2. 每 5ms 定频分频触发一次 4 级优先级发包 (200Hz)
+        if (++timer_5ms_cnt >= 5) {
+            timer_5ms_cnt = 0;
             poll_cnt++;
 
-            // 每 20 帧 (100ms) 抽样读取一次 0x3004 电流，其余 19 帧以 5ms 极速轮询 0x3013 霍尔位置
-            bool read_current = (poll_cnt >= 20);
-            if (read_current) {
-                poll_cnt = 0;
+            // 消费控制队列命令并打散至 4 轴独立挂起槽 (含防覆盖锁)
+            if (xQueueReceive(g_motor_ctrl_queue, &ctrl_msg, 0) == pdTRUE) {
+                for (int i = 0; i < 4; i++) {
+                    if (ctrl_msg.motor_mask & (1 << i)) {
+                        // 防覆盖保护锁：若当前存有未成功的启动/停止命令，禁止被写转速 CMD_SET_SPEED 覆盖！
+                        bool is_start_stop = (has_pending_ctrl[i] && 
+                            (pending_ctrl[i].cmd_type == CMD_FORWARD || 
+                             pending_ctrl[i].cmd_type == CMD_REVERSE || 
+                             pending_ctrl[i].cmd_type == CMD_STOP));
+
+                        if (!is_start_stop || ctrl_msg.cmd_type != CMD_SET_SPEED) {
+                            pending_ctrl[i]     = ctrl_msg;
+                            has_pending_ctrl[i] = true;
+                        }
+                    }
+                }
             }
 
             for (int i = 0; i < 4; i++) {
                 Modbus_Master_t *m = &modbus_masters[i];
-                if (m->state == MODBUS_STATE_IDLE) {
-                    if (read_current) {
+                if (m->state != MODBUS_STATE_IDLE) continue;
+
+                if (has_pending_ctrl[i]) {
+                    // Tier 1 & Tier 2: 优先消费挂起的控制与转速指令
+                    switch (pending_ctrl[i].cmd_type) {
+                        case CMD_SET_SPEED:
+                            if (MID_Modbus_WriteSingleReg(m, 0x2001, pending_ctrl[i].speed_rpm, Motor_Speed_Callbacks[i])) {
+                                has_pending_ctrl[i] = false;
+                            }
+                            break;
+
+                        case CMD_FORWARD:
+                            if (MID_Modbus_WriteSingleReg(m, 0x2000, 0x0001, Motor_Cmd_Callbacks[i])) {
+                                has_pending_ctrl[i] = false;
+                            }
+                            break;
+
+                        case CMD_REVERSE:
+                            if (MID_Modbus_WriteSingleReg(m, 0x2000, 0x0002, Motor_Cmd_Callbacks[i])) {
+                                has_pending_ctrl[i] = false;
+                            }
+                            break;
+
+                        case CMD_STOP:
+                            if (MID_Modbus_WriteSingleReg(m, 0x2000, 0x0009, Motor_Cmd_Callbacks[i])) {
+                                has_pending_ctrl[i] = false;
+                            }
+                            break;
+
+                        default:
+                            has_pending_ctrl[i] = false;
+                            break;
+                    }
+                } else {
+                    // Tier 3 & Tier 4: 无高优先级控制指令时，下发周期采样
+                    if (poll_cnt >= 20) {
+                        // Tier 3: 每 20 帧 (100ms) 抽样读取一次 0x3004 电流
                         MID_Modbus_ReadRegs(m, 0x3004, 1, Motor_ReadCurrent_Callbacks[i]);
                     } else {
+                        // Tier 4: 空闲缝隙无条件读取 0x3013 霍尔位置
                         MID_Modbus_ReadRegs(m, 0x3013, 2, Motor_ReadHall_Callbacks[i]);
                     }
                 }
             }
-        }
 
-        // 3. 消费控制队列命令 (写转速命令进入 pending 挂起，绝对不丢包)
-        if (xQueueReceive(g_motor_ctrl_queue, &ctrl_msg, 0) == pdTRUE) {
-            for (int i = 0; i < 4; i++) {
-                if (ctrl_msg.motor_mask & (1 << i)) {
-                    Modbus_Master_t *m = &modbus_masters[i];
-
-                    switch (ctrl_msg.cmd_type) {
-                        case CMD_SET_SPEED:
-                            pending_set_speed[i] = true;
-                            pending_speed_rpm[i] = ctrl_msg.speed_rpm;
-                            break;
-
-                        case CMD_FORWARD:
-                            App_Modbus_WriteSingleReg_Safe(m, 0x2000, 0x0001, Motor_Cmd_Callbacks[i], i);
-                            break;
-
-                        case CMD_REVERSE:
-                            App_Modbus_WriteSingleReg_Safe(m, 0x2000, 0x0002, Motor_Cmd_Callbacks[i], i);
-                            break;
-
-                        case CMD_STOP:
-                            App_Modbus_WriteSingleReg_Safe(m, 0x2000, 0x0009, Motor_Cmd_Callbacks[i], i);
-                            break;
-
-                        default:
-                            break;
-                    }
-                }
+            if (poll_cnt >= 20) {
+                poll_cnt = 0;
             }
         }
 
-        // 4. 自动处理 pending 挂起的写转速请求 (串口 IDLE 时补发，确保写转速 100% 成功下发)
-        for (int i = 0; i < 4; i++) {
-            if (pending_set_speed[i]) {
-                Modbus_Master_t *m = &modbus_masters[i];
-                if (m->state == MODBUS_STATE_IDLE) {
-                    if (MID_Modbus_WriteSingleReg(m, 0x2001, pending_speed_rpm[i], Motor_Speed_Callbacks[i])) {
-                        pending_set_speed[i] = false;
-                    }
-                }
-            }
-        }
-
-        // 5. 推进 Modbus 状态机
-        MID_Modbus_Process_1ms();
-
-        // 6. 挂起 1ms 定时，释放 CPU
-        vTaskDelay(pdMS_TO_TICKS(1));
+        // 3. 严格 1.0ms 绝对周期调度
+        vTaskDelayUntil(&xLastWakeTime, pdMS_TO_TICKS(1));
     }
 }

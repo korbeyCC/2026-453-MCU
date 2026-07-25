@@ -11,8 +11,8 @@ extern UART_HandleTypeDef huart4;
 Modbus_Master_t modbus_masters[4];
 
 // 时间配置常数 (单位: ms)
-#define MODBUS_READ_TIMEOUT_MS  100
-#define MODBUS_WRITE_TIMEOUT_MS 100
+#define MODBUS_READ_TIMEOUT_MS  15
+#define MODBUS_WRITE_TIMEOUT_MS 15
 #define MODBUS_INTERVAL_MS      1
 
 // Modbus 功能码

@@ -398,6 +398,7 @@ class ModernPIDAnalyzerApp:
         self.log_txt.tag_config("info", foreground="#10B981")
         self.log_txt.tag_config("warn", foreground="#FFC312")
         self.log_txt.tag_config("err", foreground="#EF4444")
+        self.log_txt.tag_config("purple", foreground="#E087FF", background="#3B0764", font=("Consolas", 9, "bold"))
         self.log_txt.tag_config("desc", foreground="#EAB308", font=("Segoe UI", 9, "bold"))
         
         right_paned.add(chart_card, weight=3)
@@ -568,14 +569,19 @@ class ModernPIDAnalyzerApp:
                 
             batch_lines = []
             while not self.log_queue.empty():
-                line, tag = self.log_queue.get_nowait()
-                batch_lines.append((line, tag))
+                item = self.log_queue.get_nowait()
+                batch_lines.append(item)
                 if len(batch_lines) >= 20:
                     break
                     
             if batch_lines:
-                for line, tag in batch_lines:
-                    self.log_txt.insert(tk.END, line, tag)
+                for item in batch_lines:
+                    if isinstance(item, list):
+                        for seg_text, seg_tag in item:
+                            self.log_txt.insert(tk.END, seg_text, seg_tag)
+                    else:
+                        line, tag = item
+                        self.log_txt.insert(tk.END, line, tag)
                     self.log_lines_count += 1
                     
                 if self.log_lines_count > 150:
@@ -652,10 +658,38 @@ class ModernPIDAnalyzerApp:
                                     avg_h = (h0 + h1 + h2 + h3) / 4.0
                                     c0, c1, c2, c3 = i0/100.0, i1/100.0, i2/100.0, i3/100.0
                                     
-                                    log_line = f"[{st_name}] Avg:{avg_h:.0f}c (ΔH:[{h0},{h1},{h2},{h3}]) | MaxDiff:{max_diff}c (Limit:{limit_hall}c) | V:[{v0},{v1},{v2},{v3}]RPM | I:[{c0:.2f},{c1:.2f},{c2:.2f},{c3:.2f}]A | CommErr:[{e0},{e1},{e2},{e3}]"
-                                    log_level = "warn" if sys_fault != 0 or max_diff > 15 or (e0+e1+e2+e3) > 0 else "info"
+                                    # 检查具体是哪一路电机相较上一帧位移未发生变化 (采样未更新停更)
+                                    halls_curr = [h0, h1, h2, h3]
+                                    speeds_curr = [v0, v1, v2, v3]
+                                    stuck_flags = [False, False, False, False]
                                     
-                                    self.log_message(log_line, log_level, is_stream=True)
+                                    if hasattr(self, 'prev_halls_cache') and self.prev_halls_cache is not None:
+                                        # 在运动升降阶段 (2:SINGLE_TUNE, 4:TOTAL_FWD, 5:TOTAL_REV, 6:RUNNING)
+                                        if sys_step in [2, 4, 5, 6]:
+                                            for m_idx in range(4):
+                                                # 电机在旋转(速度>50)，但霍尔位置与上一帧完全一致(采样未更新)
+                                                if halls_curr[m_idx] == self.prev_halls_cache[m_idx] and abs(speeds_curr[m_idx]) > 50:
+                                                    stuck_flags[m_idx] = True
+                                    self.prev_halls_cache = halls_curr
+
+                                    base_tag = "warn" if (sys_fault != 0 or max_diff > 15 or (e0+e1+e2+e3) > 0) else "info"
+                                    
+                                    # 构造分段富文本：仅将采样停更掉帧的那个具体电机霍尔数值标亮紫色！
+                                    if self.show_stream_log:
+                                        time_str = time.strftime("[%H:%M:%S] ")
+                                        segments = [
+                                            (f"{time_str}[{st_name}] Avg:{avg_h:.0f}c (ΔH:[", base_tag)
+                                        ]
+                                        for m_idx in range(4):
+                                            seg_tag = "purple" if stuck_flags[m_idx] else base_tag
+                                            segments.append((f"{halls_curr[m_idx]}", seg_tag))
+                                            if m_idx < 3:
+                                                segments.append((",", base_tag))
+                                                
+                                        tail_str = f"]) | MaxDiff:{max_diff}c (Limit:{limit_hall}c) | V:[{v0},{v1},{v2},{v3}]RPM | I:[{c0:.2f},{c1:.2f},{c2:.2f},{c3:.2f}]A | CommErr:[{e0},{e1},{e2},{e3}]\n"
+                                        segments.append((tail_str, base_tag))
+                                        
+                                        self.log_queue.put(segments)
                                     
                                     data_dict = {
                                         'step': sys_step,

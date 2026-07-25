@@ -54,6 +54,7 @@ typedef struct {
     int32_t max_travel_hall;            // 最大行程霍尔计数值
     int16_t calc_base_rpm;              // 算出的基准 RPM
     uint8_t system_fault_code;          // 故障代码 (0:正常, 1:过流堵转, 2:通信中断, 3:同步差超限)
+    volatile uint32_t hall_update_seq[4];// 4 轴霍尔成功更新打卡序列号
 } Sys_Ctrl_Context_t;
 
 // 全局外部变量声明

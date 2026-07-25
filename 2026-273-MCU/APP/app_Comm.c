@@ -34,6 +34,7 @@ static void Motor_ReadHall_Callback_Generic(uint8_t motor_idx, uint16_t *pData, 
         // 抓取驱动器返回的原始 32 位无符号霍尔位置值 (0x3013)，回写至内存缓存层
         g_sys_context.g_motor_status[motor_idx].hall_value = ((uint32_t)pData[0] << 16) | pData[1];
         g_sys_context.g_motor_status[motor_idx].comm_error = 0;
+        g_sys_context.hall_update_seq[motor_idx]++; // 霍尔成功更新打卡！
     } else {
         if (g_sys_context.g_motor_status[motor_idx].comm_error < 255) {
             g_sys_context.g_motor_status[motor_idx].comm_error++;
@@ -170,7 +171,7 @@ void APP_CommTask(void *pvParameters)
     App_Comm_InitHardwareSequence();
 
     TickType_t xLastWakeTime = xTaskGetTickCount();
-    static uint8_t timer_5ms_cnt = 0;
+    static uint8_t timer_4ms_cnt = 0;
     static uint8_t poll_cnt      = 0;
 
     static Motor_Ctrl_Msg_t pending_ctrl[4];
@@ -180,9 +181,9 @@ void APP_CommTask(void *pvParameters)
         // 1. 1ms 无延迟实时推进 Modbus 接收解析与状态机释放 (ACK 收到后最快 1ms 解锁 IDLE)
         MID_Modbus_Process_1ms();
 
-        // 2. 每 5ms 定频分频触发一次 4 级优先级发包 (200Hz)
-        if (++timer_5ms_cnt >= 5) {
-            timer_5ms_cnt = 0;
+        // 2. 每 4ms 定频分频触发一次 4 级优先级发包 (250Hz 极速定频)
+        if (++timer_4ms_cnt >= 4) {
+            timer_4ms_cnt = 0;
             poll_cnt++;
 
             // 消费控制队列命令并打散至 4 轴独立挂起槽 (含防覆盖锁)
@@ -240,8 +241,8 @@ void APP_CommTask(void *pvParameters)
                     }
                 } else {
                     // Tier 3 & Tier 4: 无高优先级控制指令时，下发周期采样
-                    if (poll_cnt >= 20) {
-                        // Tier 3: 每 20 帧 (100ms) 抽样读取一次 0x3004 电流
+                    if (poll_cnt >= 25) {
+                        // Tier 3: 每 25 帧 (100ms) 抽样读取一次 0x3004 电流
                         MID_Modbus_ReadRegs(m, 0x3004, 1, Motor_ReadCurrent_Callbacks[i]);
                     } else {
                         // Tier 4: 空闲缝隙无条件读取 0x3013 霍尔位置
@@ -250,7 +251,7 @@ void APP_CommTask(void *pvParameters)
                 }
             }
 
-            if (poll_cnt >= 20) {
+            if (poll_cnt >= 25) {
                 poll_cnt = 0;
             }
         }

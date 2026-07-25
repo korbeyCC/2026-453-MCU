@@ -335,6 +335,23 @@ void APP_ControlTask(void *pvParameters)
 
             // === 核心运行调速阶段（定频 20ms 数据驱动 PID 泵 + 安防防线） ===
             case SYS_STEP_TOTAL_RUNNING: {
+                // 0. 4 轴采样屏障锁存等待 (Barrier Alignment)：若某轴霍尔恰好落后了微微秒 (正在接收 ACK)，让出 1ms 等其合流
+                static uint32_t last_hall_seq[4] = {0};
+                bool need_wait = false;
+                for (int i = 0; i < 4; i++) {
+                    if (g_sys_context.hall_update_seq[i] == last_hall_seq[i] && modbus_masters[i].state != MODBUS_STATE_IDLE) {
+                        need_wait = true;
+                        break;
+                    }
+                }
+                if (need_wait) {
+                    vTaskDelay(pdMS_TO_TICKS(1));
+                    MID_Modbus_Process_1ms();
+                }
+                for (int i = 0; i < 4; i++) {
+                    last_hall_seq[i] = g_sys_context.hall_update_seq[i];
+                }
+
                 // 1. 无条件优先从内存缓存解算 4 轴最新绝对高度 + 统一计算位移增量及其统计量 (无符号 32 位补码自然溢出减法)
                 float min_dh = 1e9f, max_dh = -1e9f;
                 g_sys_context.avg_delta_h = 0.0f;

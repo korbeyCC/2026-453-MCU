@@ -47,12 +47,12 @@ void Debug_SendData(const uint8_t *data, uint16_t len)
     if (data == NULL || len == 0) return;
 
     if (xDebugMutex != NULL && xTaskGetSchedulerState() == taskSCHEDULER_RUNNING) {
-        if (xSemaphoreTake(xDebugMutex, 0) == pdTRUE) {
-            HAL_UART_Transmit(&huart5, (uint8_t *)data, len, 5);
+        if (xSemaphoreTake(xDebugMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+            HAL_UART_Transmit(&huart5, (uint8_t *)data, len, 20);
             xSemaphoreGive(xDebugMutex);
         }
     } else {
-        HAL_UART_Transmit(&huart5, (uint8_t *)data, len, 5);
+        HAL_UART_Transmit(&huart5, (uint8_t *)data, len, 20);
     }
 }
 

@@ -170,15 +170,16 @@ class RealtimePlotter(tk.Canvas):
                 if len(pts) >= 4:
                     self.create_line(pts, fill=self.axis_colors[ch], width=1.2, dash=(1, 3))
                     
-        # C. 4轴位移增量 (细实线)
+        # C. 4轴绝对高度/伸出长度 (细实线)
         if self.visible_curves['halls']:
+            max_travel_limit = 300000.0 # 2000mm 满行程基准 (300000 counts)
             for ch in range(4):
                 pts = []
                 for t_ms, d in window_points:
                     h_val = d.get(f'H{ch}', 0)
                     if 'halls' in d and len(d['halls']) > ch:
                         h_val = d['halls'][ch]
-                    ratio = float(abs(h_val)) / float(limit_hall)
+                    ratio = float(h_val) / max_travel_limit
                     pts.extend([time_to_x(t_ms), ratio_to_y(ratio)])
                 if len(pts) >= 4:
                     self.create_line(pts, fill=self.axis_colors[ch], width=1.5)
@@ -235,7 +236,7 @@ class ModernPIDAnalyzerApp:
         self.log_queue = queue.Queue()
         
         self.log_lines_count = 0
-        self.show_stream_log = False # 高频流日志默认设为关闭，防止冲刷耗能；关键状态变更仍打印！
+        self.show_stream_log = True # 高频数据流日志默认勾选开启，便于实时观察！
         
         self.rx_raw_buffer = bytearray()
         self.has_printed_header_info = False
@@ -357,8 +358,8 @@ class ModernPIDAnalyzerApp:
         ttk.Label(curve_opt_bar, text="曲线选择:", foreground="#8E9297").pack(side="left", padx=(0, 5))
         
         self.var_diff = tk.BooleanVar(value=True)
-        self.var_halls = tk.BooleanVar(value=False)
-        self.var_speeds = tk.BooleanVar(value=False)
+        self.var_halls = tk.BooleanVar(value=True)
+        self.var_speeds = tk.BooleanVar(value=True)
         self.var_currents = tk.BooleanVar(value=False)
         
         ttk.Checkbutton(curve_opt_bar, text="轴间差值(Diff)", variable=self.var_diff, command=self.on_curve_opt_change).pack(side="left", padx=5)
@@ -379,6 +380,8 @@ class ModernPIDAnalyzerApp:
         
         self.plotter = RealtimePlotter(chart_card, width=800, height=350)
         self.plotter.pack(fill="both", expand=True, padx=15, pady=(0, 10))
+        
+        self.on_curve_opt_change()
         
         log_card = ttk.Frame(right_paned, style='Card.TFrame')
         
@@ -413,10 +416,11 @@ class ModernPIDAnalyzerApp:
         return lbl_val
 
     def on_curve_opt_change(self):
-        self.plotter.set_curve_visible('diff', self.var_diff.get())
-        self.plotter.set_curve_visible('halls', self.var_halls.get())
-        self.plotter.set_curve_visible('speeds', self.var_speeds.get())
-        self.plotter.set_curve_visible('currents', self.var_currents.get())
+        if hasattr(self, 'plotter') and self.plotter is not None:
+            self.plotter.set_curve_visible('diff', self.var_diff.get())
+            self.plotter.set_curve_visible('halls', self.var_halls.get())
+            self.plotter.set_curve_visible('speeds', self.var_speeds.get())
+            self.plotter.set_curve_visible('currents', self.var_currents.get())
 
     def on_stream_log_toggle(self):
         self.show_stream_log = self.var_show_stream.get()
@@ -623,7 +627,7 @@ class ModernPIDAnalyzerApp:
                                         lines = text_str.split('\n')
                                         for line in lines[:-1]:
                                             line = line.strip()
-                                            if line:
+                                            if len(line) >= 3: # 过滤长度<3的极短杂乱电平噪点
                                                 self.log_message(f"Rx(Text): {line}", "info", is_stream=True)
                                                 parsed = self.parse_text_line(line)
                                                 if parsed:
@@ -677,20 +681,21 @@ class ModernPIDAnalyzerApp:
                                     base_tag = "warn" if (sys_fault != 0 or max_diff > 15 or (e0+e1+e2+e3) > 0) else "info"
                                     
                                     # 构造分段富文本：仅将采样停更掉帧的那个具体电机绝对伸出长度数值标亮紫色！
-                                    if self.show_stream_log:
-                                        time_str = time.strftime("[%H:%M:%S] ")
-                                        segments = [
-                                            (f"{time_str}[{st_name}] Avg:{avg_abs:.0f}c (AbsH:[", base_tag)
-                                        ]
-                                        for m_idx in range(4):
-                                            seg_tag = "purple" if stuck_flags[m_idx] else base_tag
-                                            segments.append((f"{abs_halls_curr[m_idx]}", seg_tag))
-                                            if m_idx < 3:
-                                                segments.append((",", base_tag))
-                                                
-                                        tail_str = f"], ΔH:[{dh0},{dh1},{dh2},{dh3}]) | MaxDiff:{max_diff}c (Limit:{limit_hall}c) | V:[{v0},{v1},{v2},{v3}]RPM | I:[{c0:.2f},{c1:.2f},{c2:.2f},{c3:.2f}]A | CommErr:[{e0},{e1},{e2},{e3}]\n"
-                                        segments.append((tail_str, base_tag))
-                                        
+                                    time_str = time.strftime("[%H:%M:%S] ")
+                                    segments = [
+                                        (f"{time_str}[{st_name}] Avg:{avg_abs:.0f}c (AbsH:[", base_tag)
+                                    ]
+                                    for m_idx in range(4):
+                                        seg_tag = "purple" if stuck_flags[m_idx] else base_tag
+                                        segments.append((f"{abs_halls_curr[m_idx]}", seg_tag))
+                                        if m_idx < 3:
+                                            segments.append((",", base_tag))
+                                            
+                                    tail_str = f"], ΔH:[{dh0},{dh1},{dh2},{dh3}]) | MaxDiff:{max_diff}c (Limit:{limit_hall}c) | V:[{v0},{v1},{v2},{v3}]RPM | I:[{c0:.2f},{c1:.2f},{c2:.2f},{c3:.2f}]A | CommErr:[{e0},{e1},{e2},{e3}]\n"
+                                    segments.append((tail_str, base_tag))
+
+                                    # 高频数据日志或者关键故障/状态变动强制透传
+                                    if self.show_stream_log or sys_fault != 0 or max_diff > 15 or (e0+e1+e2+e3) > 0:
                                         self.log_queue.put(segments)
                                     
                                     data_dict = {
@@ -709,7 +714,8 @@ class ModernPIDAnalyzerApp:
                                     }
                                     
                                     self.incoming_points_queue.put((curr_t_ms, data_dict))
-                                except Exception:
+                                except Exception as e:
+                                    self.log_message(f"[解包解析异常]: {str(e)}", "err")
                                     del self.rx_raw_buffer[0:1]
                             else:
                                 del self.rx_raw_buffer[0:1]

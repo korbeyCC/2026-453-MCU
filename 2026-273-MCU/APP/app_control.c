@@ -21,7 +21,7 @@ typedef struct {
     uint8_t header[2];           // 0xAA, 0x55 (2B)
     uint8_t system_step;         // 系统流程状态机 (0~8) (1B)
     uint8_t system_fault_code;   // 故障代码 (0:正常, 1:过流堵转, 2:通信中断, 3:同步差超限) (1B)
-    uint16_t max_dh_diff;        // 当帧最大轴间偏差 (counts) (2B)
+    uint16_t max_travel_diff;    // 当帧最大伸出行程极差/伸出差 (counts) (2B)
     uint16_t max_sync_diff_hall; // 同步差保护上限阀值 (counts) (2B)
     int32_t abs_hall[4];         // 4轴绝对高度/伸出长度霍尔计数 (16B) -> 【专用于示波器波形绘制】
     int32_t delta_h[4];          // 4轴单次运动相对位移增量 ΔH_i (16B) -> 【仅在日志中显示】
@@ -42,12 +42,13 @@ static void APP_Control_DebugPrint(void)
     frame.header[1]          = 0x55;
     frame.system_step        = (uint8_t)g_sys_context.system_step;
     frame.system_fault_code  = g_sys_context.system_fault_code;
-    frame.max_dh_diff        = (uint16_t)(g_sys_context.max_dh_diff > 65535.0f ? 65535.0f : g_sys_context.max_dh_diff);
+    frame.max_travel_diff    = (uint16_t)(g_sys_context.max_travel_diff > 65535.0f ? 65535.0f : g_sys_context.max_travel_diff);
     frame.max_sync_diff_hall = (uint16_t)(g_sys_context.max_sync_diff_hall > 65535 ? 65535 : g_sys_context.max_sync_diff_hall);
 
     for (int i = 0; i < 4; i++) {
-        frame.abs_hall[i]      = g_sys_context.g_motor_status[i].current_abs_hall;
-        frame.delta_h[i]       = (int32_t)(g_sys_context.g_motor_status[i].current_abs_hall - g_sys_context.g_motor_status[i].base_abs_hall);
+        // 发送扣除安装校准零点 (min_mount_halls) 后的物理伸出行程 (避免校准后伸出差计算偏差)
+        frame.abs_hall[i]      = (int32_t)g_sys_context.travel_rel[i];
+        frame.delta_h[i]       = (int32_t)g_sys_context.delta_h[i];
         frame.target_speed[i]  = g_sys_context.g_motor_status[i].target_speed;
         frame.current_deciA[i] = g_sys_context.g_motor_status[i].current_deciA;
         frame.comm_error[i]    = g_sys_context.g_motor_status[i].comm_error;
@@ -377,7 +378,7 @@ void APP_ControlTask(void *pvParameters)
                     if (g_sys_context.delta_h[i] < min_dh) min_dh = g_sys_context.delta_h[i];
                     if (g_sys_context.delta_h[i] > max_dh) max_dh = g_sys_context.delta_h[i];
 
-                    // B. 基于调平零点 (min_mount_halls) 的绝对伸出行程 travel_rel[i] (用于 PID 闭环纠偏)
+                    // B. 基于调平零点 (min_mount_halls) 的真正物理伸出行程 travel_rel[i] (用于 PID 闭环纠偏)
                     g_sys_context.travel_rel[i] = (float)(calc_abs_hall - app_data.min_mount_halls[i]);
                     g_sys_context.avg_travel += g_sys_context.travel_rel[i];
                     if (g_sys_context.travel_rel[i] < min_tr) min_tr = g_sys_context.travel_rel[i];
@@ -385,10 +386,10 @@ void APP_ControlTask(void *pvParameters)
                 }
 
                 g_sys_context.avg_delta_h /= 4.0f;
-                g_sys_context.max_dh_diff = max_dh - min_dh;
+                g_sys_context.max_dh_diff = max_dh - min_dh; // 本次单次运动位移增量极差
 
                 g_sys_context.avg_travel /= 4.0f;
-                g_sys_context.max_travel_diff = max_tr - min_tr;
+                g_sys_context.max_travel_diff = max_tr - min_tr; // 调平伸出行程极差 (伸出差)
 
                 if (has_event && sig_msg.event == MID_SIGNAL_EVT_TRIGGER) {
                     // 1. 清空死锁消息队列
@@ -464,12 +465,17 @@ void APP_ControlTask(void *pvParameters)
             // === 停机归档阶段（含 4 轴连续静止检测） ===
             case SYS_STEP_TOTAL_DONE:
             case SYS_STEP_TUNE_DONE: {
-                // 实时解算当前 4 路绝对高度
+                // 实时解算当前 4 路绝对高度与从安装校准点伸出的物理行程 travel_rel
+                float min_tr = 1e9f, max_tr = -1e9f;
                 for (int i = 0; i < 4; i++) {
                     int32_t drive_relative_hall = (int32_t)g_sys_context.g_motor_status[i].hall_value;
                     g_sys_context.g_motor_status[i].current_abs_hall =
                         g_sys_context.g_motor_status[i].base_abs_hall + (drive_relative_hall - g_sys_context.g_motor_status[i].start_drive_hall);
+                    g_sys_context.travel_rel[i] = (float)(g_sys_context.g_motor_status[i].current_abs_hall - app_data.min_mount_halls[i]);
+                    if (g_sys_context.travel_rel[i] < min_tr) min_tr = g_sys_context.travel_rel[i];
+                    if (g_sys_context.travel_rel[i] > max_tr) max_tr = g_sys_context.travel_rel[i];
                 }
+                g_sys_context.max_travel_diff = max_tr - min_tr;
 
                 // 检查 4 路霍尔原始数据是否相比上一次 20ms 无任何变化
                 bool is_all_same = true;

@@ -604,9 +604,7 @@ class ModernPIDAnalyzerApp:
         """
         HEADER = b'\xaa\x55'
         TAIL = b'\r\n'
-        HEADER = b'\xaa\x55'
-        TAIL = b'\r\n'
-        FRAME_LEN = 62
+        FRAME_LEN = 78
         
         step_names = {0:"Boot", 1:"READY", 2:"SINGLE_TUNE", 3:"TUNE_DONE", 4:"TOTAL_FWD", 5:"TOTAL_REV", 6:"RUNNING", 7:"TOTAL_DONE", 8:"FAULT_STOP"}
         
@@ -618,107 +616,129 @@ class ModernPIDAnalyzerApp:
                         rx_bytes = self.ser.read(waiting)
                         self.rx_raw_buffer.extend(rx_bytes)
                         
-                        while len(self.rx_raw_buffer) >= FRAME_LEN:
+                        while len(self.rx_raw_buffer) > 0:
                             idx = self.rx_raw_buffer.find(HEADER)
-                            if idx == -1:
-                                if len(self.rx_raw_buffer) > 150:
+                            
+                            if idx > 0:
+                                # A. 帧头前面有文本数据，提取并按行安全解码输出
+                                prefix_bytes = self.rx_raw_buffer[:idx]
+                                del self.rx_raw_buffer[:idx]
+                                try:
+                                    prefix_str = prefix_bytes.decode('utf-8', errors='ignore')
+                                    for line in prefix_str.split('\n'):
+                                        line = line.strip()
+                                        if len(line) >= 3:
+                                            self.log_message(f"Rx(Text): {line}", "info", is_stream=True)
+                                            parsed = self.parse_text_line(line)
+                                            if parsed:
+                                                if self.start_time is None: self.start_time = time.time()
+                                                curr_t_ms = int((time.time() - self.start_time) * 1000)
+                                                self.incoming_points_queue.put((curr_t_ms, parsed))
+                                except Exception:
+                                    pass
+
+                            elif idx == 0:
+                                # B. 最前面为二进制帧头 0xAA 0x55
+                                if len(self.rx_raw_buffer) < FRAME_LEN:
+                                    break # 长度未满 78B，等待后续数据追加
+                                    
+                                frame_data = bytes(self.rx_raw_buffer[:FRAME_LEN])
+                                
+                                if frame_data[-2:] == TAIL:
+                                    del self.rx_raw_buffer[:FRAME_LEN]
+                                    try:
+                                        hdr, sys_step, sys_fault, max_diff, limit_hall, abs_h0, abs_h1, abs_h2, abs_h3, raw_h0, raw_h1, raw_h2, raw_h3, dh0, dh1, dh2, dh3, v0, v1, v2, v3, i0, i1, i2, i3, e0, e1, e2, e3, tl = struct.unpack('<2sBBHH4i4i4i4h4H4B2s', frame_data)
+                                        
+                                        if not self.has_printed_header_info:
+                                            self.has_printed_header_info = True
+                                            desc = "[数据格式说明] 二进制高密度帧(78B): 帧头[0xAA,0x55] | 状态:Step/Fault(2B) | 同步差:MaxDiff/Limit(4B) | 物理伸出:AbsH0~H3(16B) | 累计绝对霍尔:RawH0~H3(16B) | 相对位移:ΔH0~ΔH3(16B) | 转速:V0~V3(8B) | 电流:I0~I3(8B) | 通信错误:E0~E3(4B) | 帧尾[\r\n]"
+                                            self.log_message(desc, "desc", is_stream=False)
+                                            
+                                        if self.start_time is None:
+                                            self.start_time = time.time()
+                                        curr_t_ms = int((time.time() - self.start_time) * 1000)
+                                        
+                                        st_name = step_names.get(sys_step, f"Step_{sys_step}")
+                                        avg_abs = (abs_h0 + abs_h1 + abs_h2 + abs_h3) / 4.0
+                                        c0, c1, c2, c3 = i0/100.0, i1/100.0, i2/100.0, i3/100.0
+                                        
+                                        # 检查具体是哪一路电机伸出长度相较上一帧未发生变化 (采样未更新停更)
+                                        abs_halls_curr = [abs_h0, abs_h1, abs_h2, abs_h3]
+                                        speeds_curr = [v0, v1, v2, v3]
+                                        stuck_flags = [False, False, False, False]
+                                        
+                                        if hasattr(self, 'prev_abs_halls_cache') and self.prev_abs_halls_cache is not None:
+                                            # 在运动升降阶段 (2:SINGLE_TUNE, 4:TOTAL_FWD, 5:TOTAL_REV, 6:RUNNING)
+                                            if sys_step in [2, 4, 5, 6]:
+                                                for m_idx in range(4):
+                                                    # 电机在旋转(速度>50)，但伸出长度与上一帧完全一致(采样未更新)
+                                                    if abs_halls_curr[m_idx] == self.prev_abs_halls_cache[m_idx] and abs(speeds_curr[m_idx]) > 50:
+                                                        stuck_flags[m_idx] = True
+                                        self.prev_abs_halls_cache = abs_halls_curr
+
+                                        base_tag = "warn" if (sys_fault != 0 or max_diff > 15 or (e0+e1+e2+e3) > 0) else "info"
+                                        
+                                        # 构造分段富文本：仅将采样停更掉帧的那个具体电机绝对伸出长度数值标亮紫色！
+                                        time_str = time.strftime("[%H:%M:%S] ")
+                                        segments = [
+                                            (f"{time_str}[{st_name}] Avg:{avg_abs:.0f}c (AbsH:[", base_tag)
+                                        ]
+                                        for m_idx in range(4):
+                                            seg_tag = "purple" if stuck_flags[m_idx] else base_tag
+                                            segments.append((f"{abs_halls_curr[m_idx]}", seg_tag))
+                                            if m_idx < 3:
+                                                segments.append((",", base_tag))
+                                                
+                                        tail_str = f"], RawH:[{raw_h0},{raw_h1},{raw_h2},{raw_h3}], ΔH:[{dh0},{dh1},{dh2},{dh3}]) | MaxDiff:{max_diff}c (Limit:{limit_hall}c) | V:[{v0},{v1},{v2},{v3}]RPM | I:[{c0:.2f},{c1:.2f},{c2:.2f},{c3:.2f}]A | CommErr:[{e0},{e1},{e2},{e3}]\n"
+                                        segments.append((tail_str, base_tag))
+
+                                        # 高频数据日志或者关键故障/状态变动强制透传
+                                        if self.show_stream_log or sys_fault != 0 or max_diff > 15 or (e0+e1+e2+e3) > 0:
+                                            self.log_queue.put(segments)
+                                        
+                                        data_dict = {
+                                            'step': sys_step,
+                                            'fault': sys_fault,
+                                            'diff': max_diff,
+                                            'max_sync_diff_hall': limit_hall,
+                                            'H0': abs_h0, 'H1': abs_h1, 'H2': abs_h2, 'H3': abs_h3,
+                                            'dh0': dh0, 'dh1': dh1, 'dh2': dh2, 'dh3': dh3,
+                                            'V0': v0, 'V1': v1, 'V2': v2, 'V3': v3,
+                                            'I0': c0, 'I1': c1, 'I2': c2, 'I3': c3,
+                                            'halls': [abs_h0, abs_h1, abs_h2, abs_h3], # 波形绘制切换为 4 轴绝对伸出长度！
+                                            'deltas': [dh0, dh1, dh2, dh3],           # 相对增量仅在日志保留
+                                            'speeds': [v0, v1, v2, v3],
+                                            'currents': [i0, i1, i2, i3]
+                                        }
+                                        
+                                        self.incoming_points_queue.put((curr_t_ms, data_dict))
+                                    except Exception as e:
+                                        self.log_message(f"[解包解析异常]: {str(e)}", "err")
+                                        del self.rx_raw_buffer[0:1]
+                                else:
+                                    del self.rx_raw_buffer[0:1]
+
+                            else:
+                                # C. 缓存中无二进制帧头 (idx == -1)
+                                if b'\n' in self.rx_raw_buffer:
                                     try:
                                         text_str = self.rx_raw_buffer.decode('utf-8', errors='ignore')
                                         lines = text_str.split('\n')
                                         for line in lines[:-1]:
                                             line = line.strip()
-                                            if len(line) >= 3: # 过滤长度<3的极短杂乱电平噪点
+                                            if len(line) >= 3:
                                                 self.log_message(f"Rx(Text): {line}", "info", is_stream=True)
                                                 parsed = self.parse_text_line(line)
                                                 if parsed:
                                                     if self.start_time is None: self.start_time = time.time()
                                                     curr_t_ms = int((time.time() - self.start_time) * 1000)
                                                     self.incoming_points_queue.put((curr_t_ms, parsed))
+                                        self.rx_raw_buffer = bytearray(lines[-1].encode('utf-8', errors='ignore'))
                                     except Exception:
-                                        pass
+                                        self.rx_raw_buffer.clear()
+                                elif len(self.rx_raw_buffer) > 150:
                                     self.rx_raw_buffer.clear()
                                 break
-                            elif idx > 0:
-                                del self.rx_raw_buffer[:idx]
-                                
-                            if len(self.rx_raw_buffer) < FRAME_LEN:
-                                break
-                                
-                            frame_data = bytes(self.rx_raw_buffer[:FRAME_LEN])
-                            
-                            if frame_data[-2:] == TAIL:
-                                del self.rx_raw_buffer[:FRAME_LEN]
-                                try:
-                                    hdr, sys_step, sys_fault, max_diff, limit_hall, abs_h0, abs_h1, abs_h2, abs_h3, dh0, dh1, dh2, dh3, v0, v1, v2, v3, i0, i1, i2, i3, e0, e1, e2, e3, tl = struct.unpack('<2sBBHH4i4i4h4H4B2s', frame_data)
-                                    
-                                    if not self.has_printed_header_info:
-                                        self.has_printed_header_info = True
-                                        desc = "[数据格式说明] 二进制高密度帧(62B): 帧头[0xAA,0x55] | 状态:Step/Fault(2B) | 同步差:MaxDiff/Limit(4B) | 伸出长度:AbsH0~H3(16B) | 相对位移:ΔH0~ΔH3(16B) | 转速:V0~V3(8B) | 电流:I0~I3(8B) | 通信错误:E0~E3(4B) | 帧尾[\\r\\n]"
-                                        self.log_message(desc, "desc", is_stream=False)
-                                        
-                                    if self.start_time is None:
-                                        self.start_time = time.time()
-                                    curr_t_ms = int((time.time() - self.start_time) * 1000)
-                                    
-                                    st_name = step_names.get(sys_step, f"Step_{sys_step}")
-                                    avg_abs = (abs_h0 + abs_h1 + abs_h2 + abs_h3) / 4.0
-                                    c0, c1, c2, c3 = i0/100.0, i1/100.0, i2/100.0, i3/100.0
-                                    
-                                    # 检查具体是哪一路电机伸出长度相较上一帧未发生变化 (采样未更新停更)
-                                    abs_halls_curr = [abs_h0, abs_h1, abs_h2, abs_h3]
-                                    speeds_curr = [v0, v1, v2, v3]
-                                    stuck_flags = [False, False, False, False]
-                                    
-                                    if hasattr(self, 'prev_abs_halls_cache') and self.prev_abs_halls_cache is not None:
-                                        # 在运动升降阶段 (2:SINGLE_TUNE, 4:TOTAL_FWD, 5:TOTAL_REV, 6:RUNNING)
-                                        if sys_step in [2, 4, 5, 6]:
-                                            for m_idx in range(4):
-                                                # 电机在旋转(速度>50)，但伸出长度与上一帧完全一致(采样未更新)
-                                                if abs_halls_curr[m_idx] == self.prev_abs_halls_cache[m_idx] and abs(speeds_curr[m_idx]) > 50:
-                                                    stuck_flags[m_idx] = True
-                                    self.prev_abs_halls_cache = abs_halls_curr
-
-                                    base_tag = "warn" if (sys_fault != 0 or max_diff > 15 or (e0+e1+e2+e3) > 0) else "info"
-                                    
-                                    # 构造分段富文本：仅将采样停更掉帧的那个具体电机绝对伸出长度数值标亮紫色！
-                                    time_str = time.strftime("[%H:%M:%S] ")
-                                    segments = [
-                                        (f"{time_str}[{st_name}] Avg:{avg_abs:.0f}c (AbsH:[", base_tag)
-                                    ]
-                                    for m_idx in range(4):
-                                        seg_tag = "purple" if stuck_flags[m_idx] else base_tag
-                                        segments.append((f"{abs_halls_curr[m_idx]}", seg_tag))
-                                        if m_idx < 3:
-                                            segments.append((",", base_tag))
-                                            
-                                    tail_str = f"], ΔH:[{dh0},{dh1},{dh2},{dh3}]) | MaxDiff:{max_diff}c (Limit:{limit_hall}c) | V:[{v0},{v1},{v2},{v3}]RPM | I:[{c0:.2f},{c1:.2f},{c2:.2f},{c3:.2f}]A | CommErr:[{e0},{e1},{e2},{e3}]\n"
-                                    segments.append((tail_str, base_tag))
-
-                                    # 高频数据日志或者关键故障/状态变动强制透传
-                                    if self.show_stream_log or sys_fault != 0 or max_diff > 15 or (e0+e1+e2+e3) > 0:
-                                        self.log_queue.put(segments)
-                                    
-                                    data_dict = {
-                                        'step': sys_step,
-                                        'fault': sys_fault,
-                                        'diff': max_diff,
-                                        'max_sync_diff_hall': limit_hall,
-                                        'H0': abs_h0, 'H1': abs_h1, 'H2': abs_h2, 'H3': abs_h3,
-                                        'dh0': dh0, 'dh1': dh1, 'dh2': dh2, 'dh3': dh3,
-                                        'V0': v0, 'V1': v1, 'V2': v2, 'V3': v3,
-                                        'I0': c0, 'I1': c1, 'I2': c2, 'I3': c3,
-                                        'halls': [abs_h0, abs_h1, abs_h2, abs_h3], # 波形绘制切换为 4 轴绝对伸出长度！
-                                        'deltas': [dh0, dh1, dh2, dh3],           # 相对增量仅在日志保留
-                                        'speeds': [v0, v1, v2, v3],
-                                        'currents': [i0, i1, i2, i3]
-                                    }
-                                    
-                                    self.incoming_points_queue.put((curr_t_ms, data_dict))
-                                except Exception as e:
-                                    self.log_message(f"[解包解析异常]: {str(e)}", "err")
-                                    del self.rx_raw_buffer[0:1]
-                            else:
-                                del self.rx_raw_buffer[0:1]
                 except Exception as e:
                     if self.running:
                         self.log_message(f"[接收异常]: {str(e)}", "err")

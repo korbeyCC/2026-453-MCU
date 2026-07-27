@@ -95,7 +95,6 @@ static const modbus_read_callback_t Motor_ReadCurrent_Callbacks[4] = {
 static void App_Comm_InitHardwareSequence(void)
 {
     // 1. 以初始 19200 BPS 向驱动器发送 0x2009 = 7 指令，提升驱动器通信波特率至 115200 BPS
-    Debug_Printf("[SYS] Setting Driver Baudrate to 115200 BPS (0x2009 = 7)...\r\n");
     for (int i = 0; i < 4; i++) {
         MID_Modbus_WriteSingleReg(&modbus_masters[i], 0x2009, 7, Motor_Cmd_Callbacks[i]);
     }
@@ -109,7 +108,6 @@ static void App_Comm_InitHardwareSequence(void)
 
     // 2. 单片机本地 4 路 RS485 串口重新初始化切频提升至 115200 BPS
     MID_Modbus_SetBaudRate(115200);
-    Debug_Printf("[SYS] MCU RS485 Baudrate Switched to 115200 BPS Success!\r\n");
 
     // 3. 执行后续 6 步硬件初始化序列 (含 0x2000=0x0007 上电故障复位)
     struct {
@@ -121,7 +119,7 @@ static void App_Comm_InitHardwareSequence(void)
         {0x200E, 0x0000, "Write Enable"},
         {0x2006, 0x0002, "Run Mode"},
         {0x2007, 0x0003, "Speed Mode"},
-        {0x2001, 300,    "Set Speed 300"},
+        {0x2001, 300, "Set Speed 300"},
         {0x2000, 0x0005, "Start Drive"}};
 
     int num_steps = sizeof(init_steps) / sizeof(init_steps[0]);
@@ -160,7 +158,7 @@ void APP_CommTask(void *pvParameters)
 
     g_motor_ctrl_queue = xQueueCreate(20, sizeof(Motor_Ctrl_Msg_t));
 
-    Debug_Printf("[SYS] Loaded Flash Abs Halls: H0=%d, H1=%d, H2=%d, H3=%d | MaxTravelMM=%dmm\r\n",
+    Debug_Printf("[SYS] System Init: AbsHalls=[%d,%d,%d,%d]\r\n",
                  app_data.motor_abs_halls[0],
                  app_data.motor_abs_halls[1],
                  app_data.motor_abs_halls[2],
@@ -170,7 +168,7 @@ void APP_CommTask(void *pvParameters)
     // 1. 执行托管的 4 路电机驱动器硬件初始化
     App_Comm_InitHardwareSequence();
 
-    TickType_t xLastWakeTime = xTaskGetTickCount();
+    TickType_t xLastWakeTime     = xTaskGetTickCount();
     static uint8_t timer_4ms_cnt = 0;
     static uint8_t poll_cnt      = 0;
 
@@ -191,10 +189,10 @@ void APP_CommTask(void *pvParameters)
                 for (int i = 0; i < 4; i++) {
                     if (ctrl_msg.motor_mask & (1 << i)) {
                         // 防覆盖保护锁：若当前存有未成功的启动/停止命令，禁止被写转速 CMD_SET_SPEED 覆盖！
-                        bool is_start_stop = (has_pending_ctrl[i] && 
-                            (pending_ctrl[i].cmd_type == CMD_FORWARD || 
-                             pending_ctrl[i].cmd_type == CMD_REVERSE || 
-                             pending_ctrl[i].cmd_type == CMD_STOP));
+                        bool is_start_stop = (has_pending_ctrl[i] &&
+                                              (pending_ctrl[i].cmd_type == CMD_FORWARD ||
+                                               pending_ctrl[i].cmd_type == CMD_REVERSE ||
+                                               pending_ctrl[i].cmd_type == CMD_STOP));
 
                         if (!is_start_stop || ctrl_msg.cmd_type != CMD_SET_SPEED) {
                             pending_ctrl[i]     = ctrl_msg;

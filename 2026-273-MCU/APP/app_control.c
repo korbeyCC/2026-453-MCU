@@ -23,17 +23,18 @@ typedef struct {
     uint8_t system_fault_code;   // 故障代码 (0:正常, 1:过流堵转, 2:通信中断, 3:同步差超限) (1B)
     uint16_t max_travel_diff;    // 当帧最大伸出行程极差/伸出差 (counts) (2B)
     uint16_t max_sync_diff_hall; // 同步差保护上限阀值 (counts) (2B)
-    int32_t abs_hall[4];         // 4轴绝对高度/伸出长度霍尔计数 (16B) -> 【专用于示波器波形绘制】
+    int32_t abs_hall[4];         // 4轴物理伸出长度 (16B) -> 【用于示波器伸出波形绘制】
+    int32_t current_abs_hall[4]; // 4轴原始累计绝对霍尔 (16B) -> 【集成新增，用于真实绝对位置分析】
     int32_t delta_h[4];          // 4轴单次运动相对位移增量 ΔH_i (16B) -> 【仅在日志中显示】
     int16_t target_speed[4];     // 4轴目标转速 RPM (0~3000) (8B)
     uint16_t current_deciA[4];   // 4轴实时电流 (0.01A) (8B)
     uint8_t comm_error[4];       // 4轴通信错误计数 (4B)
     uint8_t tail[2];             // 0x0D, 0x0A ('\r\n') (2B)
-} Debug_Binary_Frame_t;          // 共 62 字节
+} Debug_Binary_Frame_t;          // 共 78 字节
 #pragma pack()
 
 /**
- * @brief  输出当前 4 路绝对高度、电流及 PID 目标转速的二进制高密度数据帧 (62 字节)
+ * @brief  输出当前 4 路伸出长度、绝对霍尔、电流及 PID 目标转速的二进制高密度数据帧 (78 字节)
  */
 static void APP_Control_DebugPrint(void)
 {
@@ -46,12 +47,12 @@ static void APP_Control_DebugPrint(void)
     frame.max_sync_diff_hall = (uint16_t)(g_sys_context.max_sync_diff_hall > 65535 ? 65535 : g_sys_context.max_sync_diff_hall);
 
     for (int i = 0; i < 4; i++) {
-        // 发送扣除安装校准零点 (min_mount_halls) 后的物理伸出行程 (避免校准后伸出差计算偏差)
-        frame.abs_hall[i]      = (int32_t)g_sys_context.travel_rel[i];
-        frame.delta_h[i]       = (int32_t)g_sys_context.delta_h[i];
-        frame.target_speed[i]  = g_sys_context.g_motor_status[i].target_speed;
-        frame.current_deciA[i] = g_sys_context.g_motor_status[i].current_deciA;
-        frame.comm_error[i]    = g_sys_context.g_motor_status[i].comm_error;
+        frame.abs_hall[i]         = (int32_t)g_sys_context.travel_rel[i];
+        frame.current_abs_hall[i] = g_sys_context.g_motor_status[i].current_abs_hall;
+        frame.delta_h[i]          = (int32_t)g_sys_context.delta_h[i];
+        frame.target_speed[i]     = g_sys_context.g_motor_status[i].target_speed;
+        frame.current_deciA[i]    = g_sys_context.g_motor_status[i].current_deciA;
+        frame.comm_error[i]       = g_sys_context.g_motor_status[i].comm_error;
     }
 
     frame.tail[0] = 0x0D;
@@ -506,12 +507,11 @@ void APP_ControlTask(void *pvParameters)
                     APP_Control_DebugPrint();
 
                     g_sys_context.system_step = SYS_STEP_READY;
-                    Debug_Printf("[SYS] Loaded Flash Abs Halls: L0=%dL1=%dL2=%dL3=%d\r\n",
+                    Debug_Printf("[SYS] System State -> READY (AbsHalls:[%d,%d,%d,%d]).\r\n",
                                  g_sys_context.g_motor_status[0].current_abs_hall,
                                  g_sys_context.g_motor_status[1].current_abs_hall,
                                  g_sys_context.g_motor_status[2].current_abs_hall,
                                  g_sys_context.g_motor_status[3].current_abs_hall);
-                    Debug_Printf("[SYS] System State -> READY, Halls Fully Stopped & Archived to Flash.\r\n");
                 }
                 break;
             }

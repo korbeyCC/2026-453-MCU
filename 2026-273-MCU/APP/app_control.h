@@ -43,10 +43,15 @@ typedef struct {
     int16_t base_speed;                 // 系统全局基准转速 (RPM)
     uint16_t ramp_cnt;                  // 300ms 缓启动递增计数器 (0~60)
     
-    // 当帧位移增量与其全局统计量共享字段
+    // 1. 当帧位移增量与其全局统计量共享字段
     float delta_h[4];                   // 4 轴当帧最新的位移增量 ΔH_i
     float avg_delta_h;                  // 4 轴当帧平均位移增量 ΔH_avg
-    float max_dh_diff;                  // 4 轴当帧最大轴间偏差 (max - min)
+    float max_dh_diff;                  // 4 轴当帧最大轴间增量偏差 (max - min)
+    
+    // 2. 基于调平零点 (min_mount_halls) 的绝对伸出高度及其统计量 (专用于 PID 绝对纠偏)
+    float travel_rel[4];                // 4 轴当帧绝对伸出行程 (counts)
+    float avg_travel;                   // 4 轴当帧平均绝对伸出行程 (counts)
+    float max_travel_diff;              // 4 轴当帧最大绝对高度差 (max - min)
     
     // 自动物理换算参数与安防状态
     uint32_t counts_per_mm;             // 每 mm 霍尔计数值

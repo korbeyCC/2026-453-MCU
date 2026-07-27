@@ -18,21 +18,22 @@ static APP_PID_Handle_t motor_pids[4];
 
 #pragma pack(1)
 typedef struct {
-    uint8_t header[2];           // 0xAA, 0x55
-    uint8_t system_step;         // 系统流程状态机 (0~8)
-    uint8_t system_fault_code;   // 故障代码 (0:正常, 1:过流堵转, 2:通信中断, 3:同步差超限)
-    uint16_t max_dh_diff;        // 当帧最大轴间偏差 (counts)
-    uint16_t max_sync_diff_hall; // 同步差保护上限阀值 (counts)
-    int32_t delta_h[4];          // 4轴绝对位移增量 ΔH_i (counts)
-    int16_t target_speed[4];     // 4轴目标转速 RPM (0~3000)
-    uint16_t current_deciA[4];   // 4轴实时电流 (0.01A)
-    uint8_t comm_error[4];       // 4轴通信错误计数
-    uint8_t tail[2];             // 0x0D, 0x0A ('\r\n')
-} Debug_Binary_Frame_t;
+    uint8_t header[2];           // 0xAA, 0x55 (2B)
+    uint8_t system_step;         // 系统流程状态机 (0~8) (1B)
+    uint8_t system_fault_code;   // 故障代码 (0:正常, 1:过流堵转, 2:通信中断, 3:同步差超限) (1B)
+    uint16_t max_dh_diff;        // 当帧最大轴间偏差 (counts) (2B)
+    uint16_t max_sync_diff_hall; // 同步差保护上限阀值 (counts) (2B)
+    int32_t abs_hall[4];         // 4轴绝对高度/伸出长度霍尔计数 (16B) -> 【专用于示波器波形绘制】
+    int32_t delta_h[4];          // 4轴单次运动相对位移增量 ΔH_i (16B) -> 【仅在日志中显示】
+    int16_t target_speed[4];     // 4轴目标转速 RPM (0~3000) (8B)
+    uint16_t current_deciA[4];   // 4轴实时电流 (0.01A) (8B)
+    uint8_t comm_error[4];       // 4轴通信错误计数 (4B)
+    uint8_t tail[2];             // 0x0D, 0x0A ('\r\n') (2B)
+} Debug_Binary_Frame_t;          // 共 62 字节
 #pragma pack()
 
 /**
- * @brief  输出当前 4 路绝对高度、电流及 PID 目标转速的二进制高密度数据帧
+ * @brief  输出当前 4 路绝对高度、电流及 PID 目标转速的二进制高密度数据帧 (62 字节)
  */
 static void APP_Control_DebugPrint(void)
 {
@@ -45,6 +46,7 @@ static void APP_Control_DebugPrint(void)
     frame.max_sync_diff_hall = (uint16_t)(g_sys_context.max_sync_diff_hall > 65535 ? 65535 : g_sys_context.max_sync_diff_hall);
 
     for (int i = 0; i < 4; i++) {
+        frame.abs_hall[i]      = g_sys_context.g_motor_status[i].current_abs_hall;
         frame.delta_h[i]       = (int32_t)(g_sys_context.g_motor_status[i].current_abs_hall - g_sys_context.g_motor_status[i].base_abs_hall);
         frame.target_speed[i]  = g_sys_context.g_motor_status[i].target_speed;
         frame.current_deciA[i] = g_sys_context.g_motor_status[i].current_deciA;
@@ -150,10 +152,10 @@ static void APP_Control_RunPID(int16_t base_speed)
     float calc_target_v[4];
     float max_v = -1e9f;
 
-    // 2. 算出 4 通道的理论 PID 调速结果
+    // 2. 算出 4 通道的理论 PID 调速结果 (直接引用全局上下文 g_sys_context 中无条件解算的绝对伸出高度)
     for (int i = 0; i < 4; i++) {
-        APP_PID_SetTarget(&motor_pids[i], g_sys_context.avg_delta_h);
-        float delta_v = APP_PID_Calc(&motor_pids[i], g_sys_context.delta_h[i]);
+        APP_PID_SetTarget(&motor_pids[i], g_sys_context.avg_travel);
+        float delta_v = APP_PID_Calc(&motor_pids[i], g_sys_context.travel_rel[i]);
 
         if (g_sys_context.g_motor_status[i].target_cmd == CMD_FORWARD) {
             calc_target_v[i] = (float)base_speed + delta_v;
@@ -337,7 +339,7 @@ void APP_ControlTask(void *pvParameters)
             case SYS_STEP_TOTAL_RUNNING: {
                 // 0. 4 轴采样屏障锁存等待 (Barrier Alignment)：若某轴霍尔恰好落后了微微秒 (正在接收 ACK)，让出 1ms 等其合流
                 static uint32_t last_hall_seq[4] = {0};
-                bool need_wait = false;
+                bool need_wait                   = false;
                 for (int i = 0; i < 4; i++) {
                     if (g_sys_context.hall_update_seq[i] == last_hall_seq[i] && modbus_masters[i].state != MODBUS_STATE_IDLE) {
                         need_wait = true;
@@ -352,9 +354,13 @@ void APP_ControlTask(void *pvParameters)
                     last_hall_seq[i] = g_sys_context.hall_update_seq[i];
                 }
 
-                // 1. 无条件优先从内存缓存解算 4 轴最新绝对高度 + 统一计算位移增量及其统计量 (无符号 32 位补码自然溢出减法)
+                // 1. 无条件优先从内存缓存解算 4 轴最新绝对高度 + 统一计算位移增量 ΔH 与绝对伸出行程 travel_rel 及其统计量
                 float min_dh = 1e9f, max_dh = -1e9f;
+                float min_tr = 1e9f, max_tr = -1e9f;
+
                 g_sys_context.avg_delta_h = 0.0f;
+                g_sys_context.avg_travel  = 0.0f;
+
                 for (int i = 0; i < 4; i++) {
                     uint32_t now_hall   = g_sys_context.g_motor_status[i].hall_value;
                     uint32_t start_hall = g_sys_context.g_motor_status[i].start_drive_hall;
@@ -364,14 +370,25 @@ void APP_ControlTask(void *pvParameters)
                     int32_t calc_abs_hall = g_sys_context.g_motor_status[i].base_abs_hall + delta_drive;
 
                     g_sys_context.g_motor_status[i].current_abs_hall = calc_abs_hall;
-                    g_sys_context.delta_h[i]                         = (float)delta_drive;
 
+                    // A. 本次运动过程中的位移增量 ΔH_i
+                    g_sys_context.delta_h[i] = (float)delta_drive;
                     g_sys_context.avg_delta_h += g_sys_context.delta_h[i];
                     if (g_sys_context.delta_h[i] < min_dh) min_dh = g_sys_context.delta_h[i];
                     if (g_sys_context.delta_h[i] > max_dh) max_dh = g_sys_context.delta_h[i];
+
+                    // B. 基于调平零点 (min_mount_halls) 的绝对伸出行程 travel_rel[i] (用于 PID 闭环纠偏)
+                    g_sys_context.travel_rel[i] = (float)(calc_abs_hall - app_data.min_mount_halls[i]);
+                    g_sys_context.avg_travel += g_sys_context.travel_rel[i];
+                    if (g_sys_context.travel_rel[i] < min_tr) min_tr = g_sys_context.travel_rel[i];
+                    if (g_sys_context.travel_rel[i] > max_tr) max_tr = g_sys_context.travel_rel[i];
                 }
+
                 g_sys_context.avg_delta_h /= 4.0f;
                 g_sys_context.max_dh_diff = max_dh - min_dh;
+
+                g_sys_context.avg_travel /= 4.0f;
+                g_sys_context.max_travel_diff = max_tr - min_tr;
 
                 if (has_event && sig_msg.event == MID_SIGNAL_EVT_TRIGGER) {
                     // 1. 清空死锁消息队列
@@ -412,7 +429,7 @@ void APP_ControlTask(void *pvParameters)
                     int16_t run_base_speed = g_sys_context.base_speed;
                     if (g_sys_context.ramp_cnt < 50) {
                         g_sys_context.ramp_cnt++;
-                        int16_t start_rpm = 300; 
+                        int16_t start_rpm = 300;
                         if (run_base_speed > start_rpm) {
                             run_base_speed = start_rpm + (int16_t)((int32_t)(run_base_speed - start_rpm) * g_sys_context.ramp_cnt / 50);
                         }

@@ -77,6 +77,9 @@ typedef struct {
 // 全局外部变量声明
 extern Sys_Ctrl_Context_t g_sys_context;
 
+void APP_Control_UpdateParamsFromAppData(void);
+void APP_Control_StartSingleTune(uint8_t m_idx);
+void APP_Control_CancelSingleTune(void);
 void APP_ControlTask(void *pvParameters);
 
 #endif // __APP_CONTROL_H

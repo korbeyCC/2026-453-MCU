@@ -31,10 +31,8 @@ void APP_Data_Init(void)
         app_data.max_sync_diff_mm        = 5;    // 默认 5 mm
         app_data.lead_mm                 = 8;    // 默认 8 mm
         app_data.hall_coef               = 30;   // 默认 30
-        app_data.single_tune_speed_rpm   = 300;  // 默认微调转速 100 RPM (驱动器原始转速，未算减速比，确保克服启动静摩擦)
-        for (int i = 0; i < 4; i++) {
-            app_data.single_tune_step_0_1mm[i] = 10; // 默认 10 (1.0mm)
-        }
+        app_data.single_tune_speed_rpm   = 100;  // 默认微调转速 100 RPM
+        app_data.single_tune_step_0_1mm   = 10;   // 默认 10 (1.0mm)
 
         // 2. 根据物理参数动态计算 1m (1000mm) 安装起点高度的绝对霍尔计数值
         float c_per_mm              = (float)(app_data.reduction_ratio * app_data.hall_coef) / (float)app_data.lead_mm; // 导程8时等于 112.5f

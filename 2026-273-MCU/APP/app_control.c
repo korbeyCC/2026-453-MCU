@@ -69,22 +69,23 @@ static void APP_Control_DebugPrint(void)
  */
 static bool APP_Control_CheckSafety(void)
 {
-    // // 1. 通信连续中断检查
-    // for (int i = 0; i < 4; i++) {
-    //     if (g_sys_context.g_motor_status[i].comm_error >= 5) {
-    //         g_sys_context.system_fault_code = 2; // 2: 通信中断急停
-    //         Debug_Printf("[ERR] Safety Fault: Motor %d Comm Loss!\r\n", i);
-    //         return true;
-    //     }
-    // }
+    // 1. 通信连续中断检查 (连续 10 帧/40ms 接收失败触发通信保护)
+    for (int i = 0; i < 4; i++) {
+        if (g_sys_context.g_motor_status[i].comm_error >= 10) {
+            g_sys_context.system_fault_code = 2; // 2: 通信中断急停
+            Debug_Printf("[ERR] Safety Fault: Motor %d Comm Loss! (CommErr=%d)\r\n",
+                         i, g_sys_context.g_motor_status[i].comm_error);
+            return true;
+        }
+    }
 
-    // 2. 轴间同步差超限检查 (直接复用 5ms 入口统一解算的 max_dh_diff 与 delta_h)
-    if (g_sys_context.max_dh_diff > (float)g_sys_context.max_sync_diff_hall) {
+    // 2. 轴间真实绝对高度差超限检查 (统一使用基于调平零点的绝对高度差 max_travel_diff)
+    if (g_sys_context.max_travel_diff > (float)g_sys_context.max_sync_diff_hall) {
         g_sys_context.system_fault_code = 3; // 3: 同步差超限急停
-        Debug_Printf("[ERR] Safety Fault: Sync Diff Exceeded! (Diff=%.1f > Limit=%d)\r\n",
-                     g_sys_context.max_dh_diff, g_sys_context.max_sync_diff_hall);
-        Debug_Printf("[SYS] Delta Halls: DH0=%.0f, DH1=%.0f, DH2=%.0f, DH3=%.0f | AbsHalls: H0=%d, H1=%d, H2=%d, H3=%d\r\n",
-                     g_sys_context.delta_h[0], g_sys_context.delta_h[1], g_sys_context.delta_h[2], g_sys_context.delta_h[3],
+        Debug_Printf("[ERR] Safety Fault: Sync Travel Diff Exceeded! (Diff=%.1f > Limit=%d)\r\n",
+                     g_sys_context.max_travel_diff, g_sys_context.max_sync_diff_hall);
+        Debug_Printf("[SYS] TravelRel: TR0=%.0f, TR1=%.0f, TR2=%.0f, TR3=%.0f | AbsHalls: H0=%d, H1=%d, H2=%d, H3=%d\r\n",
+                     g_sys_context.travel_rel[0], g_sys_context.travel_rel[1], g_sys_context.travel_rel[2], g_sys_context.travel_rel[3],
                      g_sys_context.g_motor_status[0].current_abs_hall,
                      g_sys_context.g_motor_status[1].current_abs_hall,
                      g_sys_context.g_motor_status[2].current_abs_hall,
@@ -238,13 +239,13 @@ void APP_ControlTask(void *pvParameters)
                     uint16_t lead  = (app_data.lead_mm > 0) ? app_data.lead_mm : 6;
                     uint16_t coef  = (app_data.hall_coef > 0) ? app_data.hall_coef : 30;
 
-                    g_sys_context.counts_per_mm      = (uint32_t)(ratio * coef) / lead;                                    // 150 count/mm
-                    g_sys_context.calc_base_rpm      = (int16_t)((app_data.target_speed_mm_min * ratio) / lead);           // 2400 RPM (对应 480 mm/min)
-                    g_sys_context.max_sync_diff_hall = (int32_t)(app_data.max_sync_diff_mm * g_sys_context.counts_per_mm); // 750 counts
-                    g_sys_context.max_travel_hall    = (int32_t)(app_data.max_travel_range_mm * g_sys_context.counts_per_mm);
+                    g_sys_context.counts_per_mm      = (float)(ratio * coef) / (float)lead;                                    // 150.0f 或 112.5f count/mm
+                    g_sys_context.calc_base_rpm      = (int16_t)((app_data.target_speed_mm_min * ratio) / lead);               // 2400 RPM (对应 480 mm/min)
+                    g_sys_context.max_sync_diff_hall = (int32_t)roundf(app_data.max_sync_diff_mm * g_sys_context.counts_per_mm); // 750 counts
+                    g_sys_context.max_travel_hall    = (int32_t)roundf(app_data.max_travel_range_mm * g_sys_context.counts_per_mm);
 
                     g_sys_context.system_step = SYS_STEP_READY;
-                    Debug_Printf("[SYS] Counts/mm=%d, CalcRPM=%d, MaxSyncDiffHall=%d, MaxTravelHall=%d\r\n",
+                    Debug_Printf("[SYS] Counts/mm=%.1f, CalcRPM=%d, MaxSyncDiffHall=%d, MaxTravelHall=%d\r\n",
                                  g_sys_context.counts_per_mm, g_sys_context.calc_base_rpm,
                                  g_sys_context.max_sync_diff_hall, g_sys_context.max_travel_hall);
                 }

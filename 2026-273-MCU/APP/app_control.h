@@ -54,7 +54,7 @@ typedef struct {
     float max_travel_diff;              // 4 轴当帧最大绝对高度差 (max - min)
     
     // 自动物理换算参数与安防状态
-    uint32_t counts_per_mm;             // 每 mm 霍尔计数值
+    float counts_per_mm;                // 每 mm 霍尔计数值 (支持 112.5f 浮点精度)
     int32_t max_sync_diff_hall;         // 最大同步差霍尔计数值
     int32_t max_travel_hall;            // 最大行程霍尔计数值
     int16_t calc_base_rpm;              // 算出的基准 RPM

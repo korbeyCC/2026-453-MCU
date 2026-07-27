@@ -23,22 +23,25 @@ void APP_Data_Init(void)
         app_data.reduction_ratio == 0xFFFF ||
         app_data.reduction_ratio == 0) {
 
-        // 初始安装起点高度默认设为 180000 霍尔计数 (对应 1200mm 起始高度，1200mm * 150 count/mm = 180000)
-        for (int i = 0; i < 4; i++) {
-            app_data.min_mount_halls[i] = 180000;
-            app_data.motor_abs_halls[i] = 180000;
-        }
-
-        // 默认可升降总行程设为 2000mm (对应 2.0m 行程，2000mm * 150 count/mm = 300000 霍尔计数)
+        // 1. 默认物理参数配置 (导程默认 8mm)
         app_data.max_travel_range_mm     = 2000; // 默认 2000 mm
         app_data.reduction_ratio         = 30;   // 默认减速比 30
-        app_data.target_speed_mm_min     = 600;  // 默认 600 mm/min (对应电机基准转速 3000 RPM)
+        app_data.target_speed_mm_min     = 750;  // 默认 750 mm/min (对应基准转速 2812 RPM)
         app_data.stall_current_threshold = 700;  // 默认 700 (7.00A)
         app_data.max_sync_diff_mm        = 5;    // 默认 5 mm
-        app_data.lead_mm                 = 6;    // 默认 6 mm
+        app_data.lead_mm                 = 8;    // 默认导程 8 mm
         app_data.hall_coef               = 30;   // 默认 30
 
-        // 立即写入出厂默认值进行固化
+        // 2. 根据物理参数动态计算 1m (1000mm) 安装起点高度的绝对霍尔计数值
+        float c_per_mm = (float)(app_data.reduction_ratio * app_data.hall_coef) / (float)app_data.lead_mm; // 导程8时等于 112.5f
+        int32_t default_mount_halls = (int32_t)(1000.0f * c_per_mm + 0.5f); // 1000mm * 112.5 = 112500 counts
+
+        for (int i = 0; i < 4; i++) {
+            app_data.min_mount_halls[i] = default_mount_halls;
+            app_data.motor_abs_halls[i] = default_mount_halls;
+        }
+
+        // 3. 写入出厂默认值进行固化
         APP_Data_Storage();
     }
 

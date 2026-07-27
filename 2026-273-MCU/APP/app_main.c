@@ -19,7 +19,7 @@ void Debug_Printf(const char *format, ...)
         xDebugMutex = xSemaphoreCreateMutex();
     }
     
-    char buffer[128];
+    char buffer[256];
     va_list args;
     va_start(args, format);
     int len = vsnprintf(buffer, sizeof(buffer), format, args);

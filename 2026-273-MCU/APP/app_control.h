@@ -14,6 +14,7 @@ typedef enum {
     SYS_STEP_TOTAL_FORWARD,          // 同步上升起跑段
     SYS_STEP_TOTAL_REVERSE,          // 同步下降起跑段
     SYS_STEP_TOTAL_RUNNING,          // 整体运行调速阶段（定频 PID 泵）
+    SYS_STEP_TOTAL_REBOUND,          // 堵转后整体反方向反弹阶段
     SYS_STEP_TOTAL_DONE,             // 整体结束停机中 (Flash 归档中)
     SYS_STEP_FAULT_STOP              // 故障急停状态
 } Motor_ctl_Step_t;
@@ -60,6 +61,17 @@ typedef struct {
     int16_t calc_base_rpm;              // 算出的基准 RPM
     uint8_t system_fault_code;          // 故障代码 (0:正常, 1:过流堵转, 2:通信中断, 3:同步差超限)
     volatile uint32_t hall_update_seq[4];// 4 轴霍尔成功更新打卡序列号
+
+    // 单轴微调与过流反弹控制状态字段
+    uint8_t single_tune_dir;            // 微调方向 (0: 正转/上升, 1: 反转/下降)
+    uint8_t single_tune_motor_idx;      // 当前微调的目标电机 (0~3)
+    uint32_t single_tune_start_hall;    // 微调开始时的驱动器原始霍尔起点
+    int32_t single_tune_orig_abs_hall;  // 微调开始时的起点绝对霍尔高度
+    uint32_t single_tune_target_counts; // 微调目标霍尔步计数
+
+    uint8_t rebound_cmd;                // 反弹运动指令 (CMD_FORWARD 或 CMD_REVERSE)
+    uint32_t rebound_start_hall[4];     // 反弹开始时 4 轴原始霍尔读数
+    uint32_t rebound_target_counts;     // 反弹目标霍尔增量计数 (30mm * counts_per_mm)
 } Sys_Ctrl_Context_t;
 
 // 全局外部变量声明

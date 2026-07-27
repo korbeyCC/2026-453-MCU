@@ -15,7 +15,9 @@ typedef struct
     uint16_t max_sync_diff_mm;         // 最大同步差阈值 (单位: mm，默认 5)
     uint16_t lead_mm;                  // 丝杆导程 (单位: mm，默认 6)
     uint16_t hall_coef;                // 霍尔系数 (默认 30)
-    uint16_t reserved[6];              // 预留空间对齐
+    uint16_t single_tune_step_0_1mm[4];// 4路单轴微调步进距离 (单位: 0.1mm，默认 10 = 1.0mm)
+    uint16_t single_tune_speed_rpm;    // 单轴微调速度 (单位: RPM，默认 100，驱动器原始转速，未算减速比)
+    uint16_t reserved[1];              // 预留空间对齐
 } APP_DATA_HandleTypeDef;
 
 extern APP_DATA_HandleTypeDef app_data;

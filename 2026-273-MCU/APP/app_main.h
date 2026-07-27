@@ -12,8 +12,9 @@
 #include "app_control.h"
 #include "app_Comm.h"
 
-// 调试串口全局格式化打印输出
+// 调试串口全局格式化打印与二进制下发输出
 void Debug_Printf(const char *format, ...);
+void Debug_SendData(const uint8_t *data, uint16_t len);
 
 void APP_Init(void);
 

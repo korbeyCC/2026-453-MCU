@@ -36,6 +36,26 @@ void Debug_Printf(const char *format, ...)
     }
 }
 
+/**
+ * @brief  调试串口 5 线程安全二进制字节数据块下发
+ */
+void Debug_SendData(const uint8_t *data, uint16_t len)
+{
+    if (xDebugMutex == NULL && xTaskGetSchedulerState() != taskSCHEDULER_NOT_STARTED) {
+        xDebugMutex = xSemaphoreCreateMutex();
+    }
+    if (data == NULL || len == 0) return;
+
+    if (xDebugMutex != NULL && xTaskGetSchedulerState() == taskSCHEDULER_RUNNING) {
+        if (xSemaphoreTake(xDebugMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+            HAL_UART_Transmit(&huart5, (uint8_t *)data, len, 20);
+            xSemaphoreGive(xDebugMutex);
+        }
+    } else {
+        HAL_UART_Transmit(&huart5, (uint8_t *)data, len, 20);
+    }
+}
+
 void APP_Init(void)
 {
     MID_Init();

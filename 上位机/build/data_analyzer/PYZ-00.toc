@@ -137,6 +137,7 @@
   ('pickle', 'D:\\Miniconda\\Lib\\pickle.py', 'PYMODULE'),
   ('pprint', 'D:\\Miniconda\\Lib\\pprint.py', 'PYMODULE'),
   ('py_compile', 'D:\\Miniconda\\Lib\\py_compile.py', 'PYMODULE'),
+  ('queue', 'D:\\Miniconda\\Lib\\queue.py', 'PYMODULE'),
   ('quopri', 'D:\\Miniconda\\Lib\\quopri.py', 'PYMODULE'),
   ('random', 'D:\\Miniconda\\Lib\\random.py', 'PYMODULE'),
   ('selectors', 'D:\\Miniconda\\Lib\\selectors.py', 'PYMODULE'),

@@ -46,5 +46,6 @@ uint16_t MID_Modbus_CRC16(uint8_t *pData, uint16_t len);
 bool MID_Modbus_ReadRegs(Modbus_Master_t *master, uint16_t start_addr, uint16_t reg_count, modbus_read_callback_t callback);
 bool MID_Modbus_WriteSingleReg(Modbus_Master_t *master, uint16_t reg_addr, uint16_t value, modbus_write_callback_t callback);
 bool MID_Modbus_WriteMultipleRegs(Modbus_Master_t *master, uint16_t start_addr, uint16_t reg_count, uint16_t *data, modbus_write_callback_t callback);
+void MID_Modbus_SetBaudRate(uint32_t baudrate);
 
 #endif // __MID_MODBUS_H

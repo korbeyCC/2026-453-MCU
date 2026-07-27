@@ -129,18 +129,18 @@ static void APP_Control_RunPID(int16_t base_speed)
 {
     if (base_speed <= 0) return;
 
-    // 1. 根据共享上下文中的轴间最大偏差动态确定 PID 限幅 (Dynamic Output Limits)
-    // 偏差 <= 50 counts (0.33mm): 100 RPM 低平稳限幅
-    // 偏差 50~300 counts (0.33~2.0mm): 线性平滑放大至 100~600 RPM
-    // 偏差 > 300 counts (> 2.0mm): 强力极速拉平模式 600 RPM
+    // 1. 根据共享上下文中的 4 轴绝对高度最大偏差动态确定 PID 限幅 (Dynamic Output Limits)
+    // 偏差 <= 50 counts (0.44mm): 100 RPM 低平稳限幅
+    // 偏差 50~300 counts (0.44~2.66mm): 线性平滑放大至 100~600 RPM
+    // 偏差 > 300 counts (> 2.66mm): 强力极速拉平模式 600 RPM
     float dynamic_out_max  = 100.0f;
     float dynamic_iout_max = 30.0f;
-    if (g_sys_context.max_dh_diff > 300.0f) {
+    if (g_sys_context.max_travel_diff > 300.0f) {
         dynamic_out_max  = 600.0f;
         dynamic_iout_max = 150.0f;
-    } else if (g_sys_context.max_dh_diff > 50.0f) {
-        dynamic_out_max  = 100.0f + (g_sys_context.max_dh_diff - 50.0f) * (500.0f / 250.0f);
-        dynamic_iout_max = 30.0f + (g_sys_context.max_dh_diff - 50.0f) * (120.0f / 250.0f);
+    } else if (g_sys_context.max_travel_diff > 50.0f) {
+        dynamic_out_max  = 100.0f + (g_sys_context.max_travel_diff - 50.0f) * (500.0f / 250.0f);
+        dynamic_iout_max = 30.0f + (g_sys_context.max_travel_diff - 50.0f) * (120.0f / 250.0f);
     } else {
         dynamic_out_max  = 100.0f;
         dynamic_iout_max = 30.0f;

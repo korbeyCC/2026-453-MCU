@@ -671,7 +671,16 @@ void APP_ControlTask(void *pvParameters)
 
             // === SYS_STEP_TOTAL_REBOUND 阶段：堵转后整体向反方向反弹运行中 ===
             case SYS_STEP_TOTAL_REBOUND: {
-                // 解算 4 轴反弹位移与累计增量
+                // 若驱动器状态命令尚未 ACK 匹配成功，在 20ms 周期内持续补发，强保 4 轴整体反弹启动
+                if (g_sys_context.g_motor_status[0].current_cmd != g_sys_context.rebound_cmd ||
+                    g_sys_context.g_motor_status[0].current_speed != 100) {
+                    Motor_Ctrl_Msg_t speed_msg = {CMD_SET_SPEED, 0x0F, 100};
+                    Motor_Ctrl_Msg_t cmd_msg   = {(Motor_Cmd_Type_t)g_sys_context.rebound_cmd, 0x0F, 0};
+                    xQueueSend(g_motor_ctrl_queue, &speed_msg, 0);
+                    xQueueSend(g_motor_ctrl_queue, &cmd_msg, 0);
+                }
+
+                // 解算 4 轴反弹位移与累计增量 (精确区分上升/下降方向符号)
                 float sum_reb_counts = 0.0f;
                 for (int i = 0; i < 4; i++) {
                     uint32_t now_h  = g_sys_context.g_motor_status[i].hall_value;
@@ -679,8 +688,9 @@ void APP_ControlTask(void *pvParameters)
                     uint32_t abs_dh = (d_h >= 0) ? (uint32_t)d_h : (uint32_t)(-d_h);
                     sum_reb_counts += (float)abs_dh;
 
-                    int32_t delta_drive                              = (int32_t)(now_h - g_sys_context.g_motor_status[i].start_drive_hall);
-                    g_sys_context.g_motor_status[i].current_abs_hall = g_sys_context.g_motor_status[i].base_abs_hall + delta_drive;
+                    // 根据反弹方向 (rebound_cmd: CMD_FORWARD 为 +, CMD_REVERSE 为 -) 计算高度绝对增量
+                    int32_t reb_signed_delta = (g_sys_context.rebound_cmd == CMD_FORWARD) ? (int32_t)abs_dh : -(int32_t)abs_dh;
+                    g_sys_context.g_motor_status[i].current_abs_hall = g_sys_context.g_motor_status[i].base_abs_hall + reb_signed_delta;
                     g_sys_context.travel_rel[i]                      = (float)(g_sys_context.g_motor_status[i].current_abs_hall - app_data.min_mount_halls[i]);
                 }
                 float avg_reb_counts = sum_reb_counts / 4.0f;
@@ -711,7 +721,14 @@ void APP_ControlTask(void *pvParameters)
                         g_sys_context.g_motor_status[i].target_cmd   = CMD_STOP;
                         g_sys_context.g_motor_status[i].target_speed = 0;
                         last_sent_speed[i]                           = 0;
+
+                        // 同步更新反弹停稳后的绝对高度起点并持久化存 Flash
+                        app_data.motor_abs_halls[i]                        = g_sys_context.g_motor_status[i].current_abs_hall;
+                        g_sys_context.g_motor_status[i].base_abs_hall     = g_sys_context.g_motor_status[i].current_abs_hall;
+                        g_sys_context.g_motor_status[i].start_drive_hall  = g_sys_context.g_motor_status[i].hall_value;
                     }
+                    APP_Data_Storage(); // 固化 Flash
+
                     stop_stable_cnt = 0;
                     for (int i = 0; i < 4; i++) {
                         last_check_halls[i] = 0xFFFFFFFF;
@@ -719,7 +736,7 @@ void APP_ControlTask(void *pvParameters)
                     Motor_Ctrl_Msg_t stop_msg = {CMD_STOP, 0x0F, 0};
                     g_sys_context.system_step = SYS_STEP_FAULT_STOP;
                     xQueueSend(g_motor_ctrl_queue, &stop_msg, pdMS_TO_TICKS(10));
-                    Debug_Printf("[SYS] Rebound Completed (AvgCounts=%.0f), System Entering FAULT_STOP.\r\n", avg_reb_counts);
+                    Debug_Printf("[SYS] Rebound Completed (AvgCounts=%.0f), Flash Saved. System Entering FAULT_STOP.\r\n", avg_reb_counts);
                 }
 
                 APP_Control_DebugPrint();

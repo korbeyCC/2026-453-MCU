@@ -4,6 +4,9 @@
 #include "app_main.h"
 #include "app_control.h" // 导入全局控制状态和结构体
 
+// 驱动器 Modbus 轮询采样配置
+#define CURRENT_POLL_INTERVAL_FRAMES 25 // 电流采样帧间隔 (25帧 * 4ms = 100ms 抽样读取 0x3004)
+
 // 核心配置与控制指令字用枚举包装
 typedef enum {
     CMD_NONE = 0,

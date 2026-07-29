@@ -246,13 +246,17 @@ void APP_Control_StartSingleTune(uint8_t m_idx)
 {
     if (g_sys_context.system_step != SYS_STEP_READY || m_idx >= 4) return;
 
-    g_sys_context.is_single_tuning                       = true; // 显式标记正在单轴微调
-    g_sys_context.single_tune_motor_idx                  = m_idx;
-    g_sys_context.single_tune_start_hall                 = g_sys_context.g_motor_status[m_idx].hall_value;
-    g_sys_context.single_tune_orig_abs_hall              = g_sys_context.g_motor_status[m_idx].current_abs_hall;
-    g_sys_context.g_motor_status[m_idx].start_drive_hall = g_sys_context.g_motor_status[m_idx].hall_value;
-    g_sys_context.g_motor_status[m_idx].base_abs_hall    = g_sys_context.g_motor_status[m_idx].current_abs_hall;
-    g_sys_context.single_tune_target_counts              = (uint32_t)roundf((float)app_data.single_tune_step_0_1mm * g_sys_context.counts_per_mm / 10.0f);
+    for (int i = 0; i < 4; i++) {
+        g_sys_context.g_motor_status[i].last_motion_cmd  = CMD_STOP;
+        g_sys_context.g_motor_status[i].start_drive_hall = g_sys_context.g_motor_status[i].hall_value;
+        g_sys_context.g_motor_status[i].base_abs_hall    = g_sys_context.g_motor_status[i].current_abs_hall;
+    }
+
+    g_sys_context.is_single_tuning         = true; // 显式标记正在单轴微调
+    g_sys_context.single_tune_motor_idx    = m_idx;
+    g_sys_context.single_tune_start_hall   = g_sys_context.g_motor_status[m_idx].hall_value;
+    g_sys_context.single_tune_orig_abs_hall = g_sys_context.g_motor_status[m_idx].current_abs_hall;
+    g_sys_context.single_tune_target_counts = (uint32_t)roundf((float)app_data.single_tune_step_0_1mm * g_sys_context.counts_per_mm / 10.0f);
 
     uint16_t tune_rpm = (app_data.single_tune_speed_rpm > 0 && app_data.single_tune_speed_rpm <= 3000) ? app_data.single_tune_speed_rpm : REBOUND_TUNE_RPM;
 
@@ -342,19 +346,17 @@ void APP_Control_UpdateStateAndStatistics(void)
 
         // 2. 根据该轴有效运动方向，求解带有物理高度方向的 signed_delta
         uint8_t cmd = g_sys_context.g_motor_status[i].target_cmd;
-        if (cmd == CMD_FORWARD || cmd == CMD_REVERSE) {
-            g_sys_context.g_motor_status[i].last_motion_cmd = cmd; // 记录最近一次运动有效方向
-        } else if (cmd == CMD_STOP) {
-            cmd = g_sys_context.g_motor_status[i].last_motion_cmd; // 停机刹车阶段沿用本次运动物理方向
-        }
-
         int32_t signed_delta = 0;
+
         if (cmd == CMD_FORWARD) {
+            g_sys_context.g_motor_status[i].last_motion_cmd = CMD_FORWARD;
             signed_delta = (int32_t)abs_pulse;  // 上升：绝对高度增加
         } else if (cmd == CMD_REVERSE) {
+            g_sys_context.g_motor_status[i].last_motion_cmd = CMD_REVERSE;
             signed_delta = -(int32_t)abs_pulse; // 下降：绝对高度减少
         } else {
-            signed_delta = (int32_t)raw_diff;
+            // CMD_STOP 停机/静止阶段：直接使用带符号的物理脉冲差 (raw_diff)，绝不依赖历史运动方向！
+            signed_delta = raw_diff;
         }
 
         // 3. 求解当前绝对高度 (起点高度 + 方向增量)
@@ -877,10 +879,22 @@ void APP_ControlTask(void *pvParameters)
                     if (g_sys_context.system_step == SYS_STEP_TUNE_DONE && g_sys_context.is_single_tuning && g_sys_context.single_tune_motor_idx < 4) {
                         g_sys_context.is_single_tuning = false; // 复位微调标记
                         uint8_t m_idx                  = g_sys_context.single_tune_motor_idx;
-                        int32_t tune_delta             = g_sys_context.g_motor_status[m_idx].current_abs_hall - g_sys_context.single_tune_orig_abs_hall;
+
+                        // 根据微调实际运动的原始脉冲差与设定方向，精确解算微调变动值
+                        int32_t raw_diff   = (int32_t)(g_sys_context.g_motor_status[m_idx].hall_value - g_sys_context.single_tune_start_hall);
+                        uint32_t abs_pulse = (raw_diff >= 0) ? (uint32_t)raw_diff : (uint32_t)(-raw_diff);
+
+                        int32_t tune_delta = 0;
+                        if (g_sys_context.single_tune_dir == 0) {
+                            tune_delta = (int32_t)abs_pulse;  // 正转/上升微调：零点加上正增量
+                        } else {
+                            tune_delta = -(int32_t)abs_pulse; // 反转/下降微调：零点减去负增量
+                        }
+
                         app_data.min_mount_halls[m_idx] += tune_delta; // 累加微调变动值
-                        Debug_Printf("[SYS] Single Tune Complete! Motor %d DeltaHall=%d, New min_mount_hall=%d. Saved to Flash.\r\n",
-                                     m_idx, tune_delta, app_data.min_mount_halls[m_idx]);
+                        Debug_Printf("[SYS] Single Tune Complete! Motor %d (Dir=%s) Delta=%d, New min_mount_hall=%d. Saved to Flash.\r\n",
+                                     m_idx, (g_sys_context.single_tune_dir == 0) ? "UP" : "DOWN",
+                                     tune_delta, app_data.min_mount_halls[m_idx]);
                     }
 
                     // 2. 同步 Flash 存储数据与控制内存基准

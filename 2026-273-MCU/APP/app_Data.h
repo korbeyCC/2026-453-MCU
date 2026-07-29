@@ -25,6 +25,7 @@ extern uint8_t EEPROMSet;
 
 void APP_Data_Init(void);
 void APP_Data_Storage(void);
+void APP_Data_ResetDefault(void);
 void APP_Data_Task(void *pvParameters);
 
 #endif

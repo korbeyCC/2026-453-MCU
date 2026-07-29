@@ -216,6 +216,30 @@ void APP_Control_UpdateParamsFromAppData(void)
 }
 
 /**
+ * @brief 全面复位 Sys_Ctrl_Context_t 运行状态与电机绝对位置 (在恢复出厂设置或系统大重置时调用)
+ */
+void APP_Control_ResetSystemContext(void)
+{
+    // 1. 重新更新物理系数与目标 RPM
+    APP_Control_UpdateParamsFromAppData();
+
+    // 2. 刷新 4 轴运行内存中的绝对位置为 Flash 恢复后的初始安装位置
+    for (int i = 0; i < 4; i++) {
+        g_sys_context.g_motor_status[i].current_abs_hall = app_data.motor_abs_halls[i];
+        g_sys_context.g_motor_status[i].stall_cnt        = 0;
+        g_sys_context.g_motor_status[i].current_deciA    = 0;
+        g_sys_context.g_motor_status[i].current_speed    = 0;
+        g_sys_context.g_motor_status[i].target_speed     = 0;
+    }
+
+    // 3. 复位系统状态机、错误码与微调标志
+    g_sys_context.system_fault_code = FAULT_CODE_NONE;
+    g_sys_context.system_step       = SYS_STEP_READY;
+    g_sys_context.is_single_tuning  = false;
+    g_sys_context.max_travel_diff   = 0;
+}
+
+/**
  * @brief 外部发起单轴微调
  */
 void APP_Control_StartSingleTune(uint8_t m_idx)
@@ -268,10 +292,20 @@ void APP_Control_CancelSingleTune(void)
 }
 
 /**
- * @brief 根据电机运动方向实时更新 2 路灯带状态 (正转/上升亮第一个灯带 LED_1，反转/下降亮第二个灯带 LED_2)
+ * @brief 根据电机运动方向及系统故障状态实时更新 2 路灯带 (正转/上升亮第一个灯带 LED_1，反转/下降亮第二个灯带 LED_2，故障急停闪烁报警)
  */
 static void APP_Control_UpdateStripLights(void)
 {
+    if (g_sys_context.system_step == SYS_STEP_FAULT_STOP) {
+        // 故障急停状态：灯带 1Hz 双闪警示
+        static uint8_t blink_cnt = 0;
+        blink_cnt++;
+        bool blink = ((blink_cnt / 12) % 2 == 0);
+        MID_LED_Write(MID_LED_1, blink);
+        MID_LED_Write(MID_LED_2, blink);
+        return;
+    }
+
     uint8_t cmd = g_sys_context.g_motor_status[0].target_cmd;
 
     if (cmd == CMD_FORWARD) {
@@ -677,14 +711,29 @@ void APP_ControlTask(void *pvParameters)
                         Debug_Printf("[SYS] OverCurrent Stall! Starting %d RPM Rebound %.0fmm (TargetCounts=%d)...\r\n",
                                      REBOUND_TUNE_RPM, REBOUND_DISTANCE_MM, g_sys_context.rebound_target_counts);
                     } else {
-                        // 通信中断/同步差超限直接急停
+                        // 通信中断/同步差超限：先下发全轴 STOP 切入 SYS_STEP_TOTAL_DONE 进行刹车停稳与绝对位置归档！
+                        bool has_comm_err = false;
+                        for (int i = 0; i < 4; i++) {
+                            if (g_sys_context.g_motor_status[i].comm_error > 0) {
+                                has_comm_err = true;
+                                break;
+                            }
+                        }
+                        if (has_comm_err) {
+                            g_sys_context.system_fault_code = FAULT_CODE_COMM; // 标记 485 通信故障
+                            Debug_Printf("[SYS] Safety Protection: 485 Comm Error Detected! Stopping & Archiving...\r\n");
+                        } else {
+                            g_sys_context.system_fault_code = FAULT_CODE_SYNC; // 标记严重同步差故障
+                            Debug_Printf("[SYS] Safety Protection: Sync Diff Exceeded! Stopping & Archiving...\r\n");
+                        }
+
                         for (int i = 0; i < 4; i++) {
                             g_sys_context.g_motor_status[i].target_cmd   = CMD_STOP;
                             g_sys_context.g_motor_status[i].target_speed = 0;
                             last_sent_speed[i]                           = 0;
                         }
                         Motor_Ctrl_Msg_t stop_msg = {CMD_STOP, 0x0F, 0};
-                        g_sys_context.system_step = SYS_STEP_FAULT_STOP;
+                        g_sys_context.system_step = SYS_STEP_TOTAL_DONE;
                         xQueueSend(g_motor_ctrl_queue, &stop_msg, pdMS_TO_TICKS(10));
                     }
                 } else {
@@ -860,8 +909,23 @@ void APP_ControlTask(void *pvParameters)
 
                     APP_Control_DebugPrint();
 
-                    // 6. 校验停稳后的 4 轴真实极差 max_travel_diff，若超限触发 SYS_STEP_AUTO_ALIGN 自愈恢复
-                    if (g_sys_context.max_travel_diff > (float)g_sys_context.max_sync_diff_hall) {
+                    // 6. 停稳归档完成后的三向流转决策：
+                    // A. 检查是否存在不可恢复的硬件故障 (如 485 通信中断)
+                    bool has_comm_fault = false;
+                    for (int i = 0; i < 4; i++) {
+                        if (g_sys_context.g_motor_status[i].comm_error > 0) {
+                            has_comm_fault = true;
+                            break;
+                        }
+                    }
+
+                    if (has_comm_fault || g_sys_context.system_fault_code == FAULT_CODE_COMM) {
+                        // 通信中断：切入急停锁死状态，禁止自愈重平！
+                        g_sys_context.system_fault_code = FAULT_CODE_COMM;
+                        g_sys_context.system_step       = SYS_STEP_FAULT_STOP;
+                        Debug_Printf("[SYS] Stop Check: 485 Comm Fault Active! Entering SYS_STEP_FAULT_STOP Lockout State.\r\n");
+                    } else if (g_sys_context.max_travel_diff > (float)g_sys_context.max_sync_diff_hall) {
+                        // 通信正常且物理极差超限：触发 SYS_STEP_AUTO_ALIGN 自愈恢复
                         for (int i = 0; i < 4; i++) {
                             g_sys_context.g_motor_status[i].base_abs_hall    = g_sys_context.g_motor_status[i].current_abs_hall;
                             g_sys_context.g_motor_status[i].start_drive_hall = g_sys_context.g_motor_status[i].hall_value;
@@ -870,7 +934,7 @@ void APP_ControlTask(void *pvParameters)
                         Debug_Printf("[SYS] Stop Check: Sync Diff Exceeded (Diff=%.1f > Limit=%d)! Triggering AUTO_ALIGN Self-Healing...\r\n",
                                      g_sys_context.max_travel_diff, g_sys_context.max_sync_diff_hall);
                     } else {
-                        // 成功归档并停稳就绪：清空故障代码
+                        // 成功归档且无故障就绪：清空故障代码
                         g_sys_context.system_fault_code = FAULT_CODE_NONE;
                         g_sys_context.system_step       = SYS_STEP_READY;
                         Debug_Printf("[SYS] State -> READY (AbsHalls:[%d,%d,%d,%d], MaxDiff=%.1f)\r\n",
@@ -952,8 +1016,25 @@ void APP_ControlTask(void *pvParameters)
                 break;
             }
 
-            // === 故障急停状态 ===
+            // === SYS_STEP_FAULT_STOP 阶段：致命故障急停锁死状态 (报警显示与用户确认复位) ===
             case SYS_STEP_FAULT_STOP: {
+                // 监听遥控或按键触发信号，尝试解除故障锁死
+                if (has_event && (sig_msg.event == MID_SIGNAL_EVT_TRIGGER || sig_msg.event == MID_SIGNAL_EVT_LONG)) {
+                    bool comm_ok = true;
+                    for (int i = 0; i < 4; i++) {
+                        if (g_sys_context.g_motor_status[i].comm_error > 0) {
+                            comm_ok = false;
+                            break;
+                        }
+                    }
+                    if (comm_ok) {
+                        g_sys_context.system_fault_code = FAULT_CODE_NONE;
+                        g_sys_context.system_step       = SYS_STEP_READY;
+                        Debug_Printf("[SYS] Fault Lockout Cleared by User Acknowledge! Restoring SYS_STEP_READY...\r\n");
+                    } else {
+                        Debug_Printf("[SYS] User Acknowledge Ignored: 485 Comm Fault Still Active!\r\n");
+                    }
+                }
                 break;
             }
 

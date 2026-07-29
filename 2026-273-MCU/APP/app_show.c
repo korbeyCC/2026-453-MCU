@@ -5,6 +5,22 @@
 #include "app_control.h"
 #include <math.h>
 
+/**
+ * @brief 字符转换为字模表索引
+ */
+static uint8_t CharToSegIndex(char c)
+{
+    if (c >= '0' && c <= '9') return (c - '0');
+    if (c == '-') return 18;
+    if (c == 'P' || c == 'p') return 17;
+    if (c == 'U' || c == 'u') return 21;
+    if (c == 'D' || c == 'd') return 13;
+    if (c == 'N' || c == 'n') return 27; // n
+    if (c == 'W' || c == 'w') return 26; // W
+    if (c == 'q' || c == 'Q') return 16; // q
+    return 19; // 空白
+}
+
 void APP_ShowTask(void *pvParameters)
 {
     TickType_t pxPreviousWakeTime = xTaskGetTickCount();
@@ -26,22 +42,37 @@ void APP_ShowTask(void *pvParameters)
         }
 
         // ====================================================
-        // 模式一：设置菜单模式 (Set_W = 1 ~ 8)
+        // 优先最高优先级：提示动画 (当 prompt_ticks > 0 时，显示如 "-P1-", "-q2-", "-UP-", "-DW-")
         // ====================================================
-        if (Set_W > 0 && Set_W <= 8) {
+        if (prompt_ticks > 0) {
+            SEG_Flag[0] = SEG_Flag[1] = SEG_Flag[2] = SEG_Flag[3] = 0;
+            size_t len = strlen(prompt_str);
+            for (int i = 0; i < 4; i++) {
+                if (i < len) {
+                    SEG_W[i] = CharToSegIndex(prompt_str[i]);
+                } else {
+                    SEG_W[i] = 19;
+                }
+            }
+        }
+        // ====================================================
+        // 模式一：常规应用设置层 (dim1 == 1)
+        // ====================================================
+        else if (dim1 == 1) {
             SEG_Flag[0] = SEG_Flag[1] = SEG_Flag[2] = SEG_Flag[3] = 0;
 
-            // 1. 前 500ms（或未调值时交替前半段）显示项编号 `-0X-`
+            // 1. 前 500ms（或未调值时交替前半段）显示项编号 `-qX-`
             if (adjust_hold_ticks == 0 && flicker_cnt < 10) {
                 SEG_W[0] = 18;     // -
-                SEG_W[1] = 0;      // 0
-                SEG_W[2] = Set_W;  // 1 ~ 8
+                SEG_W[1] = 16;     // q
+                SEG_W[2] = dim2;   // 1 ~ 6
                 SEG_W[3] = 18;     // -
             }
             // 2. 后 500ms（或调值期间）显示当前项的具体参数数值
             else {
                 uint32_t param_val = 0;
-                switch (Set_W) {
+                switch (dim2) {
+                    case 0: param_val = reset_factory_flag; break; // (1, 0) 项显示恢复出厂开关
                     case 1: param_val = app_data.max_travel_range_mm; break;
                     case 2: param_val = app_data.target_speed_mm_min; break;
                     case 3: param_val = app_data.single_tune_speed_rpm; break;
@@ -62,11 +93,44 @@ void APP_ShowTask(void *pvParameters)
             }
         }
         // ====================================================
-        // 模式二：常规运行模式 (Set_W == 0)
+        // 模式二：深层调试与专家层 (dim1 == 2, 纯只读 Read-Only, 查看 4 轴基准安装零点 mm)
+        // ====================================================
+        else if (dim1 == 2) {
+            SEG_Flag[0] = SEG_Flag[1] = SEG_Flag[2] = SEG_Flag[3] = 0;
+
+            // 1. 前 500ms 交替显示项目编号 `-qX-`
+            if (flicker_cnt < 10) {
+                SEG_W[0] = 18;        // -
+                SEG_W[1] = 16;        // q
+                SEG_W[2] = dim2 % 4;  // 0 ~ 3
+                SEG_W[3] = 18;        // -
+            }
+            // 2. 后 500ms 显示该电机基准安装零点的毫米 (mm) 数值
+            else {
+                uint8_t m_idx = dim2 % 4;
+                float mount_mm = 0.0f;
+                if (g_sys_context.counts_per_mm > 0.0f) {
+                    mount_mm = (float)app_data.min_mount_halls[m_idx] / g_sys_context.counts_per_mm;
+                }
+
+                int32_t val_mm = (int32_t)roundf(mount_mm);
+                if (val_mm < 0) val_mm = 0;
+                if (val_mm > 9999) val_mm = 9999;
+
+                SEG_W[0] = (uint8_t)((val_mm / 1000) % 10);
+                SEG_W[1] = (uint8_t)((val_mm / 100) % 10);
+                SEG_W[2] = (uint8_t)((val_mm / 10) % 10);
+                SEG_W[3] = (uint8_t)(val_mm % 10);
+
+                SEG_Flag[m_idx] = 1; // 点亮小数点指示电机编号
+            }
+        }
+        // ====================================================
+        // 模式三：主界面 & 实时监测层 (dim1 == 0)
         // ====================================================
         else {
-            // 1. 解算当前 show_motor_idx 所指示电机的绝对高度 (单位: mm)
-            uint8_t m_idx = show_motor_idx % 4;
+            // 1. 解算当前 dim2 所指示电机的绝对高度 (单位: mm)
+            uint8_t m_idx = dim2 % 4;
             float abs_mm  = 0.0f;
             if (g_sys_context.counts_per_mm > 0.0f) {
                 abs_mm = (float)g_sys_context.g_motor_status[m_idx].current_abs_hall / g_sys_context.counts_per_mm;

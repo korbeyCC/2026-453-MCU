@@ -1,0 +1,19 @@
+[14:54:25] [TOTAL_DONE] Avg:20186c (AbsH:[20158,20412,20115,20058], RawH:[132658,132912,132615,132558], ΔH:[157,171,169,157]) | MaxDiff:354c (Limit:563c) | V:[1573,1414,1600,1635]RPM | I:[0.47,0.45,0.44,0.47]A | CommErr:[0,0,0,0]
+[14:54:25] [TOTAL_DONE] Avg:20207c (AbsH:[20181,20434,20133,20081], RawH:[132681,132934,132633,132581], ΔH:[180,193,187,180]) | MaxDiff:353c (Limit:563c) | V:[1622,1464,1652,1685]RPM | I:[0.47,0.45,0.44,0.47]A | CommErr:[0,0,0,0]
+[14:54:25] Rx(Text): [SYS] User Stop signal, sending CMD_STOP...
+[14:54:25] [Step_9] Avg:20240c (AbsH:[20215,20465,20166,20114], RawH:[132715,132965,132666,132614], ΔH:[0,0,0,0]) | MaxDiff:351c (Limit:563c) | V:[0,0,0,0]RPM | I:[0.00,0.00,0.00,0.00]A | CommErr:[0,0,0,0]
+[14:54:25] Rx(Text): [SYS] State -> READY (AbsHalls:[132715,132965,132666,132614], MaxDiff=351.0)
+[14:54:25] Rx(Text): [SYS] Flash Data (SavedAbs:[132715,132965,132666,132614], MinMount:[112500,112500,112500,112500])
+[14:54:35] Rx(Text): [SYS] Enter Menu Setting Mode: Set_W = 1 (MaxTravelRange).
+[14:54:39] Rx(Text): [SYS] Setting Next Item: Set_W = 2
+[14:54:40] Rx(Text): [SYS] Setting Next Item: Set_W = 3
+[14:54:40] Rx(Text): [SYS] Setting Next Item: Set_W = 4
+[14:55:06] Rx(Text): [SYS] Setting Next Item: Set_W = 5
+[14:55:12] Rx(Text): [SYS] Setting Next Item: Set_W = 6
+[14:55:13] Rx(Text): [SYS] Setting Next Item: Set_W = 7
+[14:55:15] Rx(Text): [SYS] Setting Next Item: Set_W = 8
+[14:55:15] Rx(Text): [SYS] Menu Setting Complete & Saved to Flash! Exit to Set_W = 0.
+
+
+
+

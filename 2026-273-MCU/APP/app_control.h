@@ -7,7 +7,7 @@
 // 系统级安防与故障判定宏配置
 // ===================================================================
 #define SAFETY_COMM_ERR_MAX_CNT 10 // 通信连续中断判定次数 (连续 10 帧/40ms 无回应触发保护)
-#define SAFETY_STALL_MAX_CNT    20 // 堵转过流判定持续次数 (20 帧 x 20ms = 400ms 持续过流触发堵转)
+#define SAFETY_STALL_MAX_CNT    10 // 堵转过流判定持续次数 (20 帧 x 20ms = 400ms 持续过流触发堵转)
 
 #define FAULT_CODE_NONE         0 // 故障代码: 正常无故障
 #define FAULT_CODE_STALL        1 // 故障代码: 过流堵转
@@ -17,16 +17,19 @@
 // ===================================================================
 // 系统运行速度与起跑斜坡宏配置
 // ===================================================================
-#define RAMP_UP_TOTAL_STEPS   50  // 1000ms 缓启动递增总步数 (50 帧 x 20ms = 1000ms)
-#define RAMP_UP_START_RPM     300 // 缓启动起跑初始转速 (RPM)
+#define RAMP_UP_TOTAL_STEPS          50  // 1000ms 缓启动递增总步数 (50 帧 x 20ms = 1000ms)
+#define RAMP_UP_START_RPM            300 // 缓启动起跑初始转速 (RPM)
 
-#define MOTOR_MIN_RUN_RPM     300  // 电机运行最低允许转速 (RPM)
-#define MOTOR_MAX_RUN_RPM     3000 // 电机运行最高上限转速 (RPM)
+#define MOTOR_MIN_RUN_RPM            300  // 电机运行最低允许转速 (RPM)
+#define MOTOR_MAX_RUN_RPM            3000 // 电机运行最高上限转速 (RPM)
 
-#define REBOUND_TUNE_RPM      100   // 堵转反弹及微调运行转速 (RPM)
-#define REBOUND_DISTANCE_MM   30.0f // 堵转后反弹后退距离 (mm)
+#define REBOUND_TUNE_RPM             300   // 堵转反弹及微调运行转速 (RPM)
+#define REBOUND_DISTANCE_MM          30.0f // 堵转后反弹后退距离 (mm)
 
-#define STOP_STABLE_CHECK_CNT 10 // 停机归档阶段连续静止确认次数 (10 帧 x 20ms = 200ms)
+#define STOP_STABLE_CHECK_CNT        10 // 停机归档阶段连续静止确认次数 (10 帧 x 20ms = 200ms)
+
+#define AUTO_ALIGN_SPEED_RPM         300  // 四轴自主台面平行恢复基准转速 (RPM)
+#define AUTO_ALIGN_TARGET_DIFF_RATIO 0.3f // 对齐极差目标收敛比例 (收敛至 max_sync_diff_hall * 0.3 以内完成)
 
 // ===================================================================
 // 动态 PID 纠偏与基础初始化宏配置
@@ -53,14 +56,15 @@ typedef enum {
     SYS_STEP_READY,    // 系统配置完成，就绪待命（等待输入）
 
     SYS_STEP_SINGLE_TUNE, // 单路立柱微调控制中
-    SYS_STEP_TUNE_DONE,   // 微调结束 (Flash 归档中)
+    SYS_STEP_TUNE_DONE,   // 微调/停机结束 (Flash 归档与对齐校验)
+    SYS_STEP_AUTO_ALIGN,  // 四轴自主台面平行恢复 (自愈重平控制中)
 
     SYS_STEP_TOTAL_FORWARD, // 同步上升起跑段
     SYS_STEP_TOTAL_REVERSE, // 同步下降起跑段
     SYS_STEP_TOTAL_RUNNING, // 整体运行调速阶段（定频 PID 泵）
     SYS_STEP_TOTAL_REBOUND, // 堵转后整体反方向反弹阶段
     SYS_STEP_TOTAL_DONE,    // 整体结束停机中 (Flash 归档中)
-    SYS_STEP_FAULT_STOP     // 故障急停状态
+    SYS_STEP_FAULT_STOP     // 致命故障急停状态
 } Motor_ctl_Step_t;
 
 /* 电机单通道运行与状态监控 */
@@ -74,10 +78,11 @@ typedef struct {
     uint8_t comm_error;        // 通信超时错误标记
     uint8_t retry_cnt;         // 重试计数
 
-    uint8_t target_cmd;    // 目标动作指令
-    int16_t target_speed;  // 目标转速
-    uint8_t current_cmd;   // 驱动器当前真实的运行指令
-    int16_t current_speed; // 驱动器当前真实的转速配置
+    uint8_t target_cmd;      // 目标动作指令
+    int16_t target_speed;    // 目标转速
+    uint8_t current_cmd;     // 驱动器当前真实的运行指令
+    int16_t current_speed;   // 驱动器当前真实的转速配置
+    uint8_t last_motion_cmd; // 本次起步/运动的有效物理方向 (CMD_FORWARD 或 CMD_REVERSE)
 } Motor_Status_t;
 
 /* 全局控制上下文 (解耦数据驱动架构) */
@@ -107,6 +112,7 @@ typedef struct {
     volatile uint32_t hall_update_seq[4]; // 4 轴霍尔成功更新打卡序列号
 
     // 单轴微调与过流反弹控制状态字段
+    volatile bool is_single_tuning;     // 是否正在执行单轴微调标志 (严格防护 Flash min_mount_halls 污染)
     uint8_t single_tune_dir;            // 微调方向 (0: 正转/上升, 1: 反转/下降)
     uint8_t single_tune_motor_idx;      // 当前微调的目标电机 (0~3)
     uint32_t single_tune_start_hall;    // 微调开始时的驱动器原始霍尔起点
@@ -122,6 +128,7 @@ typedef struct {
 extern Sys_Ctrl_Context_t g_sys_context;
 
 void APP_Control_UpdateParamsFromAppData(void);
+void APP_Control_UpdateStateAndStatistics(void);
 void APP_Control_StartSingleTune(uint8_t m_idx);
 void APP_Control_CancelSingleTune(void);
 void APP_ControlTask(void *pvParameters);

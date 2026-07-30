@@ -173,10 +173,10 @@ void APP_CommTask(void *pvParameters)
     App_Comm_InitHardwareSequence();
 
     TickType_t xLastWakeTime     = xTaskGetTickCount();
-    static uint8_t timer_4ms_cnt = 0;
-    static uint8_t poll_cnt      = 0;
+    static uint16_t timer_4ms_cnt        = 0;
+    static uint16_t current_poll_cnt[4]  = {0, 0, 0, 0};
 
-    static uint16_t pending_speed[4] = {0};
+    static int16_t pending_speed[4];
     static bool has_pending_speed[4] = {false, false, false, false};
 
     static Motor_Cmd_Type_t pending_cmd[4];
@@ -189,7 +189,6 @@ void APP_CommTask(void *pvParameters)
         // 2. 每 4ms 定频分频触发一次 4 级优先级发包 (250Hz 极速定频)
         if (++timer_4ms_cnt >= 4) {
             timer_4ms_cnt = 0;
-            poll_cnt++;
 
             // 消费控制队列命令并分别归类至转速槽 (0x2001) 与命令槽 (0x2000)
             while (xQueueReceive(g_motor_ctrl_queue, &ctrl_msg, 0) == pdTRUE) {
@@ -231,20 +230,19 @@ void APP_CommTask(void *pvParameters)
                         has_pending_cmd[i] = false;
                     }
                 }
-                // Tier 3 & Tier 4: 无高优先级控制指令时，下发周期采样
+                // Tier 3 & Tier 4: 无高优先级控制指令时，各通道独立下发周期采样
                 else {
-                    if (poll_cnt >= 25) {
-                        // Tier 3: 每 25 帧 (100ms) 抽样读取一次 0x3004 电流
-                        MID_Modbus_ReadRegs(m, 0x3004, 1, Motor_ReadCurrent_Callbacks[i]);
+                    current_poll_cnt[i]++;
+                    if (current_poll_cnt[i] >= CURRENT_POLL_INTERVAL_FRAMES) {
+                        // Tier 3: 当达到抽样帧间隔时下发电流读取 (0x3004)，仅当成功下发后才复位该通道计数
+                        if (MID_Modbus_ReadRegs(m, 0x3004, 1, Motor_ReadCurrent_Callbacks[i])) {
+                            current_poll_cnt[i] = 0;
+                        }
                     } else {
-                        // Tier 4: 空闲缝隙无条件读取 0x3013 霍尔位置
+                        // Tier 4: 其余空闲缝隙无条件读取 0x3013 霍尔位置
                         MID_Modbus_ReadRegs(m, 0x3013, 2, Motor_ReadHall_Callbacks[i]);
                     }
                 }
-            }
-
-            if (poll_cnt >= 25) {
-                poll_cnt = 0;
             }
         }
 

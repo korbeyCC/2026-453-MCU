@@ -73,8 +73,8 @@ static bool APP_Control_CheckSafety(void)
 {
     // 1. 通信连续中断检查 (连续 10 帧/40ms 接收失败触发通信保护)
     for (int i = 0; i < 4; i++) {
-        if (g_sys_context.g_motor_status[i].comm_error >= 10) {
-            g_sys_context.system_fault_code = 2; // 2: 通信中断急停
+        if (g_sys_context.g_motor_status[i].comm_error >= SAFETY_COMM_ERR_MAX_CNT) {
+            g_sys_context.system_fault_code = FAULT_CODE_COMM_ERR;
             Debug_Printf("[ERR] Safety Fault: Motor %d Comm Loss! (CommErr=%d)\r\n",
                          i, g_sys_context.g_motor_status[i].comm_error);
             return true;
@@ -83,7 +83,7 @@ static bool APP_Control_CheckSafety(void)
 
     // 2. 轴间真实绝对高度差超限检查 (统一使用基于调平零点的绝对高度差 max_travel_diff)
     if (g_sys_context.max_travel_diff > (float)g_sys_context.max_sync_diff_hall) {
-        g_sys_context.system_fault_code = 3; // 3: 同步差超限急停
+        g_sys_context.system_fault_code = FAULT_CODE_SYNC_ERR;
         Debug_Printf("[ERR] Safety Fault: Sync Travel Diff Exceeded! (Diff=%.1f > Limit=%d)\r\n",
                      g_sys_context.max_travel_diff, g_sys_context.max_sync_diff_hall);
         Debug_Printf("[SYS] TravelRel: TR0=%.0f, TR1=%.0f, TR2=%.0f, TR3=%.0f | AbsHalls: H0=%d, H1=%d, H2=%d, H3=%d\r\n",
@@ -99,8 +99,8 @@ static bool APP_Control_CheckSafety(void)
     for (int i = 0; i < 4; i++) {
         if (g_sys_context.g_motor_status[i].current_deciA > app_data.stall_current_threshold) {
             g_sys_context.g_motor_status[i].stall_cnt++;
-            if (g_sys_context.g_motor_status[i].stall_cnt >= 20) { // 200ms 持续过流
-                g_sys_context.system_fault_code = 1;               // 1: 过流堵转
+            if (g_sys_context.g_motor_status[i].stall_cnt >= SAFETY_STALL_MAX_CNT) {
+                g_sys_context.system_fault_code = FAULT_CODE_STALL;
                 Debug_Printf("[ERR] Safety Fault: Motor %d OverCurrent Stall! (Curr=%.2fA > Limit=%.2fA)\r\n",
                              i, (float)g_sys_context.g_motor_status[i].current_deciA / 100.0f,
                              (float)app_data.stall_current_threshold / 100.0f);
@@ -135,17 +135,18 @@ static void APP_Control_RunPID(int16_t base_speed)
     // 偏差 <= 50 counts (0.44mm): 100 RPM 低平稳限幅
     // 偏差 50~300 counts (0.44~2.66mm): 线性平滑放大至 100~600 RPM
     // 偏差 > 300 counts (> 2.66mm): 强力极速拉平模式 600 RPM
-    float dynamic_out_max  = 100.0f;
-    float dynamic_iout_max = 30.0f;
-    if (g_sys_context.max_travel_diff > 300.0f) {
-        dynamic_out_max  = 600.0f;
-        dynamic_iout_max = 150.0f;
-    } else if (g_sys_context.max_travel_diff > 50.0f) {
-        dynamic_out_max  = 100.0f + (g_sys_context.max_travel_diff - 50.0f) * (500.0f / 250.0f);
-        dynamic_iout_max = 30.0f + (g_sys_context.max_travel_diff - 50.0f) * (120.0f / 250.0f);
+    float dynamic_out_max  = PID_OUT_MAX_LOW;
+    float dynamic_iout_max = PID_IOUT_MAX_LOW;
+    if (g_sys_context.max_travel_diff > PID_DIFF_HIGH_THRESHOLD) {
+        dynamic_out_max  = PID_OUT_MAX_HIGH;
+        dynamic_iout_max = PID_IOUT_MAX_HIGH;
+    } else if (g_sys_context.max_travel_diff > PID_DIFF_LOW_THRESHOLD) {
+        float ratio      = (g_sys_context.max_travel_diff - PID_DIFF_LOW_THRESHOLD) / (PID_DIFF_HIGH_THRESHOLD - PID_DIFF_LOW_THRESHOLD);
+        dynamic_out_max  = PID_OUT_MAX_LOW + ratio * (PID_OUT_MAX_HIGH - PID_OUT_MAX_LOW);
+        dynamic_iout_max = PID_IOUT_MAX_LOW + ratio * (PID_IOUT_MAX_HIGH - PID_IOUT_MAX_LOW);
     } else {
-        dynamic_out_max  = 100.0f;
-        dynamic_iout_max = 30.0f;
+        dynamic_out_max  = PID_OUT_MAX_LOW;
+        dynamic_iout_max = PID_IOUT_MAX_LOW;
     }
 
     for (int i = 0; i < 4; i++) {
@@ -175,20 +176,20 @@ static void APP_Control_RunPID(int16_t base_speed)
         }
     }
 
-    // 3. 防饱和速度平移：若最高轴理论转速突破 3000 RPM，全局向下平移溢出量，保护打满触顶
+    // 3. 防饱和速度平移：若最高轴理论转速突破 MOTOR_MAX_RUN_RPM，全局向下平移溢出量，保护打满触顶
     float shift_offset = 0.0f;
-    if (max_v > 3000.0f) {
-        shift_offset = max_v - 3000.0f;
+    if (max_v > (float)MOTOR_MAX_RUN_RPM) {
+        shift_offset = max_v - (float)MOTOR_MAX_RUN_RPM;
     }
 
     for (int i = 0; i < 4; i++) {
         float target_v = calc_target_v[i] - shift_offset;
 
-        // 限制下限在 300 ~ 3000 RPM 之间
-        if (target_v > 3000.0f) {
-            target_v = 3000.0f;
-        } else if (target_v < 300.0f && g_sys_context.g_motor_status[i].target_cmd != CMD_STOP) {
-            target_v = 300.0f;
+        // 限制在 MOTOR_MIN_RUN_RPM ~ MOTOR_MAX_RUN_RPM 之间
+        if (target_v > (float)MOTOR_MAX_RUN_RPM) {
+            target_v = (float)MOTOR_MAX_RUN_RPM;
+        } else if (target_v < (float)MOTOR_MIN_RUN_RPM && g_sys_context.g_motor_status[i].target_cmd != CMD_STOP) {
+            target_v = (float)MOTOR_MIN_RUN_RPM;
         }
 
         if (g_sys_context.g_motor_status[i].target_cmd == CMD_STOP) {
@@ -197,6 +198,223 @@ static void APP_Control_RunPID(int16_t base_speed)
             g_sys_context.g_motor_status[i].target_speed = (int16_t)target_v;
         }
     }
+}
+
+/**
+ * @brief 根据 app_data 的最新物理配置重新计算系统控制参数
+ */
+void APP_Control_UpdateParamsFromAppData(void)
+{
+    uint16_t ratio = (app_data.reduction_ratio > 0) ? app_data.reduction_ratio : 30;
+    uint16_t lead  = (app_data.lead_mm > 0) ? app_data.lead_mm : 8;
+    uint16_t coef  = (app_data.hall_coef > 0) ? app_data.hall_coef : 30;
+
+    g_sys_context.counts_per_mm      = (float)(ratio * coef) / (float)lead;                                      // count/mm
+    g_sys_context.calc_base_rpm      = (int16_t)((app_data.target_speed_mm_min * ratio) / lead);                 // 对应基础转速
+    g_sys_context.max_sync_diff_hall = (int32_t)roundf(app_data.max_sync_diff_mm * g_sys_context.counts_per_mm); // 最大同步差
+    g_sys_context.max_travel_hall    = (int32_t)roundf(app_data.max_travel_range_mm * g_sys_context.counts_per_mm);
+}
+
+/**
+ * @brief 全面复位 Sys_Ctrl_Context_t 运行状态与电机绝对位置 (在恢复出厂设置或系统大重置时调用)
+ */
+void APP_Control_ResetSystemContext(void)
+{
+    // 1. 重新更新物理系数与目标 RPM
+    APP_Control_UpdateParamsFromAppData();
+
+    // 2. 刷新 4 轴运行内存中的绝对位置为 Flash 恢复后的初始安装位置
+    for (int i = 0; i < 4; i++) {
+        g_sys_context.g_motor_status[i].current_abs_hall = app_data.motor_abs_halls[i];
+        g_sys_context.g_motor_status[i].stall_cnt        = 0;
+        g_sys_context.g_motor_status[i].current_deciA    = 0;
+        g_sys_context.g_motor_status[i].current_speed    = 0;
+        g_sys_context.g_motor_status[i].target_speed     = 0;
+    }
+
+    // 3. 复位系统状态机、错误码与微调标志
+    g_sys_context.system_fault_code = FAULT_CODE_NONE;
+    g_sys_context.system_step       = SYS_STEP_READY;
+    g_sys_context.is_single_tuning  = false;
+    g_sys_context.max_travel_diff   = 0;
+}
+
+/**
+ * @brief 外部发起单轴微调
+ */
+void APP_Control_StartSingleTune(uint8_t m_idx)
+{
+    if (g_sys_context.system_step != SYS_STEP_READY || m_idx >= 4) return;
+
+    for (int i = 0; i < 4; i++) {
+        g_sys_context.g_motor_status[i].last_motion_cmd  = CMD_STOP;
+        g_sys_context.g_motor_status[i].start_drive_hall = g_sys_context.g_motor_status[i].hall_value;
+        g_sys_context.g_motor_status[i].base_abs_hall    = g_sys_context.g_motor_status[i].current_abs_hall;
+    }
+
+    g_sys_context.is_single_tuning         = true; // 显式标记正在单轴微调
+    g_sys_context.single_tune_motor_idx    = m_idx;
+    g_sys_context.single_tune_start_hall   = g_sys_context.g_motor_status[m_idx].hall_value;
+    g_sys_context.single_tune_orig_abs_hall = g_sys_context.g_motor_status[m_idx].current_abs_hall;
+    g_sys_context.single_tune_target_counts = (uint32_t)roundf((float)app_data.single_tune_step_0_1mm * g_sys_context.counts_per_mm / 10.0f);
+
+    uint16_t tune_rpm = (app_data.single_tune_speed_rpm > 0 && app_data.single_tune_speed_rpm <= 3000) ? app_data.single_tune_speed_rpm : REBOUND_TUNE_RPM;
+
+    xQueueReset(g_motor_ctrl_queue);
+
+    Motor_Ctrl_Msg_t speed_msg = {CMD_SET_SPEED, (uint8_t)(1 << m_idx), tune_rpm};
+    Motor_Ctrl_Msg_t cmd_msg   = {(g_sys_context.single_tune_dir == 0) ? CMD_FORWARD : CMD_REVERSE, (uint8_t)(1 << m_idx), 0};
+
+    g_sys_context.g_motor_status[m_idx].target_cmd   = cmd_msg.cmd_type;
+    g_sys_context.g_motor_status[m_idx].target_speed = tune_rpm;
+    g_sys_context.g_motor_status[m_idx].stall_cnt    = 0;
+
+    xQueueSend(g_motor_ctrl_queue, &speed_msg, pdMS_TO_TICKS(10));
+    xQueueSend(g_motor_ctrl_queue, &cmd_msg, pdMS_TO_TICKS(10));
+
+    g_sys_context.system_step = SYS_STEP_SINGLE_TUNE;
+    Debug_Printf("[SYS] Enter SINGLE_TUNE: Motor=%d, Dir=%s, Step=%d(0.1mm), TargetCounts=%d, Speed=%dRPM\r\n",
+                 m_idx, (g_sys_context.single_tune_dir == 0) ? "UP" : "DOWN",
+                 app_data.single_tune_step_0_1mm, g_sys_context.single_tune_target_counts, tune_rpm);
+}
+
+/**
+ * @brief 取消/提前结束单轴微调
+ */
+void APP_Control_CancelSingleTune(void)
+{
+    if (g_sys_context.system_step == SYS_STEP_SINGLE_TUNE) {
+        uint8_t m_idx = g_sys_context.single_tune_motor_idx;
+        xQueueReset(g_motor_ctrl_queue);
+        Motor_Ctrl_Msg_t stop_msg                        = {CMD_STOP, (uint8_t)(1 << m_idx), 0};
+        g_sys_context.g_motor_status[m_idx].target_cmd   = CMD_STOP;
+        g_sys_context.g_motor_status[m_idx].target_speed = 0;
+
+        g_sys_context.system_step = SYS_STEP_TUNE_DONE;
+        xQueueSend(g_motor_ctrl_queue, &stop_msg, pdMS_TO_TICKS(10));
+    }
+}
+
+/**
+ * @brief D 键智能化一键开关灯：如果有任一个开着，一次性关闭两个；如果都关着，一次性打开两个
+ */
+static void APP_Control_ToggleLightsByDKey(void)
+{
+    bool is1_on = MID_LED_ReadState(MID_LED_1);
+    bool is2_on = MID_LED_ReadState(MID_LED_2);
+
+    if (is1_on || is2_on) {
+        // 只要有任意一个开着，一次性关闭两个
+        MID_LED_Write(MID_LED_1, false);
+        MID_LED_Write(MID_LED_2, false);
+        Debug_Printf("[SYS] Remot D Key: Turning OFF both strip lights.\r\n");
+    } else {
+        // 两个都关着，一次性打开两个
+        MID_LED_Write(MID_LED_1, true);
+        MID_LED_Write(MID_LED_2, true);
+        Debug_Printf("[SYS] Remot D Key: Turning ON both strip lights.\r\n");
+    }
+}
+
+/**
+ * @brief 正转/上升启动时一次性控制：打开第一个灯带，关闭第二个灯带
+ */
+static void APP_Control_SetLightForward(void)
+{
+    MID_LED_Write(MID_LED_1, true);  // 打开第一个灯带 (LED_1)
+    MID_LED_Write(MID_LED_2, false); // 关闭第二个灯带 (LED_2)
+}
+
+/**
+ * @brief 反转/下降启动时一次性控制：打开第二个灯带，关闭第一个灯带
+ */
+static void APP_Control_SetLightReverse(void)
+{
+    MID_LED_Write(MID_LED_1, false); // 关闭第一个灯带 (LED_1)
+    MID_LED_Write(MID_LED_2, true);  // 打开第二个灯带 (LED_2)
+}
+
+/**
+ * @brief 停机/到界/进入TOTAL_DONE时一次性控制：关掉两个灯带
+ */
+static void APP_Control_SetLightOff(void)
+{
+    MID_LED_Write(MID_LED_1, false); // 关闭第一个灯带
+    MID_LED_Write(MID_LED_2, false); // 关闭第二个灯带
+}
+
+/**
+ * @brief 仅在故障急停状态下进行 1Hz 警示双闪
+ */
+static void APP_Control_UpdateStripLights(void)
+{
+    if (g_sys_context.system_step == SYS_STEP_FAULT_STOP) {
+        // 故障急停状态：灯带 1Hz 双闪警示
+        static uint8_t blink_cnt = 0;
+        blink_cnt++;
+        bool blink = ((blink_cnt / 12) % 2 == 0);
+        MID_LED_Write(MID_LED_1, blink);
+        MID_LED_Write(MID_LED_2, blink);
+    }
+}
+
+/**
+ * @brief 核心控制解算：统一解算 4 轴绝对高度、位移增量 ΔH、绝对伸出行程 travel_rel 及极差统计量
+ * @note 严格采用物理脉冲绝对值结合电机运动方向符号，彻底解决倒转/反弹时的负数突变与极差暴涨问题
+ */
+void APP_Control_UpdateStateAndStatistics(void)
+{
+    float min_dh = 1e9f, max_dh = -1e9f;
+    float min_tr = 1e9f, max_tr = -1e9f;
+
+    g_sys_context.avg_delta_h = 0.0f;
+    g_sys_context.avg_travel  = 0.0f;
+
+    for (int i = 0; i < 4; i++) {
+        uint32_t now_hall   = g_sys_context.g_motor_status[i].hall_value;
+        uint32_t start_hall = g_sys_context.g_motor_status[i].start_drive_hall;
+
+        // 1. 32 位无符号补码减法 + 绝对值：求解本阶段运动的物理霍尔脉冲数 (免疫 0/0xFFFFFFFF 绕回)
+        int32_t raw_diff   = (int32_t)(now_hall - start_hall);
+        uint32_t abs_pulse = (raw_diff >= 0) ? (uint32_t)raw_diff : (uint32_t)(-raw_diff);
+
+        // 2. 根据该轴有效运动方向，求解带有物理高度方向的 signed_delta
+        uint8_t cmd = g_sys_context.g_motor_status[i].target_cmd;
+        int32_t signed_delta = 0;
+
+        if (cmd == CMD_FORWARD) {
+            g_sys_context.g_motor_status[i].last_motion_cmd = CMD_FORWARD;
+            signed_delta = (int32_t)abs_pulse;  // 上升：绝对高度增加
+        } else if (cmd == CMD_REVERSE) {
+            g_sys_context.g_motor_status[i].last_motion_cmd = CMD_REVERSE;
+            signed_delta = -(int32_t)abs_pulse; // 下降：绝对高度减少
+        } else {
+            // CMD_STOP 停机/静止阶段：直接使用带符号的物理脉冲差 (raw_diff)，绝不依赖历史运动方向！
+            signed_delta = raw_diff;
+        }
+
+        // 3. 求解当前绝对高度 (起点高度 + 方向增量)
+        int32_t calc_abs_hall = g_sys_context.g_motor_status[i].base_abs_hall + signed_delta;
+        g_sys_context.g_motor_status[i].current_abs_hall = calc_abs_hall;
+
+        // A. 本次运动过程中的位移增量 ΔH_i
+        g_sys_context.delta_h[i] = (float)signed_delta;
+        g_sys_context.avg_delta_h += g_sys_context.delta_h[i];
+        if (g_sys_context.delta_h[i] < min_dh) min_dh = g_sys_context.delta_h[i];
+        if (g_sys_context.delta_h[i] > max_dh) max_dh = g_sys_context.delta_h[i];
+
+        // B. 基于调平零点 (min_mount_halls) 的真正物理伸出行程 travel_rel[i] (用于 PID 闭环纠偏)
+        g_sys_context.travel_rel[i] = (float)(calc_abs_hall - app_data.min_mount_halls[i]);
+        g_sys_context.avg_travel += g_sys_context.travel_rel[i];
+        if (g_sys_context.travel_rel[i] < min_tr) min_tr = g_sys_context.travel_rel[i];
+        if (g_sys_context.travel_rel[i] > max_tr) max_tr = g_sys_context.travel_rel[i];
+    }
+
+    g_sys_context.avg_delta_h /= 4.0f;
+    g_sys_context.max_dh_diff = max_dh - min_dh; // 本次单次运动位移增量极差
+
+    g_sys_context.avg_travel /= 4.0f;
+    g_sys_context.max_travel_diff = max_tr - min_tr; // 调平伸出行程极差 (伸出差)
 }
 
 // ========================== 核心业务控制任务 ==========================
@@ -214,11 +432,13 @@ void APP_ControlTask(void *pvParameters)
     // 1. 初始化系统上下文与 PID (匹配 5ms/200Hz 极速控制)
     g_sys_context.system_step       = SYS_STEP_Boot;
     g_sys_context.is_hardware_ready = false;
+    g_sys_context.is_single_tuning  = false;
     g_sys_context.base_speed        = 0;
     g_sys_context.system_fault_code = 0;
 
     for (int i = 0; i < 4; i++) {
-        APP_PID_Init(&motor_pids[i], 0.60f, 0.001f, 0.0f, 0.0f, 100.0f, -100.0f, 30.0f);
+        APP_PID_Init(&motor_pids[i], PID_DEFAULT_KP, PID_DEFAULT_KI, PID_DEFAULT_KD,
+                     PID_DEFAULT_DEADZONE, PID_DEFAULT_OUT_MAX, PID_DEFAULT_OUT_MIN, PID_DEFAULT_IOUT_MAX);
     }
 
     TickType_t xLastWakeTime = xTaskGetTickCount();
@@ -240,14 +460,7 @@ void APP_ControlTask(void *pvParameters)
                     }
 
                     // 物理参数单位自动换算
-                    uint16_t ratio = (app_data.reduction_ratio > 0) ? app_data.reduction_ratio : 30;
-                    uint16_t lead  = (app_data.lead_mm > 0) ? app_data.lead_mm : 8;
-                    uint16_t coef  = (app_data.hall_coef > 0) ? app_data.hall_coef : 30;
-
-                    g_sys_context.counts_per_mm      = (float)(ratio * coef) / (float)lead;                                      // 150.0f 或 112.5f count/mm
-                    g_sys_context.calc_base_rpm      = (int16_t)((app_data.target_speed_mm_min * ratio) / lead);                 // 2400 RPM (对应 480 mm/min)
-                    g_sys_context.max_sync_diff_hall = (int32_t)roundf(app_data.max_sync_diff_mm * g_sys_context.counts_per_mm); // 750 counts
-                    g_sys_context.max_travel_hall    = (int32_t)roundf(app_data.max_travel_range_mm * g_sys_context.counts_per_mm);
+                    APP_Control_UpdateParamsFromAppData();
 
                     g_sys_context.system_step = SYS_STEP_READY;
                     Debug_Printf("[SYS] Counts/mm=%.1f, CalcRPM=%d, MaxSyncDiffHall=%d, MaxTravelHall=%d\r\n",
@@ -259,58 +472,7 @@ void APP_ControlTask(void *pvParameters)
 
             // === READY 状态：就绪待命 ===
             case SYS_STEP_READY: {
-                // 1. 检查板上按键消息（切换微调方向或触发单轴微调）
-                MID_KEY_SingleKeyMsg key_msg;
-                if (MID_Key_GetSingleEvent(&key_msg, 0) == pdTRUE) {
-                    // 按键 5 (K5)：切换微调方向 (0: 正转/上升, 1: 反转/下降)
-                    if (key_msg.key_id == MID_KEY_ID_K5 && key_msg.event == MID_KEY_EVT_LEASS) {
-                        g_sys_context.single_tune_dir = (g_sys_context.single_tune_dir == 0) ? 1 : 0;
-                        Debug_Printf("[SYS] Single Tune Direction Switched to: %s\r\n",
-                                     (g_sys_context.single_tune_dir == 0) ? "FORWARD (UP)" : "REVERSE (DOWN)");
-                    }
-                    // 在非菜单设置模式 (Set_W == 0) 下，松开按键 1~4 (K1~K4)：进入单轴微调 SYS_STEP_SINGLE_TUNE
-                    else if (Set_W == 0 && key_msg.key_id <= MID_KEY_ID_K4 && key_msg.event == MID_KEY_EVT_LEASS) {
-                        uint8_t m_idx                                        = (uint8_t)(key_msg.key_id - MID_KEY_ID_K1);
-                        g_sys_context.single_tune_motor_idx                  = m_idx;
-                        g_sys_context.single_tune_start_hall                 = g_sys_context.g_motor_status[m_idx].hall_value;
-                        g_sys_context.single_tune_orig_abs_hall              = g_sys_context.g_motor_status[m_idx].current_abs_hall;
-                        g_sys_context.g_motor_status[m_idx].start_drive_hall = g_sys_context.g_motor_status[m_idx].hall_value;
-                        g_sys_context.g_motor_status[m_idx].base_abs_hall    = g_sys_context.g_motor_status[m_idx].current_abs_hall;
-                        g_sys_context.single_tune_target_counts              = (uint32_t)roundf((float)app_data.single_tune_step_0_1mm[m_idx] * g_sys_context.counts_per_mm / 10.0f);
-
-                        uint16_t tune_rpm = (app_data.single_tune_speed_rpm > 0 && app_data.single_tune_speed_rpm <= 3000) ? app_data.single_tune_speed_rpm : 100;
-
-                        // 重置上次发送速度标记，强保 Modbus 下发成功
-                        last_sent_speed[m_idx] = -1;
-
-                        // 清空队列，下发该单轴微调转速
-                        xQueueReset(g_motor_ctrl_queue);
-
-                        Motor_Ctrl_Msg_t speed_msg;
-                        speed_msg.cmd_type   = CMD_SET_SPEED;
-                        speed_msg.motor_mask = (1 << m_idx);
-                        speed_msg.speed_rpm  = tune_rpm;
-
-                        Motor_Ctrl_Msg_t cmd_msg;
-                        cmd_msg.cmd_type   = (g_sys_context.single_tune_dir == 0) ? CMD_FORWARD : CMD_REVERSE;
-                        cmd_msg.motor_mask = (1 << m_idx);
-                        cmd_msg.speed_rpm  = 0;
-
-                        g_sys_context.g_motor_status[m_idx].target_cmd   = cmd_msg.cmd_type;
-                        g_sys_context.g_motor_status[m_idx].target_speed = tune_rpm;
-                        g_sys_context.g_motor_status[m_idx].stall_cnt    = 0;
-
-                        xQueueSend(g_motor_ctrl_queue, &speed_msg, pdMS_TO_TICKS(10));
-                        xQueueSend(g_motor_ctrl_queue, &cmd_msg, pdMS_TO_TICKS(10));
-
-                        g_sys_context.system_step = SYS_STEP_SINGLE_TUNE;
-                        Debug_Printf("[SYS] Enter SINGLE_TUNE: Motor=%d, Dir=%s, Step=%d(0.1mm), TargetCounts=%d, Speed=%dRPM\r\n",
-                                     m_idx, (g_sys_context.single_tune_dir == 0) ? "UP" : "DOWN",
-                                     app_data.single_tune_step_0_1mm[m_idx], g_sys_context.single_tune_target_counts, tune_rpm);
-                    }
-                }
-
-                // 2. 检查遥控信号触发下行 / 上行
+                // 检查遥控信号触发下行 / 上行
                 if (has_event && sig_msg.event == MID_SIGNAL_EVT_TRIGGER) {
                     Motor_Ctrl_Msg_t speed_msg;
                     Motor_Ctrl_Msg_t cmd_msg;
@@ -319,7 +481,13 @@ void APP_ControlTask(void *pvParameters)
                     int16_t run_rpm = (g_sys_context.calc_base_rpm > 0) ? g_sys_context.calc_base_rpm : 2400;
 
                     switch (sig_msg.signal_id) {
-                        case MID_SIGNAL_REMOT_3: { // 遥控下行
+                        case MID_SIGNAL_REMOT_1: { // D 键 (REMOT_1): 一键控灯 (若有开则全关，无开则全亮)
+                            APP_Control_ToggleLightsByDKey();
+                            break;
+                        }
+
+                        case MID_SIGNAL_REMOT_3:
+                        case MID_SIGNAL_BUTON_DW: { // B 键 (REMOT_3) & 外接信号下行 (PC7)
                             // 启动前安全检查：如果有任意轴已到达或低于底部零点 (travel_rel <= 0)，禁止启动下行！
                             bool limit_blocked = false;
                             for (int i = 0; i < 4; i++) {
@@ -332,7 +500,8 @@ void APP_ControlTask(void *pvParameters)
                             }
                             if (limit_blocked) break;
 
-                            g_sys_context.base_speed = run_rpm;
+                            g_sys_context.is_single_tuning = false;
+                            g_sys_context.base_speed       = run_rpm;
 
                             speed_msg.cmd_type   = CMD_SET_SPEED;
                             speed_msg.motor_mask = 0x0F;
@@ -358,13 +527,15 @@ void APP_ControlTask(void *pvParameters)
                             xQueueSend(g_motor_ctrl_queue, &speed_msg, pdMS_TO_TICKS(10));
                             xQueueSend(g_motor_ctrl_queue, &cmd_msg, pdMS_TO_TICKS(10));
 
+                            APP_Control_SetLightReverse(); // 一次性控制：打开第二个灯带，关闭第一个灯带
                             action_valid              = true;
                             g_sys_context.ramp_cnt    = 0; // 重置 1000ms 缓启动计数
                             g_sys_context.system_step = SYS_STEP_TOTAL_RUNNING;
                             break;
                         }
 
-                        case MID_SIGNAL_REMOT_4: { // 遥控上行
+                        case MID_SIGNAL_REMOT_4:
+                        case MID_SIGNAL_BUTON_UP: { // 遥控上行 & 外接信号上行 (PC8)
                             // 启动前安全检查：如果有任意轴已到达或超过最大行程上限 (travel_rel >= max_travel_hall)，禁止启动上行！
                             bool limit_blocked = false;
                             for (int i = 0; i < 4; i++) {
@@ -378,7 +549,8 @@ void APP_ControlTask(void *pvParameters)
                             }
                             if (limit_blocked) break;
 
-                            g_sys_context.base_speed = run_rpm;
+                            g_sys_context.is_single_tuning = false;
+                            g_sys_context.base_speed       = run_rpm;
 
                             speed_msg.cmd_type   = CMD_SET_SPEED;
                             speed_msg.motor_mask = 0x0F;
@@ -404,6 +576,7 @@ void APP_ControlTask(void *pvParameters)
                             xQueueSend(g_motor_ctrl_queue, &speed_msg, pdMS_TO_TICKS(10));
                             xQueueSend(g_motor_ctrl_queue, &cmd_msg, pdMS_TO_TICKS(10));
 
+                            APP_Control_SetLightForward(); // 一次性控制：打开第一个灯带，关闭第二个灯带
                             action_valid              = true;
                             g_sys_context.ramp_cnt    = 0; // 重置 1000ms 缓启动计数
                             g_sys_context.system_step = SYS_STEP_TOTAL_RUNNING;
@@ -448,12 +621,8 @@ void APP_ControlTask(void *pvParameters)
                 g_sys_context.g_motor_status[m_idx].current_abs_hall = g_sys_context.single_tune_orig_abs_hall + signed_delta;
                 g_sys_context.travel_rel[m_idx]                      = (float)(g_sys_context.g_motor_status[m_idx].current_abs_hall - app_data.min_mount_halls[m_idx]);
 
-                // 检查用户在微调中按下板上按键，支持中途手动退出微调
-                MID_KEY_SingleKeyMsg tune_key_msg;
-                bool user_cancel = (MID_Key_GetSingleEvent(&tune_key_msg, 0) == pdTRUE);
-
-                // 若达到目标步计数或用户在微调中按下按键中途退出，停止该轴运动并切入 SYS_STEP_TUNE_DONE 归档
-                if (abs_delta >= g_sys_context.single_tune_target_counts || user_cancel) {
+                // 若达到目标步计数，停止该轴运动并切入 SYS_STEP_TUNE_DONE 归档
+                if (abs_delta >= g_sys_context.single_tune_target_counts) {
                     xQueueReset(g_motor_ctrl_queue);
 
                     Motor_Ctrl_Msg_t stop_msg                        = {CMD_STOP, (uint8_t)(1 << m_idx), 0};
@@ -467,12 +636,8 @@ void APP_ControlTask(void *pvParameters)
 
                     g_sys_context.system_step = SYS_STEP_TUNE_DONE;
                     xQueueSend(g_motor_ctrl_queue, &stop_msg, pdMS_TO_TICKS(10));
-                    if (user_cancel) {
-                        Debug_Printf("[SYS] Single Tune Cancelled by Key Press! Stopping Motor %d...\r\n", m_idx);
-                    } else {
-                        Debug_Printf("[SYS] Single Tune Reached Target Counts (%d >= %d), Stopping Motor %d...\r\n",
-                                     abs_delta, g_sys_context.single_tune_target_counts, m_idx);
-                    }
+                    Debug_Printf("[SYS] Single Tune Reached Target Counts (%d >= %d), Stopping Motor %d...\r\n",
+                                 abs_delta, g_sys_context.single_tune_target_counts, m_idx);
                 }
 
                 APP_Control_DebugPrint();
@@ -499,40 +664,7 @@ void APP_ControlTask(void *pvParameters)
                 }
 
                 // 1. 无条件优先从内存缓存解算 4 轴最新绝对高度 + 统一计算位移增量 ΔH 与绝对伸出行程 travel_rel 及其统计量
-                float min_dh = 1e9f, max_dh = -1e9f;
-                float min_tr = 1e9f, max_tr = -1e9f;
-
-                g_sys_context.avg_delta_h = 0.0f;
-                g_sys_context.avg_travel  = 0.0f;
-
-                for (int i = 0; i < 4; i++) {
-                    uint32_t now_hall   = g_sys_context.g_motor_status[i].hall_value;
-                    uint32_t start_hall = g_sys_context.g_motor_status[i].start_drive_hall;
-
-                    // 32 位无符号补码减法：跨越 0 / 0xFFFFFFFF 自动自然回绕，强转 int32_t 100% 精确
-                    int32_t delta_drive   = (int32_t)(now_hall - start_hall);
-                    int32_t calc_abs_hall = g_sys_context.g_motor_status[i].base_abs_hall + delta_drive;
-
-                    g_sys_context.g_motor_status[i].current_abs_hall = calc_abs_hall;
-
-                    // A. 本次运动过程中的位移增量 ΔH_i
-                    g_sys_context.delta_h[i] = (float)delta_drive;
-                    g_sys_context.avg_delta_h += g_sys_context.delta_h[i];
-                    if (g_sys_context.delta_h[i] < min_dh) min_dh = g_sys_context.delta_h[i];
-                    if (g_sys_context.delta_h[i] > max_dh) max_dh = g_sys_context.delta_h[i];
-
-                    // B. 基于调平零点 (min_mount_halls) 的真正物理伸出行程 travel_rel[i] (用于 PID 闭环纠偏)
-                    g_sys_context.travel_rel[i] = (float)(calc_abs_hall - app_data.min_mount_halls[i]);
-                    g_sys_context.avg_travel += g_sys_context.travel_rel[i];
-                    if (g_sys_context.travel_rel[i] < min_tr) min_tr = g_sys_context.travel_rel[i];
-                    if (g_sys_context.travel_rel[i] > max_tr) max_tr = g_sys_context.travel_rel[i];
-                }
-
-                g_sys_context.avg_delta_h /= 4.0f;
-                g_sys_context.max_dh_diff = max_dh - min_dh; // 本次单次运动位移增量极差
-
-                g_sys_context.avg_travel /= 4.0f;
-                g_sys_context.max_travel_diff = max_tr - min_tr; // 调平伸出行程极差 (伸出差)
+                APP_Control_UpdateStateAndStatistics();
 
                 // 校验运行过程中的行程上下限到界判定 (到达边界自动软停机)
                 bool is_running_forward = (g_sys_context.g_motor_status[0].target_cmd == CMD_FORWARD);
@@ -560,26 +692,30 @@ void APP_ControlTask(void *pvParameters)
                 }
 
                 if (has_event && sig_msg.event == MID_SIGNAL_EVT_TRIGGER) {
-                    // 1. 清空死锁消息队列
-                    xQueueReset(g_motor_ctrl_queue);
+                    if (sig_msg.signal_id == MID_SIGNAL_REMOT_1) {
+                        // D 键 (REMOT_1)：一键控灯 (若有开则全关，无开则全亮)，不断停运行
+                        APP_Control_ToggleLightsByDKey();
+                    } else if (sig_msg.signal_id == MID_SIGNAL_REMOT_2) {
+                        // C 键 (REMOT_2)：专用停止按键，触发 CMD_STOP 停机！
+                        xQueueReset(g_motor_ctrl_queue);
 
-                    // 2. 状态重置为 STOP
-                    for (int i = 0; i < 4; i++) {
-                        g_sys_context.g_motor_status[i].target_cmd   = CMD_STOP;
-                        g_sys_context.g_motor_status[i].target_speed = 0;
-                        last_sent_speed[i]                           = 0;
+                        for (int i = 0; i < 4; i++) {
+                            g_sys_context.g_motor_status[i].target_cmd   = CMD_STOP;
+                            g_sys_context.g_motor_status[i].target_speed = 0;
+                            last_sent_speed[i]                           = 0;
+                        }
+
+                        stop_stable_cnt = 0;
+                        for (int i = 0; i < 4; i++) {
+                            last_check_halls[i] = 0xFFFFFFFF;
+                        }
+
+                        Motor_Ctrl_Msg_t stop_msg = {CMD_STOP, 0x0F, 0};
+                        g_sys_context.system_step = SYS_STEP_TOTAL_DONE;
+                        xQueueSend(g_motor_ctrl_queue, &stop_msg, pdMS_TO_TICKS(10));
+                        APP_Control_SetLightOff(); // 停机一次性关两个灯
+                        Debug_Printf("[SYS] Remot C Key (Stop Signal) Pressed, sending CMD_STOP...\r\n");
                     }
-
-                    // 3. 高优先级阻塞发送停机命令并重置判定变量
-                    stop_stable_cnt = 0;
-                    for (int i = 0; i < 4; i++) {
-                        last_check_halls[i] = 0xFFFFFFFF;
-                    }
-
-                    Motor_Ctrl_Msg_t stop_msg = {CMD_STOP, 0x0F, 0};
-                    g_sys_context.system_step = SYS_STEP_TOTAL_DONE;
-                    xQueueSend(g_motor_ctrl_queue, &stop_msg, pdMS_TO_TICKS(10));
-                    Debug_Printf("[SYS] User Stop signal, sending CMD_STOP...\r\n");
                 } else if (reach_limit) {
                     // 触及行程上限或零点到界停机
                     xQueueReset(g_motor_ctrl_queue);
@@ -595,51 +731,67 @@ void APP_ControlTask(void *pvParameters)
                     Motor_Ctrl_Msg_t stop_msg = {CMD_STOP, 0x0F, 0};
                     g_sys_context.system_step = SYS_STEP_TOTAL_DONE;
                     xQueueSend(g_motor_ctrl_queue, &stop_msg, pdMS_TO_TICKS(10));
+                    APP_Control_SetLightOff(); // 到界停机一次性关两个灯
                 } else if (APP_Control_CheckSafety()) {
                     xQueueReset(g_motor_ctrl_queue);
-                    if (g_sys_context.system_fault_code == 1) { // 1: 过流堵转
-                        // 启动 4 轴整体 100 RPM 向反方向反弹 30mm 流程
+                    if (g_sys_context.system_fault_code == FAULT_CODE_STALL) {
+                        // 启动 4 轴整体 REBOUND_TUNE_RPM 向反方向反弹 REBOUND_DISTANCE_MM 流程
                         uint8_t current_cmd                 = g_sys_context.g_motor_status[0].target_cmd;
                         g_sys_context.rebound_cmd           = (current_cmd == CMD_FORWARD) ? CMD_REVERSE : CMD_FORWARD;
-                        g_sys_context.rebound_target_counts = (uint32_t)roundf(30.0f * g_sys_context.counts_per_mm); // 反弹 30mm
+                        g_sys_context.rebound_target_counts = (uint32_t)roundf(REBOUND_DISTANCE_MM * g_sys_context.counts_per_mm);
 
                         for (int i = 0; i < 4; i++) {
                             g_sys_context.rebound_start_hall[i]              = g_sys_context.g_motor_status[i].hall_value;
                             g_sys_context.g_motor_status[i].start_drive_hall = g_sys_context.g_motor_status[i].hall_value;
                             g_sys_context.g_motor_status[i].base_abs_hall    = g_sys_context.g_motor_status[i].current_abs_hall;
                             g_sys_context.g_motor_status[i].target_cmd       = g_sys_context.rebound_cmd;
-                            g_sys_context.g_motor_status[i].target_speed     = 100; // 统一给驱动器 100 RPM
+                            g_sys_context.g_motor_status[i].target_speed     = REBOUND_TUNE_RPM;
                             g_sys_context.g_motor_status[i].stall_cnt        = 0;
                         }
 
-                        Motor_Ctrl_Msg_t speed_msg = {CMD_SET_SPEED, 0x0F, 100};
+                        Motor_Ctrl_Msg_t speed_msg = {CMD_SET_SPEED, 0x0F, REBOUND_TUNE_RPM};
                         Motor_Ctrl_Msg_t cmd_msg   = {(Motor_Cmd_Type_t)g_sys_context.rebound_cmd, 0x0F, 0};
 
                         xQueueSend(g_motor_ctrl_queue, &speed_msg, pdMS_TO_TICKS(10));
                         xQueueSend(g_motor_ctrl_queue, &cmd_msg, pdMS_TO_TICKS(10));
 
                         g_sys_context.system_step = SYS_STEP_TOTAL_REBOUND;
-                        Debug_Printf("[SYS] OverCurrent Stall! Starting 100 RPM Rebound 30mm (TargetCounts=%d)...\r\n",
-                                     g_sys_context.rebound_target_counts);
+                        Debug_Printf("[SYS] OverCurrent Stall! Starting %d RPM Rebound %.0fmm (TargetCounts=%d)...\r\n",
+                                     REBOUND_TUNE_RPM, REBOUND_DISTANCE_MM, g_sys_context.rebound_target_counts);
                     } else {
-                        // 通信中断/同步差超限直接急停
+                        // 通信中断/同步差超限：先下发全轴 STOP 切入 SYS_STEP_TOTAL_DONE 进行刹车停稳与绝对位置归档！
+                        bool has_comm_err = false;
+                        for (int i = 0; i < 4; i++) {
+                            if (g_sys_context.g_motor_status[i].comm_error > 0) {
+                                has_comm_err = true;
+                                break;
+                            }
+                        }
+                        if (has_comm_err) {
+                            g_sys_context.system_fault_code = FAULT_CODE_COMM; // 标记 485 通信故障
+                            Debug_Printf("[SYS] Safety Protection: 485 Comm Error Detected! Stopping & Archiving...\r\n");
+                        } else {
+                            g_sys_context.system_fault_code = FAULT_CODE_SYNC; // 标记严重同步差故障
+                            Debug_Printf("[SYS] Safety Protection: Sync Diff Exceeded! Stopping & Archiving...\r\n");
+                        }
+
                         for (int i = 0; i < 4; i++) {
                             g_sys_context.g_motor_status[i].target_cmd   = CMD_STOP;
                             g_sys_context.g_motor_status[i].target_speed = 0;
                             last_sent_speed[i]                           = 0;
                         }
                         Motor_Ctrl_Msg_t stop_msg = {CMD_STOP, 0x0F, 0};
-                        g_sys_context.system_step = SYS_STEP_FAULT_STOP;
+                        g_sys_context.system_step = SYS_STEP_TOTAL_DONE;
                         xQueueSend(g_motor_ctrl_queue, &stop_msg, pdMS_TO_TICKS(10));
                     }
                 } else {
-                    // 2. 1000ms 直线斜坡缓启动 (50 帧 x 20ms = 1000ms，起点 300 RPM 直线斜坡升速)
+                    // 2. 1000ms 直线斜坡缓启动 (RAMP_UP_TOTAL_STEPS 帧 x 20ms = 1000ms，起点 RAMP_UP_START_RPM 直线斜坡升速)
                     int16_t run_base_speed = g_sys_context.base_speed;
-                    if (g_sys_context.ramp_cnt < 50) {
+                    if (g_sys_context.ramp_cnt < RAMP_UP_TOTAL_STEPS) {
                         g_sys_context.ramp_cnt++;
-                        int16_t start_rpm = 300;
+                        int16_t start_rpm = RAMP_UP_START_RPM;
                         if (run_base_speed > start_rpm) {
-                            run_base_speed = start_rpm + (int16_t)((int32_t)(run_base_speed - start_rpm) * g_sys_context.ramp_cnt / 50);
+                            run_base_speed = start_rpm + (int16_t)((int32_t)(run_base_speed - start_rpm) * g_sys_context.ramp_cnt / RAMP_UP_TOTAL_STEPS);
                         }
                     }
 
@@ -671,31 +823,37 @@ void APP_ControlTask(void *pvParameters)
 
             // === SYS_STEP_TOTAL_REBOUND 阶段：堵转后整体向反方向反弹运行中 ===
             case SYS_STEP_TOTAL_REBOUND: {
-                // 若驱动器状态命令尚未 ACK 匹配成功，在 20ms 周期内持续补发，强保 4 轴整体反弹启动
-                if (g_sys_context.g_motor_status[0].current_cmd != g_sys_context.rebound_cmd ||
-                    g_sys_context.g_motor_status[0].current_speed != 100) {
-                    Motor_Ctrl_Msg_t speed_msg = {CMD_SET_SPEED, 0x0F, 100};
-                    Motor_Ctrl_Msg_t cmd_msg   = {(Motor_Cmd_Type_t)g_sys_context.rebound_cmd, 0x0F, 0};
-                    xQueueSend(g_motor_ctrl_queue, &speed_msg, 0);
-                    xQueueSend(g_motor_ctrl_queue, &cmd_msg, 0);
-                }
+                // 1. 无条件调用通用解算函数更新 4 轴绝对高度、伸出行程及极差
+                APP_Control_UpdateStateAndStatistics();
 
-                // 解算 4 轴反弹位移与累计增量 (精确区分上升/下降方向符号)
+                // 解算 4 轴反弹累计增量 (计算平均反弹步数)
                 float sum_reb_counts = 0.0f;
                 for (int i = 0; i < 4; i++) {
-                    uint32_t now_h  = g_sys_context.g_motor_status[i].hall_value;
-                    int32_t d_h     = (int32_t)(now_h - g_sys_context.rebound_start_hall[i]);
-                    uint32_t abs_dh = (d_h >= 0) ? (uint32_t)d_h : (uint32_t)(-d_h);
-                    sum_reb_counts += (float)abs_dh;
-
-                    // 根据反弹方向 (rebound_cmd: CMD_FORWARD 为 +, CMD_REVERSE 为 -) 计算高度绝对增量
-                    int32_t reb_signed_delta = (g_sys_context.rebound_cmd == CMD_FORWARD) ? (int32_t)abs_dh : -(int32_t)abs_dh;
-                    g_sys_context.g_motor_status[i].current_abs_hall = g_sys_context.g_motor_status[i].base_abs_hall + reb_signed_delta;
-                    g_sys_context.travel_rel[i]                      = (float)(g_sys_context.g_motor_status[i].current_abs_hall - app_data.min_mount_halls[i]);
+                    int32_t reb_h = g_sys_context.g_motor_status[i].current_abs_hall - g_sys_context.g_motor_status[i].base_abs_hall;
+                    sum_reb_counts += (reb_h >= 0) ? (float)reb_h : (float)(-reb_h);
                 }
                 float avg_reb_counts = sum_reb_counts / 4.0f;
 
-                // 检查反弹终止条件（完成 30mm 目标，或触及物理底点/顶限）
+                // 2. 堵转反弹阶段实时 PID 纠偏调速 (保持顶部台面绝对平行)
+                APP_Control_RunPID(REBOUND_TUNE_RPM);
+
+                // 【按需门限下发】向 4 轴下发 PID 平行纠偏调整速度
+                for (int i = 0; i < 4; i++) {
+                    int16_t diff_v = g_sys_context.g_motor_status[i].target_speed - last_sent_speed[i];
+                    if (diff_v < 0) diff_v = -diff_v;
+
+                    if (diff_v >= 2 || last_sent_speed[i] == -1) {
+                        Motor_Ctrl_Msg_t speed_msg = {CMD_SET_SPEED, (uint8_t)(1 << i), g_sys_context.g_motor_status[i].target_speed};
+                        Motor_Ctrl_Msg_t cmd_msg   = {(Motor_Cmd_Type_t)g_sys_context.rebound_cmd, (uint8_t)(1 << i), 0};
+
+                        if (xQueueSend(g_motor_ctrl_queue, &speed_msg, 0) == pdTRUE) {
+                            last_sent_speed[i] = g_sys_context.g_motor_status[i].target_speed;
+                        }
+                        xQueueSend(g_motor_ctrl_queue, &cmd_msg, 0);
+                    }
+                }
+
+                // 3. 检查反弹终止条件（完成 REBOUND_DISTANCE_MM 目标，或触及物理底点/顶限）
                 bool rebound_done = (avg_reb_counts >= (float)g_sys_context.rebound_target_counts);
                 if (!rebound_done) {
                     if (g_sys_context.rebound_cmd == CMD_REVERSE) {
@@ -715,28 +873,23 @@ void APP_ControlTask(void *pvParameters)
                     }
                 }
 
+                // 4. 反弹完成：直接下发全轴 STOP，切入 SYS_STEP_TUNE_DONE 统一接管停稳判定与 Flash 固化！
                 if (rebound_done) {
                     xQueueReset(g_motor_ctrl_queue);
                     for (int i = 0; i < 4; i++) {
                         g_sys_context.g_motor_status[i].target_cmd   = CMD_STOP;
                         g_sys_context.g_motor_status[i].target_speed = 0;
                         last_sent_speed[i]                           = 0;
-
-                        // 同步更新反弹停稳后的绝对高度起点并持久化存 Flash
-                        app_data.motor_abs_halls[i]                        = g_sys_context.g_motor_status[i].current_abs_hall;
-                        g_sys_context.g_motor_status[i].base_abs_hall     = g_sys_context.g_motor_status[i].current_abs_hall;
-                        g_sys_context.g_motor_status[i].start_drive_hall  = g_sys_context.g_motor_status[i].hall_value;
                     }
-                    APP_Data_Storage(); // 固化 Flash
-
                     stop_stable_cnt = 0;
                     for (int i = 0; i < 4; i++) {
                         last_check_halls[i] = 0xFFFFFFFF;
                     }
+
                     Motor_Ctrl_Msg_t stop_msg = {CMD_STOP, 0x0F, 0};
-                    g_sys_context.system_step = SYS_STEP_FAULT_STOP;
+                    g_sys_context.system_step = SYS_STEP_TOTAL_DONE;
                     xQueueSend(g_motor_ctrl_queue, &stop_msg, pdMS_TO_TICKS(10));
-                    Debug_Printf("[SYS] Rebound Completed (AvgCounts=%.0f), Flash Saved. System Entering FAULT_STOP.\r\n", avg_reb_counts);
+                    Debug_Printf("[SYS] Rebound Distance Reached (AvgCounts=%.0f), Sending CMD_STOP & Entering SYS_STEP_TOTAL_DONE...\r\n", avg_reb_counts);
                 }
 
                 APP_Control_DebugPrint();
@@ -746,17 +899,9 @@ void APP_ControlTask(void *pvParameters)
             // === 停机归档阶段（含 4 轴连续静止检测） ===
             case SYS_STEP_TOTAL_DONE:
             case SYS_STEP_TUNE_DONE: {
-                // 实时解算当前 4 路绝对高度与从安装校准点伸出的物理行程 travel_rel
-                float min_tr = 1e9f, max_tr = -1e9f;
-                for (int i = 0; i < 4; i++) {
-                    int32_t drive_relative_hall = (int32_t)g_sys_context.g_motor_status[i].hall_value;
-                    g_sys_context.g_motor_status[i].current_abs_hall =
-                        g_sys_context.g_motor_status[i].base_abs_hall + (drive_relative_hall - g_sys_context.g_motor_status[i].start_drive_hall);
-                    g_sys_context.travel_rel[i] = (float)(g_sys_context.g_motor_status[i].current_abs_hall - app_data.min_mount_halls[i]);
-                    if (g_sys_context.travel_rel[i] < min_tr) min_tr = g_sys_context.travel_rel[i];
-                    if (g_sys_context.travel_rel[i] > max_tr) max_tr = g_sys_context.travel_rel[i];
-                }
-                g_sys_context.max_travel_diff = max_tr - min_tr;
+                APP_Control_SetLightOff(); // 停机刹车阶段一次性关闭 2 路灯带
+                // 1. 无条件调用通用解算函数更新 4 轴绝对高度、伸出行程及极差
+                APP_Control_UpdateStateAndStatistics();
 
                 // 检查 4 路霍尔原始数据是否相比上一次 20ms 无任何变化
                 bool is_all_same = true;
@@ -773,17 +918,30 @@ void APP_ControlTask(void *pvParameters)
                     stop_stable_cnt = 0;
                 }
 
-                // 连续 5 次（100ms 周期）4 路位置全无变化，确认物理电机已完全停稳
-                if (stop_stable_cnt >= 5) {
+                // 连续确认静止次数后，确认物理电机已完全停稳
+                if (stop_stable_cnt >= STOP_STABLE_CHECK_CNT) {
                     stop_stable_cnt = 0;
 
-                    // 1. 若为微调完成阶段 SYS_STEP_TUNE_DONE，将微调过程改变的霍尔增量累加更新至 min_mount_halls 并固化 Flash！
-                    if (g_sys_context.system_step == SYS_STEP_TUNE_DONE) {
-                        uint8_t m_idx      = g_sys_context.single_tune_motor_idx;
-                        int32_t tune_delta = g_sys_context.g_motor_status[m_idx].current_abs_hall - g_sys_context.single_tune_orig_abs_hall;
+                    // 1. 若仅为真正的单轴微调完成阶段，才将微调过程改变的霍尔增量累加更新至 min_mount_halls 并固化 Flash！
+                    if (g_sys_context.system_step == SYS_STEP_TUNE_DONE && g_sys_context.is_single_tuning && g_sys_context.single_tune_motor_idx < 4) {
+                        g_sys_context.is_single_tuning = false; // 复位微调标记
+                        uint8_t m_idx                  = g_sys_context.single_tune_motor_idx;
+
+                        // 根据微调实际运动的原始脉冲差与设定方向，精确解算微调变动值
+                        int32_t raw_diff   = (int32_t)(g_sys_context.g_motor_status[m_idx].hall_value - g_sys_context.single_tune_start_hall);
+                        uint32_t abs_pulse = (raw_diff >= 0) ? (uint32_t)raw_diff : (uint32_t)(-raw_diff);
+
+                        int32_t tune_delta = 0;
+                        if (g_sys_context.single_tune_dir == 0) {
+                            tune_delta = (int32_t)abs_pulse;  // 正转/上升微调：零点加上正增量
+                        } else {
+                            tune_delta = -(int32_t)abs_pulse; // 反转/下降微调：零点减去负增量
+                        }
+
                         app_data.min_mount_halls[m_idx] += tune_delta; // 累加微调变动值
-                        Debug_Printf("[SYS] Single Tune Complete! Motor %d DeltaHall=%d, New min_mount_hall=%d. Saved to Flash.\r\n",
-                                     m_idx, tune_delta, app_data.min_mount_halls[m_idx]);
+                        Debug_Printf("[SYS] Single Tune Complete! Motor %d (Dir=%s) Delta=%d, New min_mount_hall=%d. Saved to Flash.\r\n",
+                                     m_idx, (g_sys_context.single_tune_dir == 0) ? "UP" : "DOWN",
+                                     tune_delta, app_data.min_mount_halls[m_idx]);
                     }
 
                     // 2. 同步 Flash 存储数据与控制内存基准
@@ -799,56 +957,144 @@ void APP_ControlTask(void *pvParameters)
                     // 3. 立即同步固化存 Flash
                     APP_Data_Storage();
 
-                    // 3. 以最新的 min_mount_halls 重新计算 4 轴绝对伸出行程 travel_rel 及极差 max_travel_diff
-                    float min_tr = 1e9f, max_tr = -1e9f;
-                    g_sys_context.avg_travel  = 0.0f;
-                    g_sys_context.avg_delta_h = 0.0f;
-                    g_sys_context.max_dh_diff = 0.0f;
+                    // 4. 以最新的 min_mount_halls 重新计算 4 轴绝对伸出行程 travel_rel 及极差 max_travel_diff
+                    APP_Control_UpdateStateAndStatistics();
 
+                    // 5. 重置 4 轴 PID 控制器历史状态（清零积分项，防止带入上一次控制残留）
                     for (int i = 0; i < 4; i++) {
-                        g_sys_context.travel_rel[i] = (float)(g_sys_context.g_motor_status[i].current_abs_hall - app_data.min_mount_halls[i]);
-                        g_sys_context.avg_travel += g_sys_context.travel_rel[i];
-                        if (g_sys_context.travel_rel[i] < min_tr) min_tr = g_sys_context.travel_rel[i];
-                        if (g_sys_context.travel_rel[i] > max_tr) max_tr = g_sys_context.travel_rel[i];
-                    }
-                    g_sys_context.avg_travel /= 4.0f;
-                    g_sys_context.max_travel_diff = max_tr - min_tr;
-
-                    // 4. 重置 4 轴 PID 控制器历史状态（清零积分项，防止带入上一次控制残留）
-                    for (int i = 0; i < 4; i++) {
-                        APP_PID_Init(&motor_pids[i], 0.60f, 0.001f, 0.0f, 0.0f, 100.0f, -100.0f, 30.0f);
+                        APP_PID_Init(&motor_pids[i], PID_DEFAULT_KP, PID_DEFAULT_KI, PID_DEFAULT_KD,
+                                     PID_DEFAULT_DEADZONE, PID_DEFAULT_OUT_MAX, PID_DEFAULT_OUT_MIN, PID_DEFAULT_IOUT_MAX);
                     }
 
                     g_sys_context.base_speed = 0;
 
                     APP_Control_DebugPrint();
 
-                    g_sys_context.system_step = SYS_STEP_READY;
-                    Debug_Printf("[SYS] State -> READY (AbsHalls:[%d,%d,%d,%d], MaxDiff=%.1f)\r\n",
-                                 g_sys_context.g_motor_status[0].current_abs_hall,
-                                 g_sys_context.g_motor_status[1].current_abs_hall,
-                                 g_sys_context.g_motor_status[2].current_abs_hall,
-                                 g_sys_context.g_motor_status[3].current_abs_hall,
-                                 g_sys_context.max_travel_diff);
-                    Debug_Printf("[SYS] Flash Data (SavedAbs:[%d,%d,%d,%d], MinMount:[%d,%d,%d,%d])\r\n",
-                                 app_data.motor_abs_halls[0],
-                                 app_data.motor_abs_halls[1],
-                                 app_data.motor_abs_halls[2],
-                                 app_data.motor_abs_halls[3],
-                                 app_data.min_mount_halls[0],
-                                 app_data.min_mount_halls[1],
-                                 app_data.min_mount_halls[2],
-                                 app_data.min_mount_halls[3]);
+                    // 6. 停稳归档完成后的三向流转决策：
+                    // A. 检查是否存在不可恢复的硬件故障 (如 485 通信中断)
+                    bool has_comm_fault = false;
+                    for (int i = 0; i < 4; i++) {
+                        if (g_sys_context.g_motor_status[i].comm_error > 0) {
+                            has_comm_fault = true;
+                            break;
+                        }
+                    }
+
+                    if (has_comm_fault || g_sys_context.system_fault_code == FAULT_CODE_COMM) {
+                        // 通信中断：切入急停锁死状态，禁止自愈重平！
+                        g_sys_context.system_fault_code = FAULT_CODE_COMM;
+                        g_sys_context.system_step       = SYS_STEP_FAULT_STOP;
+                        Debug_Printf("[SYS] Stop Check: 485 Comm Fault Active! Entering SYS_STEP_FAULT_STOP Lockout State.\r\n");
+                    } else if (g_sys_context.max_travel_diff > (float)g_sys_context.max_sync_diff_hall) {
+                        // 通信正常且物理极差超限：触发 SYS_STEP_AUTO_ALIGN 自愈恢复
+                        for (int i = 0; i < 4; i++) {
+                            g_sys_context.g_motor_status[i].base_abs_hall    = g_sys_context.g_motor_status[i].current_abs_hall;
+                            g_sys_context.g_motor_status[i].start_drive_hall = g_sys_context.g_motor_status[i].hall_value;
+                        }
+                        g_sys_context.system_step = SYS_STEP_AUTO_ALIGN;
+                        Debug_Printf("[SYS] Stop Check: Sync Diff Exceeded (Diff=%.1f > Limit=%d)! Triggering AUTO_ALIGN Self-Healing...\r\n",
+                                     g_sys_context.max_travel_diff, g_sys_context.max_sync_diff_hall);
+                    } else {
+                        // 成功归档且无故障就绪：清空故障代码
+                        g_sys_context.system_fault_code = FAULT_CODE_NONE;
+                        g_sys_context.system_step       = SYS_STEP_READY;
+                        Debug_Printf("[SYS] State -> READY (AbsHalls:[%d,%d,%d,%d], MaxDiff=%.1f)\r\n",
+                                     g_sys_context.g_motor_status[0].current_abs_hall,
+                                     g_sys_context.g_motor_status[1].current_abs_hall,
+                                     g_sys_context.g_motor_status[2].current_abs_hall,
+                                     g_sys_context.g_motor_status[3].current_abs_hall,
+                                     g_sys_context.max_travel_diff);
+                        Debug_Printf("[SYS] Flash Data (SavedAbs:[%d,%d,%d,%d], MinMount:[%d,%d,%d,%d])\r\n",
+                                     app_data.motor_abs_halls[0], app_data.motor_abs_halls[1],
+                                     app_data.motor_abs_halls[2], app_data.motor_abs_halls[3],
+                                     app_data.min_mount_halls[0], app_data.min_mount_halls[1],
+                                     app_data.min_mount_halls[2], app_data.min_mount_halls[3]);
+                    }
                 }
                 break;
             }
 
-            // === 故障急停状态 ===
+            // === SYS_STEP_AUTO_ALIGN 阶段：四轴自主台面平行恢复 (自愈重平) ===
+            case SYS_STEP_AUTO_ALIGN: {
+                // 1. 实时解算 4 轴绝对高度与伸出行程 travel_rel
+                APP_Control_UpdateStateAndStatistics();
+
+                // 2. 检查极差收敛对齐终止条件 (收敛至 max_sync_diff_hall * AUTO_ALIGN_TARGET_DIFF_RATIO 以内)
+                float target_converge_diff = (float)g_sys_context.max_sync_diff_hall * AUTO_ALIGN_TARGET_DIFF_RATIO;
+                if (g_sys_context.max_travel_diff <= target_converge_diff) {
+                    xQueueReset(g_motor_ctrl_queue);
+                    for (int i = 0; i < 4; i++) {
+                        g_sys_context.g_motor_status[i].target_cmd   = CMD_STOP;
+                        g_sys_context.g_motor_status[i].target_speed = 0;
+                        last_sent_speed[i]                           = 0;
+                    }
+                    stop_stable_cnt = 0;
+                    for (int i = 0; i < 4; i++) {
+                        last_check_halls[i] = 0xFFFFFFFF;
+                    }
+                    Motor_Ctrl_Msg_t stop_msg = {CMD_STOP, 0x0F, 0};
+                    g_sys_context.system_step = SYS_STEP_TUNE_DONE;
+                    xQueueSend(g_motor_ctrl_queue, &stop_msg, pdMS_TO_TICKS(10));
+                    Debug_Printf("[SYS] AUTO_ALIGN Completed! Sync Diff Converged (Diff=%.1f <= Limit=%.1f). Re-entering SYS_STEP_TUNE_DONE...\r\n",
+                                 g_sys_context.max_travel_diff, target_converge_diff);
+                    break;
+                }
+
+                // 3. 自主独立追赶与回压控制：以平均伸出行程 avg_travel 为目标基准线
+                float target_line = g_sys_context.avg_travel;
+                float deadzone    = 15.0f; // 死区 15 counts (约 0.13mm)
+
+                for (int i = 0; i < 4; i++) {
+                    float diff            = target_line - g_sys_context.travel_rel[i];
+                    uint8_t desired_cmd   = CMD_STOP;
+                    int16_t desired_speed = 0;
+
+                    if (diff > deadzone) {
+                        desired_cmd   = CMD_FORWARD; // 偏低轴：正转上升追赶
+                        desired_speed = AUTO_ALIGN_SPEED_RPM;
+                    } else if (diff < -deadzone) {
+                        desired_cmd   = CMD_REVERSE; // 偏高轴：反转下降回压
+                        desired_speed = AUTO_ALIGN_SPEED_RPM;
+                    } else {
+                        desired_cmd   = CMD_STOP;
+                        desired_speed = 0;
+                    }
+
+                    if (g_sys_context.g_motor_status[i].target_cmd != desired_cmd ||
+                        g_sys_context.g_motor_status[i].target_speed != desired_speed) {
+                        g_sys_context.g_motor_status[i].target_cmd   = desired_cmd;
+                        g_sys_context.g_motor_status[i].target_speed = desired_speed;
+                        last_sent_speed[i]                           = desired_speed;
+
+                        Motor_Ctrl_Msg_t speed_msg = {CMD_SET_SPEED, (uint8_t)(1 << i), desired_speed};
+                        Motor_Ctrl_Msg_t cmd_msg   = {(Motor_Cmd_Type_t)desired_cmd, (uint8_t)(1 << i), 0};
+                        xQueueSend(g_motor_ctrl_queue, &speed_msg, 0);
+                        xQueueSend(g_motor_ctrl_queue, &cmd_msg, 0);
+                    }
+                }
+
+                APP_Control_DebugPrint();
+                break;
+            }
+
+            // === SYS_STEP_FAULT_STOP 阶段：致命故障急停锁死状态 (报警显示与用户确认复位) ===
             case SYS_STEP_FAULT_STOP: {
-                if (has_event && sig_msg.event == MID_SIGNAL_EVT_TRIGGER) {
-                    g_sys_context.system_fault_code = 0;
-                    g_sys_context.system_step       = SYS_STEP_READY;
-                    Debug_Printf("[SYS] Fault Cleared -> System READY.\r\n");
+                // 监听遥控或按键触发信号，尝试解除故障锁死
+                if (has_event && (sig_msg.event == MID_SIGNAL_EVT_TRIGGER || sig_msg.event == MID_SIGNAL_EVT_LONG)) {
+                    bool comm_ok = true;
+                    for (int i = 0; i < 4; i++) {
+                        if (g_sys_context.g_motor_status[i].comm_error > 0) {
+                            comm_ok = false;
+                            break;
+                        }
+                    }
+                    if (comm_ok) {
+                        g_sys_context.system_fault_code = FAULT_CODE_NONE;
+                        g_sys_context.system_step       = SYS_STEP_READY;
+                        Debug_Printf("[SYS] Fault Lockout Cleared by User Acknowledge! Restoring SYS_STEP_READY...\r\n");
+                    } else {
+                        Debug_Printf("[SYS] User Acknowledge Ignored: 485 Comm Fault Still Active!\r\n");
+                    }
                 }
                 break;
             }
@@ -856,6 +1102,9 @@ void APP_ControlTask(void *pvParameters)
             default:
                 break;
         }
+
+        // 根据电机运动方向实时控制 2 路灯带 (正转亮 1 号灯带 LED_1，反转亮 2 号灯带 LED_2)
+        APP_Control_UpdateStripLights();
 
         // 严格 20.0ms 绝对周期挂起 (50Hz 定频调度)
         vTaskDelayUntil(&xLastWakeTime, pdMS_TO_TICKS(20));

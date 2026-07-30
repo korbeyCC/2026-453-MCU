@@ -13,5 +13,6 @@ typedef enum {
 void MID_LED_Init(void);
 void MID_LED_Write(MID_LED_ID id, bool state);
 void MID_LED_Toggle(MID_LED_ID id);
+bool MID_LED_ReadState(MID_LED_ID id);
 
 #endif

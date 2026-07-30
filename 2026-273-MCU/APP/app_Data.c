@@ -23,30 +23,8 @@ void APP_Data_Init(void)
         app_data.reduction_ratio == 0xFFFF ||
         app_data.reduction_ratio == 0) {
 
-        // 1. 默认物理参数配置 (导程默认 8mm)
-        app_data.max_travel_range_mm     = 2000; // 默认 2000 mm
-        app_data.reduction_ratio         = 30;   // 默认减速比 30
-        app_data.target_speed_mm_min     = 750;  // 默认 750 mm/min (对应基准转速 2812 RPM)
-        app_data.stall_current_threshold = 700;  // 默认 700 (7.00A)
-        app_data.max_sync_diff_mm        = 5;    // 默认 5 mm
-        app_data.lead_mm                 = 8;    // 默认 8 mm
-        app_data.hall_coef               = 30;   // 默认 30
-        app_data.single_tune_speed_rpm   = 300;  // 默认微调转速 100 RPM (驱动器原始转速，未算减速比，确保克服启动静摩擦)
-        for (int i = 0; i < 4; i++) {
-            app_data.single_tune_step_0_1mm[i] = 10; // 默认 10 (1.0mm)
-        }
-
-        // 2. 根据物理参数动态计算 1m (1000mm) 安装起点高度的绝对霍尔计数值
-        float c_per_mm              = (float)(app_data.reduction_ratio * app_data.hall_coef) / (float)app_data.lead_mm; // 导程8时等于 112.5f
-        int32_t default_mount_halls = (int32_t)(1000.0f * c_per_mm + 0.5f);                                             // 1000mm * 112.5 = 112500 counts
-
-        for (int i = 0; i < 4; i++) {
-            app_data.min_mount_halls[i] = default_mount_halls;
-            app_data.motor_abs_halls[i] = default_mount_halls;
-        }
-
-        // 3. 写入出厂默认值进行固化
-        APP_Data_Storage();
+        // 恢复全部出厂默认值并存盘
+        APP_Data_ResetDefault();
     }
 
     // 强制使能 PVD 检测及硬件 PLS 阈值配置 (PVD 检测阈值调低至 2.6V，防范负载及波动噪声)
@@ -56,6 +34,32 @@ void APP_Data_Init(void)
     getConfigPVD.Mode     = PWR_PVD_MODE_IT_RISING; // 电压跌落至阈值以下触发中断
     HAL_PWR_ConfigPVD(&getConfigPVD);
     HAL_PWR_EnablePVD();
+}
+
+/**
+ * @brief 恢复出厂默认参数设置并刷新 Flash 固化存盘
+ */
+void APP_Data_ResetDefault(void)
+{
+    app_data.max_travel_range_mm     = 2000; // 默认 2000 mm
+    app_data.reduction_ratio         = 30;   // 默认减速比 30
+    app_data.target_speed_mm_min     = 750;  // 默认 750 mm/min
+    app_data.stall_current_threshold = 700;  // 默认 700 (7.00A)
+    app_data.max_sync_diff_mm        = 5;    // 默认 5 mm
+    app_data.lead_mm                 = 8;    // 默认 8 mm
+    app_data.hall_coef               = 30;   // 默认 30
+    app_data.single_tune_speed_rpm   = 100;  // 默认微调转速 100 RPM
+    app_data.single_tune_step_0_1mm   = 10;   // 默认 10 (1.0mm)
+
+    float c_per_mm              = (float)(app_data.reduction_ratio * app_data.hall_coef) / (float)app_data.lead_mm;
+    int32_t default_mount_halls = (int32_t)(1000.0f * c_per_mm + 0.5f);
+
+    for (int i = 0; i < 4; i++) {
+        app_data.min_mount_halls[i] = default_mount_halls;
+        app_data.motor_abs_halls[i] = default_mount_halls;
+    }
+
+    APP_Data_Storage();
 }
 
 /**

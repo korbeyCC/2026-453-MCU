@@ -18,7 +18,7 @@ void Debug_Printf(const char *format, ...)
     if (xDebugMutex == NULL && xTaskGetSchedulerState() != taskSCHEDULER_NOT_STARTED) {
         xDebugMutex = xSemaphoreCreateMutex();
     }
-    
+
     char buffer[256];
     va_list args;
     va_start(args, format);
@@ -62,13 +62,13 @@ void APP_Init(void)
     APP_Data_Init(); // 载入Flash保存的高度参数
 
     // 创建显示任务
-    test_APP[0] = xTaskCreate(APP_ShowTask, "APP_Show", 128, NULL, 1, NULL);
+    test_APP[0] = xTaskCreate(APP_ShowTask, "APP_Show", 256, NULL, 1, NULL);
     // 创建虚拟按键扫描任务
     test_APP[1] = xTaskCreate(MID_Key_ScanTask, "MID_KeyScan", 128, NULL, 2, NULL);
     // 创建参数持久化守护任务
     test_APP[2] = xTaskCreate(APP_Data_Task, "APP_Data", 128, NULL, 2, NULL);
     // 创建菜单设置任务
-    test_APP[3] = xTaskCreate(APP_MenuTask, "APP_Menu", 128, NULL, 2, NULL);
+    test_APP[3] = xTaskCreate(APP_MenuTask, "APP_Menu", 256, NULL, 2, NULL);
     // 创建外接信号扫描任务
     test_APP[4] = xTaskCreate(MID_Signal_ScanTask, "MID_SigScan", 128, NULL, 2, NULL);
     // 创建核心业务控制任务

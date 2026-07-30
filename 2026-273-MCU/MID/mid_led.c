@@ -38,3 +38,14 @@ void MID_LED_Toggle(MID_LED_ID id)
             break;
     }
 }
+
+bool MID_LED_ReadState(MID_LED_ID id)
+{
+    GPIO_PinState pinState = GPIO_PIN_SET;
+    if (id == MID_LED_1) {
+        pinState = HAL_GPIO_ReadPin(LED_1_GPIO_Port, LED_1_Pin);
+    } else if (id == MID_LED_2) {
+        pinState = HAL_GPIO_ReadPin(LED_2_GPIO_Port, LED_2_Pin);
+    }
+    return (pinState == GPIO_PIN_RESET); // RESET 代表点亮亮起
+}

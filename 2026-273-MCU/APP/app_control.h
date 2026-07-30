@@ -132,6 +132,7 @@ typedef struct {
 
 // 全局外部变量声明
 extern Sys_Ctrl_Context_t g_sys_context;
+extern bool g_manual_light_on; // D 键手动控制灯带一键开关标志 (true: 强行全亮, false: 跟随方向指示/全灭)
 
 void APP_Control_UpdateParamsFromAppData(void);
 void APP_Control_ResetSystemContext(void);

@@ -296,7 +296,55 @@ void APP_Control_CancelSingleTune(void)
 }
 
 /**
- * @brief 根据电机运动方向及系统故障状态实时更新 2 路灯带 (正转/上升亮第一个灯带 LED_1，反转/下降亮第二个灯带 LED_2，故障急停闪烁报警)
+ * @brief D 键智能化一键开关灯：如果有任一个开着，一次性关闭两个；如果都关着，一次性打开两个
+ */
+static void APP_Control_ToggleLightsByDKey(void)
+{
+    bool is1_on = MID_LED_ReadState(MID_LED_1);
+    bool is2_on = MID_LED_ReadState(MID_LED_2);
+
+    if (is1_on || is2_on) {
+        // 只要有任意一个开着，一次性关闭两个
+        MID_LED_Write(MID_LED_1, false);
+        MID_LED_Write(MID_LED_2, false);
+        Debug_Printf("[SYS] Remot D Key: Turning OFF both strip lights.\r\n");
+    } else {
+        // 两个都关着，一次性打开两个
+        MID_LED_Write(MID_LED_1, true);
+        MID_LED_Write(MID_LED_2, true);
+        Debug_Printf("[SYS] Remot D Key: Turning ON both strip lights.\r\n");
+    }
+}
+
+/**
+ * @brief 正转/上升启动时一次性控制：打开第一个灯带，关闭第二个灯带
+ */
+static void APP_Control_SetLightForward(void)
+{
+    MID_LED_Write(MID_LED_1, true);  // 打开第一个灯带 (LED_1)
+    MID_LED_Write(MID_LED_2, false); // 关闭第二个灯带 (LED_2)
+}
+
+/**
+ * @brief 反转/下降启动时一次性控制：打开第二个灯带，关闭第一个灯带
+ */
+static void APP_Control_SetLightReverse(void)
+{
+    MID_LED_Write(MID_LED_1, false); // 关闭第一个灯带 (LED_1)
+    MID_LED_Write(MID_LED_2, true);  // 打开第二个灯带 (LED_2)
+}
+
+/**
+ * @brief 停机/到界/进入TOTAL_DONE时一次性控制：关掉两个灯带
+ */
+static void APP_Control_SetLightOff(void)
+{
+    MID_LED_Write(MID_LED_1, false); // 关闭第一个灯带
+    MID_LED_Write(MID_LED_2, false); // 关闭第二个灯带
+}
+
+/**
+ * @brief 仅在故障急停状态下进行 1Hz 警示双闪
  */
 static void APP_Control_UpdateStripLights(void)
 {
@@ -307,20 +355,6 @@ static void APP_Control_UpdateStripLights(void)
         bool blink = ((blink_cnt / 12) % 2 == 0);
         MID_LED_Write(MID_LED_1, blink);
         MID_LED_Write(MID_LED_2, blink);
-        return;
-    }
-
-    uint8_t cmd = g_sys_context.g_motor_status[0].target_cmd;
-
-    if (cmd == CMD_FORWARD) {
-        MID_LED_Write(MID_LED_1, true);  // 正转/上升：点亮第 1 个灯带 (PB5/LED_1)
-        MID_LED_Write(MID_LED_2, false); // 熄灭第 2 个灯带 (PB4/LED_2)
-    } else if (cmd == CMD_REVERSE) {
-        MID_LED_Write(MID_LED_1, false); // 熄灭第 1 个灯带 (PB5/LED_1)
-        MID_LED_Write(MID_LED_2, true);  // 反转/下降：点亮第 2 个灯带 (PB4/LED_2)
-    } else {
-        MID_LED_Write(MID_LED_1, false); // 停机/就绪：灯带全灭
-        MID_LED_Write(MID_LED_2, false);
     }
 }
 
@@ -447,8 +481,13 @@ void APP_ControlTask(void *pvParameters)
                     int16_t run_rpm = (g_sys_context.calc_base_rpm > 0) ? g_sys_context.calc_base_rpm : 2400;
 
                     switch (sig_msg.signal_id) {
+                        case MID_SIGNAL_REMOT_1: { // D 键 (REMOT_1): 一键控灯 (若有开则全关，无开则全亮)
+                            APP_Control_ToggleLightsByDKey();
+                            break;
+                        }
+
                         case MID_SIGNAL_REMOT_3:
-                        case MID_SIGNAL_BUTON_DW: { // 遥控下行 & 外接信号下行 (PC7)
+                        case MID_SIGNAL_BUTON_DW: { // B 键 (REMOT_3) & 外接信号下行 (PC7)
                             // 启动前安全检查：如果有任意轴已到达或低于底部零点 (travel_rel <= 0)，禁止启动下行！
                             bool limit_blocked = false;
                             for (int i = 0; i < 4; i++) {
@@ -488,6 +527,7 @@ void APP_ControlTask(void *pvParameters)
                             xQueueSend(g_motor_ctrl_queue, &speed_msg, pdMS_TO_TICKS(10));
                             xQueueSend(g_motor_ctrl_queue, &cmd_msg, pdMS_TO_TICKS(10));
 
+                            APP_Control_SetLightReverse(); // 一次性控制：打开第二个灯带，关闭第一个灯带
                             action_valid              = true;
                             g_sys_context.ramp_cnt    = 0; // 重置 1000ms 缓启动计数
                             g_sys_context.system_step = SYS_STEP_TOTAL_RUNNING;
@@ -536,6 +576,7 @@ void APP_ControlTask(void *pvParameters)
                             xQueueSend(g_motor_ctrl_queue, &speed_msg, pdMS_TO_TICKS(10));
                             xQueueSend(g_motor_ctrl_queue, &cmd_msg, pdMS_TO_TICKS(10));
 
+                            APP_Control_SetLightForward(); // 一次性控制：打开第一个灯带，关闭第二个灯带
                             action_valid              = true;
                             g_sys_context.ramp_cnt    = 0; // 重置 1000ms 缓启动计数
                             g_sys_context.system_step = SYS_STEP_TOTAL_RUNNING;
@@ -651,26 +692,30 @@ void APP_ControlTask(void *pvParameters)
                 }
 
                 if (has_event && sig_msg.event == MID_SIGNAL_EVT_TRIGGER) {
-                    // 1. 清空死锁消息队列
-                    xQueueReset(g_motor_ctrl_queue);
+                    if (sig_msg.signal_id == MID_SIGNAL_REMOT_1) {
+                        // D 键 (REMOT_1)：一键控灯 (若有开则全关，无开则全亮)，不断停运行
+                        APP_Control_ToggleLightsByDKey();
+                    } else if (sig_msg.signal_id == MID_SIGNAL_REMOT_2) {
+                        // C 键 (REMOT_2)：专用停止按键，触发 CMD_STOP 停机！
+                        xQueueReset(g_motor_ctrl_queue);
 
-                    // 2. 状态重置为 STOP
-                    for (int i = 0; i < 4; i++) {
-                        g_sys_context.g_motor_status[i].target_cmd   = CMD_STOP;
-                        g_sys_context.g_motor_status[i].target_speed = 0;
-                        last_sent_speed[i]                           = 0;
+                        for (int i = 0; i < 4; i++) {
+                            g_sys_context.g_motor_status[i].target_cmd   = CMD_STOP;
+                            g_sys_context.g_motor_status[i].target_speed = 0;
+                            last_sent_speed[i]                           = 0;
+                        }
+
+                        stop_stable_cnt = 0;
+                        for (int i = 0; i < 4; i++) {
+                            last_check_halls[i] = 0xFFFFFFFF;
+                        }
+
+                        Motor_Ctrl_Msg_t stop_msg = {CMD_STOP, 0x0F, 0};
+                        g_sys_context.system_step = SYS_STEP_TOTAL_DONE;
+                        xQueueSend(g_motor_ctrl_queue, &stop_msg, pdMS_TO_TICKS(10));
+                        APP_Control_SetLightOff(); // 停机一次性关两个灯
+                        Debug_Printf("[SYS] Remot C Key (Stop Signal) Pressed, sending CMD_STOP...\r\n");
                     }
-
-                    // 3. 高优先级阻塞发送停机命令并重置判定变量
-                    stop_stable_cnt = 0;
-                    for (int i = 0; i < 4; i++) {
-                        last_check_halls[i] = 0xFFFFFFFF;
-                    }
-
-                    Motor_Ctrl_Msg_t stop_msg = {CMD_STOP, 0x0F, 0};
-                    g_sys_context.system_step = SYS_STEP_TOTAL_DONE;
-                    xQueueSend(g_motor_ctrl_queue, &stop_msg, pdMS_TO_TICKS(10));
-                    Debug_Printf("[SYS] User Stop signal, sending CMD_STOP...\r\n");
                 } else if (reach_limit) {
                     // 触及行程上限或零点到界停机
                     xQueueReset(g_motor_ctrl_queue);
@@ -686,6 +731,7 @@ void APP_ControlTask(void *pvParameters)
                     Motor_Ctrl_Msg_t stop_msg = {CMD_STOP, 0x0F, 0};
                     g_sys_context.system_step = SYS_STEP_TOTAL_DONE;
                     xQueueSend(g_motor_ctrl_queue, &stop_msg, pdMS_TO_TICKS(10));
+                    APP_Control_SetLightOff(); // 到界停机一次性关两个灯
                 } else if (APP_Control_CheckSafety()) {
                     xQueueReset(g_motor_ctrl_queue);
                     if (g_sys_context.system_fault_code == FAULT_CODE_STALL) {
@@ -853,6 +899,7 @@ void APP_ControlTask(void *pvParameters)
             // === 停机归档阶段（含 4 轴连续静止检测） ===
             case SYS_STEP_TOTAL_DONE:
             case SYS_STEP_TUNE_DONE: {
+                APP_Control_SetLightOff(); // 停机刹车阶段一次性关闭 2 路灯带
                 // 1. 无条件调用通用解算函数更新 4 轴绝对高度、伸出行程及极差
                 APP_Control_UpdateStateAndStatistics();
 

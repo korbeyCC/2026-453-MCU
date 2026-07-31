@@ -81,6 +81,7 @@ void APP_ShowTask(void *pvParameters)
                     case 6: param_val = app_data.lead_mm; break;
                     case 7: param_val = app_data.reduction_ratio; break;
                     case 8: param_val = app_data.single_tune_step_0_1mm; break;
+                    case 9: param_val = app_data.rebound_travel_mm; break;
                     default: param_val = 0; break;
                 }
 

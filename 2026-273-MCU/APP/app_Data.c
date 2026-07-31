@@ -50,6 +50,7 @@ void APP_Data_ResetDefault(void)
     app_data.hall_coef               = 30;   // 默认 30
     app_data.single_tune_speed_rpm   = 100;  // 默认微调转速 100 RPM
     app_data.single_tune_step_0_1mm   = 10;   // 默认 10 (1.0mm)
+    app_data.rebound_travel_mm       = 1000; // 默认堵转反弹行程 1000 mm (1米)
 
     float c_per_mm              = (float)(app_data.reduction_ratio * app_data.hall_coef) / (float)app_data.lead_mm;
     int32_t default_mount_halls = (int32_t)(1000.0f * c_per_mm + 0.5f);

@@ -122,6 +122,16 @@ static void APP_Menu_AdjustParam(bool is_inc)
             }
             break;
 
+        case 9: // Set_W = 9: rebound_travel_mm (10 ~ 5000 mm，默认 1000mm)
+            if (is_inc) {
+                if (app_data.rebound_travel_mm <= 4990) app_data.rebound_travel_mm += 10;
+                else app_data.rebound_travel_mm = 5000;
+            } else {
+                if (app_data.rebound_travel_mm >= 20) app_data.rebound_travel_mm -= 10;
+                else app_data.rebound_travel_mm = 10;
+            }
+            break;
+
         default:
             break;
     }
@@ -219,9 +229,9 @@ void APP_MenuTask(void *pvParameters)
             // 维度 1：常规应用设置层 (dim1 == 1, dim2 为 0~8, 其中 (1,0) 为恢复出厂开关)
             // ====================================================
             else if (dim1 == 1) {
-                // A. 短按 K6：前进到下一项 (dim2++)。在最后一项 (dim2 == 8) 按 K6 时保存 Flash 并退出至 dim1 = 0
+                // A. 短按 K6：前进到下一项 (dim2++)。在最后一项 (dim2 == 9) 按 K6 时保存 Flash 并退出至 dim1 = 0
                 if (msg.key_id == MID_KEY_ID_K6 && msg.event == MID_KEY_EVT_LEASS) {
-                    if (dim2 < 8) {
+                    if (dim2 < 9) {
                         dim2++;
                         adjust_hold_ticks = 0;
 
@@ -230,7 +240,7 @@ void APP_MenuTask(void *pvParameters)
                         APP_Menu_SetPrompt(buf, 20); // 切换项目显示 "-q0-", "-q1-"... 1.0s
                         Debug_Printf("[SYS] Setting Next Item: dim2 = %d\r\n", dim2);
                     } else {
-                        // 最后一项 (8) 按 K6：检查 (1,0) 是否调至 7 (q0 == 7 触发恢复出厂)
+                        // 最后一项 (9) 按 K6：检查 (1,0) 是否调至 7 (q0 == 7 触发恢复出厂)
                         if (reset_factory_flag == 7) {
                             reset_factory_flag = 0;
                             APP_Data_ResetDefault(); // 恢复全部出厂默认参数并存盘 Flash

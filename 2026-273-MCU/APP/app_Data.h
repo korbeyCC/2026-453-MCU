@@ -17,7 +17,8 @@ typedef struct
     uint16_t hall_coef;                 // 霍尔系数 (默认 30)
     uint16_t single_tune_step_0_1mm;   // 单轴微调步进距离 (单位: 0.1mm，默认 10 = 1.0mm，4路共享)
     uint16_t single_tune_speed_rpm;    // 单轴微调速度 (单位: RPM，默认 100，驱动器原始转速，未算减速比)
-    uint16_t reserved[4];              // 预留空间对齐 32 字节
+    uint16_t rebound_travel_mm;        // 堵转反弹行程 (单位: mm，默认 1000mm = 1米) - 对应 P1 菜单 q9
+    uint16_t reserved[3];              // 预留空间对齐 32 字节
 } APP_DATA_HandleTypeDef;
 
 extern APP_DATA_HandleTypeDef app_data;

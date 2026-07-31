@@ -735,29 +735,33 @@ void APP_ControlTask(void *pvParameters)
                 } else if (APP_Control_CheckSafety()) {
                     xQueueReset(g_motor_ctrl_queue);
                     if (g_sys_context.system_fault_code == FAULT_CODE_STALL) {
-                        // 启动 4 轴整体 REBOUND_TUNE_RPM 向反方向反弹 REBOUND_DISTANCE_MM 流程
+                        // 启动 4 轴整体以正常速度的一半 (calc_base_rpm / 2) 反弹用户可调高度 app_data.rebound_travel_mm (默认1000mm=1米)
                         uint8_t current_cmd                 = g_sys_context.g_motor_status[0].target_cmd;
                         g_sys_context.rebound_cmd           = (current_cmd == CMD_FORWARD) ? CMD_REVERSE : CMD_FORWARD;
-                        g_sys_context.rebound_target_counts = (uint32_t)roundf(REBOUND_DISTANCE_MM * g_sys_context.counts_per_mm);
+                        g_sys_context.rebound_target_counts = (uint32_t)roundf((float)app_data.rebound_travel_mm * g_sys_context.counts_per_mm);
+
+                        // 反弹速度设为正常计算速度的一半 (若过小则保底 100 RPM)
+                        uint16_t rebound_speed_rpm = g_sys_context.calc_base_rpm / 2;
+                        if (rebound_speed_rpm < 100) rebound_speed_rpm = 100;
 
                         for (int i = 0; i < 4; i++) {
                             g_sys_context.rebound_start_hall[i]              = g_sys_context.g_motor_status[i].hall_value;
                             g_sys_context.g_motor_status[i].start_drive_hall = g_sys_context.g_motor_status[i].hall_value;
                             g_sys_context.g_motor_status[i].base_abs_hall    = g_sys_context.g_motor_status[i].current_abs_hall;
                             g_sys_context.g_motor_status[i].target_cmd       = g_sys_context.rebound_cmd;
-                            g_sys_context.g_motor_status[i].target_speed     = REBOUND_TUNE_RPM;
+                            g_sys_context.g_motor_status[i].target_speed     = rebound_speed_rpm;
                             g_sys_context.g_motor_status[i].stall_cnt        = 0;
                         }
 
-                        Motor_Ctrl_Msg_t speed_msg = {CMD_SET_SPEED, 0x0F, REBOUND_TUNE_RPM};
+                        Motor_Ctrl_Msg_t speed_msg = {CMD_SET_SPEED, 0x0F, rebound_speed_rpm};
                         Motor_Ctrl_Msg_t cmd_msg   = {(Motor_Cmd_Type_t)g_sys_context.rebound_cmd, 0x0F, 0};
 
                         xQueueSend(g_motor_ctrl_queue, &speed_msg, pdMS_TO_TICKS(10));
                         xQueueSend(g_motor_ctrl_queue, &cmd_msg, pdMS_TO_TICKS(10));
 
                         g_sys_context.system_step = SYS_STEP_TOTAL_REBOUND;
-                        Debug_Printf("[SYS] OverCurrent Stall! Starting %d RPM Rebound %.0fmm (TargetCounts=%d)...\r\n",
-                                     REBOUND_TUNE_RPM, REBOUND_DISTANCE_MM, g_sys_context.rebound_target_counts);
+                        Debug_Printf("[SYS] OverCurrent Stall! Starting Half-Speed Rebound: Speed=%dRPM, Distance=%dmm (TargetCounts=%d)...\r\n",
+                                     rebound_speed_rpm, app_data.rebound_travel_mm, g_sys_context.rebound_target_counts);
                     } else {
                         // 通信中断/同步差超限：先下发全轴 STOP 切入 SYS_STEP_TOTAL_DONE 进行刹车停稳与绝对位置归档！
                         bool has_comm_err = false;
@@ -834,8 +838,10 @@ void APP_ControlTask(void *pvParameters)
                 }
                 float avg_reb_counts = sum_reb_counts / 4.0f;
 
-                // 2. 堵转反弹阶段实时 PID 纠偏调速 (保持顶部台面绝对平行)
-                APP_Control_RunPID(REBOUND_TUNE_RPM);
+                // 2. 堵转反弹阶段实时 PID 纠偏调速 (保持顶部台面绝对平行，采用正常速度的一半)
+                uint16_t rebound_speed_rpm = g_sys_context.calc_base_rpm / 2;
+                if (rebound_speed_rpm < 100) rebound_speed_rpm = 100;
+                APP_Control_RunPID(rebound_speed_rpm);
 
                 // 【按需门限下发】向 4 轴下发 PID 平行纠偏调整速度
                 for (int i = 0; i < 4; i++) {
@@ -853,8 +859,20 @@ void APP_ControlTask(void *pvParameters)
                     }
                 }
 
-                // 3. 检查反弹终止条件（完成 REBOUND_DISTANCE_MM 目标，或触及物理底点/顶限）
+                // 3. 检查反弹终止条件（完成目标行程，到达到界物理极值，或用户中途按下 C 键/停止按键）
                 bool rebound_done = (avg_reb_counts >= (float)g_sys_context.rebound_target_counts);
+
+                if (has_event && sig_msg.event == MID_SIGNAL_EVT_TRIGGER) {
+                    if (sig_msg.signal_id == MID_SIGNAL_REMOT_1) {
+                        // D 键 (REMOT_1)：一键控灯，不断停反弹
+                        APP_Control_ToggleLightsByDKey();
+                    } else if (sig_msg.signal_id == MID_SIGNAL_REMOT_2) {
+                        // C 键 (REMOT_2)：专用停止按键，手动打断反弹流程！
+                        rebound_done = true;
+                        Debug_Printf("[SYS] Rebound Interrupted by User Remot C Key!\r\n");
+                    }
+                }
+
                 if (!rebound_done) {
                     if (g_sys_context.rebound_cmd == CMD_REVERSE) {
                         for (int i = 0; i < 4; i++) {
@@ -1040,9 +1058,12 @@ void APP_ControlTask(void *pvParameters)
                     break;
                 }
 
-                // 3. 自主独立追赶与回压控制：以平均伸出行程 avg_travel 为目标基准线
+                // 3. 自主独立追赶与回压控制：以平均伸出行程 avg_travel 为目标基准线 (速度取正常计算转速的一半)
                 float target_line = g_sys_context.avg_travel;
                 float deadzone    = 15.0f; // 死区 15 counts (约 0.13mm)
+
+                uint16_t align_speed_rpm = g_sys_context.calc_base_rpm / 2;
+                if (align_speed_rpm < 100) align_speed_rpm = 100;
 
                 for (int i = 0; i < 4; i++) {
                     float diff            = target_line - g_sys_context.travel_rel[i];
@@ -1051,10 +1072,10 @@ void APP_ControlTask(void *pvParameters)
 
                     if (diff > deadzone) {
                         desired_cmd   = CMD_FORWARD; // 偏低轴：正转上升追赶
-                        desired_speed = AUTO_ALIGN_SPEED_RPM;
+                        desired_speed = align_speed_rpm;
                     } else if (diff < -deadzone) {
                         desired_cmd   = CMD_REVERSE; // 偏高轴：反转下降回压
-                        desired_speed = AUTO_ALIGN_SPEED_RPM;
+                        desired_speed = align_speed_rpm;
                     } else {
                         desired_cmd   = CMD_STOP;
                         desired_speed = 0;
@@ -1077,21 +1098,63 @@ void APP_ControlTask(void *pvParameters)
                 break;
             }
 
-            // === SYS_STEP_FAULT_STOP 阶段：致命故障急停锁死状态 (报警显示与用户确认复位) ===
+            // === SYS_STEP_FAULT_STOP 阶段：致命故障急停锁死状态 (报警显示、通信恢复安全下发 STOP 与用户确认解锁归档) ===
             case SYS_STEP_FAULT_STOP: {
-                // 监听遥控或按键触发信号，尝试解除故障锁死
-                if (has_event && (sig_msg.event == MID_SIGNAL_EVT_TRIGGER || sig_msg.event == MID_SIGNAL_EVT_LONG)) {
-                    bool comm_ok = true;
-                    for (int i = 0; i < 4; i++) {
-                        if (g_sys_context.g_motor_status[i].comm_error > 0) {
-                            comm_ok = false;
-                            break;
-                        }
+                // 1. 检查 4 轴 485 通信状态是否完全恢复正常
+                bool comm_ok = true;
+                for (int i = 0; i < 4; i++) {
+                    if (g_sys_context.g_motor_status[i].comm_error > 0) {
+                        comm_ok = false;
+                        break;
                     }
+                }
+
+                static bool has_sent_stop_on_comm_restore = false;
+
+                // 若通信中断未恢复，重置标志
+                if (!comm_ok) {
+                    has_sent_stop_on_comm_restore = false;
+                }
+
+                // 2. 场景 A：重新插上数据线 / 重新上电复位，通信恢复时【仅发送 STOP 停机，保持报警锁死状态】
+                if (comm_ok && !has_sent_stop_on_comm_restore) {
+                    has_sent_stop_on_comm_restore = true;
+                    xQueueReset(g_motor_ctrl_queue);
+
+                    for (int i = 0; i < 4; i++) {
+                        g_sys_context.g_motor_status[i].target_cmd   = CMD_STOP;
+                        g_sys_context.g_motor_status[i].target_speed = 0;
+                        last_sent_speed[i]                           = 0;
+                    }
+
+                    Motor_Ctrl_Msg_t stop_msg = {CMD_STOP, 0x0F, 0};
+                    xQueueSend(g_motor_ctrl_queue, &stop_msg, pdMS_TO_TICKS(10));
+                    Debug_Printf("[SYS] 485 Comm Restored: Sent CMD_STOP to Motors, Keeping FAULT_STOP Alarm Active Until User Acknowledge...\r\n");
+                }
+
+                // 3. 场景 B：用户手动按按键取消报警（按 C 键 / 板载按键）：【既下发 STOP，也切入归档存盘与自动纠正】
+                if (has_event && (sig_msg.event == MID_SIGNAL_EVT_TRIGGER || sig_msg.event == MID_SIGNAL_EVT_LONG)) {
                     if (comm_ok) {
+                        has_sent_stop_on_comm_restore = false;
+                        xQueueReset(g_motor_ctrl_queue);
+
+                        for (int i = 0; i < 4; i++) {
+                            g_sys_context.g_motor_status[i].target_cmd   = CMD_STOP;
+                            g_sys_context.g_motor_status[i].target_speed = 0;
+                            last_sent_speed[i]                           = 0;
+                        }
+
+                        stop_stable_cnt = 0;
+                        for (int i = 0; i < 4; i++) {
+                            last_check_halls[i] = 0xFFFFFFFF;
+                        }
+
+                        Motor_Ctrl_Msg_t stop_msg = {CMD_STOP, 0x0F, 0};
                         g_sys_context.system_fault_code = FAULT_CODE_NONE;
-                        g_sys_context.system_step       = SYS_STEP_READY;
-                        Debug_Printf("[SYS] Fault Lockout Cleared by User Acknowledge! Restoring SYS_STEP_READY...\r\n");
+                        g_sys_context.system_step       = SYS_STEP_TOTAL_DONE; // 切入归档存盘，若有极差偏差会自动触发 AUTO_ALIGN 自动重平纠正！
+                        xQueueSend(g_motor_ctrl_queue, &stop_msg, pdMS_TO_TICKS(10));
+                        APP_Control_SetLightOff(); // 消除报警后关闭警示双闪灯
+                        Debug_Printf("[SYS] Fault Lockout Cleared by User Key! Sent CMD_STOP & Entering SYS_STEP_TOTAL_DONE for Archiving & Auto-Align...\r\n");
                     } else {
                         Debug_Printf("[SYS] User Acknowledge Ignored: 485 Comm Fault Still Active!\r\n");
                     }

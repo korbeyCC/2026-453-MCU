@@ -114,11 +114,11 @@ static void APP_Menu_AdjustParam(bool is_inc)
             }
             break;
 
-        case 8: // Set_W = 8: single_tune_step_0_1mm (1 ~ 200 = 0.1mm ~ 20.0mm)
+        case 8: // Set_W = 8: single_tune_step_mm (1 ~ 200 mm，默认 1mm)
             if (is_inc) {
-                if (app_data.single_tune_step_0_1mm < 200) app_data.single_tune_step_0_1mm++;
+                if (app_data.single_tune_step_mm < 200) app_data.single_tune_step_mm++;
             } else {
-                if (app_data.single_tune_step_0_1mm > 1) app_data.single_tune_step_0_1mm--;
+                if (app_data.single_tune_step_mm > 1) app_data.single_tune_step_mm--;
             }
             break;
 

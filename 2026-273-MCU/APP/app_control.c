@@ -256,9 +256,11 @@ void APP_Control_StartSingleTune(uint8_t m_idx)
     g_sys_context.single_tune_motor_idx    = m_idx;
     g_sys_context.single_tune_start_hall   = g_sys_context.g_motor_status[m_idx].hall_value;
     g_sys_context.single_tune_orig_abs_hall = g_sys_context.g_motor_status[m_idx].current_abs_hall;
-    g_sys_context.single_tune_target_counts = (uint32_t)roundf((float)app_data.single_tune_step_0_1mm * g_sys_context.counts_per_mm / 10.0f);
+    g_sys_context.single_tune_target_counts = (uint32_t)roundf((float)app_data.single_tune_step_mm * g_sys_context.counts_per_mm);
 
-    uint16_t tune_rpm = (app_data.single_tune_speed_rpm > 0 && app_data.single_tune_speed_rpm <= 3000) ? app_data.single_tune_speed_rpm : REBOUND_TUNE_RPM;
+    // 单轴微调速度也设定为正常速度的一半 (若过小则保底 100 RPM)
+    uint16_t tune_rpm = g_sys_context.calc_base_rpm / 2;
+    if (tune_rpm < 100) tune_rpm = 100;
 
     xQueueReset(g_motor_ctrl_queue);
 
@@ -273,9 +275,9 @@ void APP_Control_StartSingleTune(uint8_t m_idx)
     xQueueSend(g_motor_ctrl_queue, &cmd_msg, pdMS_TO_TICKS(10));
 
     g_sys_context.system_step = SYS_STEP_SINGLE_TUNE;
-    Debug_Printf("[SYS] Enter SINGLE_TUNE: Motor=%d, Dir=%s, Step=%d(0.1mm), TargetCounts=%d, Speed=%dRPM\r\n",
+    Debug_Printf("[SYS] Enter SINGLE_TUNE: Motor=%d, Dir=%s, Step=%dmm, TargetCounts=%d, Speed=%dRPM (Half Speed)\r\n",
                  m_idx, (g_sys_context.single_tune_dir == 0) ? "UP" : "DOWN",
-                 app_data.single_tune_step_0_1mm, g_sys_context.single_tune_target_counts, tune_rpm);
+                 app_data.single_tune_step_mm, g_sys_context.single_tune_target_counts, tune_rpm);
 }
 
 /**

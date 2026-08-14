@@ -11,8 +11,8 @@ extern UART_HandleTypeDef huart4;
 Modbus_Master_t modbus_masters[4];
 
 // 时间配置常数 (单位: ms)
-#define MODBUS_READ_TIMEOUT_MS  15
-#define MODBUS_WRITE_TIMEOUT_MS 15
+#define MODBUS_READ_TIMEOUT_MS  30
+#define MODBUS_WRITE_TIMEOUT_MS 30
 #define MODBUS_INTERVAL_MS      1
 
 // Modbus 功能码
@@ -203,6 +203,9 @@ static void send_write_single_cmd(Modbus_Master_t *master, uint16_t regAddr, uin
     master->tx_buf[6] = (crc >> 8) & 0xFF;
     master->tx_buf[7] = crc & 0xFF;
 
+    // 清除 TC 标志位，确保后续能够精确捕获当前帧的物理发送完成
+    __HAL_UART_CLEAR_FLAG(master->huart, UART_FLAG_TC);
+
     HAL_UART_Transmit(master->huart, master->tx_buf, 8, 100);
 
     if (start_rx) {
@@ -309,14 +312,31 @@ bool MID_Modbus_WriteSingleReg(Modbus_Master_t *master, uint16_t reg_addr, uint1
     return true;
 }
 
+// ========================== 对外接口：单向写单寄存器 (等待 TC 发送完，不等待应答) ==========================
+void MID_Modbus_WriteSingleRegNoWait(Modbus_Master_t *master, uint16_t reg_addr, uint16_t value)
+{
+    if (master == NULL) return;
+
+    send_write_single_cmd(master, reg_addr, value, false);
+    while (__HAL_UART_GET_FLAG(master->huart, UART_FLAG_TC) == RESET) {
+    }
+    master->state = MODBUS_STATE_IDLE;
+}
+
 // ========================== 对外接口：写单寄存器后立刻切波特率再听应答 ==========================
 bool MID_Modbus_WriteSingleRegThenSwitchBaud(Modbus_Master_t *master, uint16_t reg_addr, uint16_t value, uint32_t baudrate, modbus_write_callback_t callback)
 {
     if (master == NULL) return false;
     if (master->state != MODBUS_STATE_IDLE) return false;
 
-    /* 先按当前波特率发完写指令，再马上切本地波特率，才能收到驱动器已切频后的应答 */
+    /* 1. 先按当前 19200 波特率下发写指令 */
     send_write_single_cmd(master, reg_addr, value, false);
+
+    /* 2. 严格等待物理移位寄存器将 8 字节完完全全吐到总线上（TC 置位），绝不在传输中途截断断电/重置波特率 */
+    while (__HAL_UART_GET_FLAG(master->huart, UART_FLAG_TC) == RESET) {
+    }
+
+    /* 3. 物理帧发送完毕，立刻切换本地波特率至 115200，准备接收驱动器以 115200 发回的模式 B 应答 */
     apply_uart_baud(master->huart, baudrate);
     reset_master_rx(master);
     master->timeout_cnt = 0;

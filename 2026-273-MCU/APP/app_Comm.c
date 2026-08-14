@@ -156,7 +156,7 @@ static void App_Comm_WaitInitWrites(uint8_t pending_mask)
     }
 }
 
-static void App_Comm_WriteRegUntilAllOk(uint16_t reg, uint16_t val, const char *name)
+static void App_Comm_WriteRegUntilAllOk(uint16_t reg, uint16_t val, const char *name, uint8_t accept_ex)
 {
     uint8_t ok_mask      = 0;
     uint16_t retry_round = 0;
@@ -186,6 +186,19 @@ static void App_Comm_WriteRegUntilAllOk(uint16_t reg, uint16_t val, const char *
         App_Comm_WaitInitWrites(pending_mask);
         ok_mask = s_init_ok_mask;
 
+        if (accept_ex != 0) {
+            for (int i = 0; i < 4; i++) {
+                uint8_t bit = (uint8_t)(1u << i);
+                if ((pending_mask & bit) == 0 || (ok_mask & bit) != 0) {
+                    continue;
+                }
+                if (modbus_masters[i].last_ex_code == accept_ex) {
+                    ok_mask |= bit;
+                    Debug_Printf("[COMM] Init %s motor %d accept ex=0x%02X\r\n", name, i + 1, accept_ex);
+                }
+            }
+        }
+
         if (ok_mask != COMM_INIT_ALL_MASK) {
             retry_round++;
             if ((retry_round % 20u) == 0u) {
@@ -200,7 +213,7 @@ static void App_Comm_SwitchBaudUntilAllOk(void)
     uint8_t ok_mask      = 0;
     uint16_t retry_round = 0;
 
-    Debug_Printf("[COMM] Executing 5-Cycle 19200 Write-Read + 115200 Double-Confirmation Handshake...\r\n");
+    Debug_Printf("[COMM] Executing 5-Cycle 19200 Enable-Switch-Read + 115200 Confirmation Handshake...\r\n");
 
     while (ok_mask != COMM_INIT_ALL_MASK) {
         retry_round++;
@@ -213,10 +226,22 @@ static void App_Comm_SwitchBaudUntilAllOk(void)
             // 1. 确保 MCU 串口处于 19200 BPS
             MID_Modbus_SetMasterBaudRate(&modbus_masters[i], 19200);
 
-            // 2. 在 19200 下重复执行写 0x2009=7 + 读 0x2009 (最多 5 次)
+            // 2. 在 19200 下重复执行 使能 0x200E -> 切波特率 0x2009=7 -> 读确认 (最多 5 次)
             bool no_resp_in_19200 = false;
 
             for (int cycle = 1; cycle <= 5; cycle++) {
+                // Step 0: 先开通信功能码写使能，否则后续写 0x2009 可能被拒绝
+                s_init_done_mask &= ~(1u << i);
+                s_init_ok_mask &= ~(1u << i);
+                if (MID_Modbus_WriteSingleReg(&modbus_masters[i], 0x200E, 0x0001, Motor_InitWrite_Callbacks[i])) {
+                    App_Comm_WaitInitWrites(1u << i);
+                }
+                if (s_init_ok_mask & (1u << i)) {
+                    Debug_Printf("[COMM] Motor %d [19200 Cycle %d/5] Write Enable OK\r\n", i + 1, cycle);
+                } else {
+                    Debug_Printf("[COMM] Motor %d [19200 Cycle %d/5] Write Enable no ACK, continue switch\r\n", i + 1, cycle);
+                }
+
                 // Step A: 写 0x2009 = 7
                 MID_Modbus_WriteSingleRegNoWait(&modbus_masters[i], 0x2009, 7);
                 vTaskDelay(pdMS_TO_TICKS(50));
@@ -285,17 +310,18 @@ static void App_Comm_InitHardwareSequence(void)
         uint16_t reg;
         uint16_t val;
         const char *name;
+        uint8_t accept_ex;
     } init_steps[] = {
-        {0x2000, 0x0007, "Fault Reset"},
-        {0x200E, 0x0001, "Write Enable"},
-        {0x2006, 0x0002, "Run Mode"},
-        {0x2007, 0x0003, "Speed Mode"},
-        {0x2001, 300, "Set Speed 300"},
-        {0x2000, 0x0005, "Start Drive"}};
+        {0x200E, 0x0001, "Write Enable", 0},
+        {0x2000, 0x0007, "Fault Reset", 0x03}, /* 正常回显或 86 03 都算过 */
+        {0x2006, 0x0002, "Run Mode", 0},
+        {0x2007, 0x0003, "Speed Mode", 0},
+        {0x2001, 300, "Set Speed 300", 0},
+        {0x2000, 0x0005, "Start Drive", 0}};
 
     int num_steps = sizeof(init_steps) / sizeof(init_steps[0]);
     for (int step = 0; step < num_steps; step++) {
-        App_Comm_WriteRegUntilAllOk(init_steps[step].reg, init_steps[step].val, init_steps[step].name);
+        App_Comm_WriteRegUntilAllOk(init_steps[step].reg, init_steps[step].val, init_steps[step].name, init_steps[step].accept_ex);
     }
 
     g_sys_context.is_hardware_ready = true;

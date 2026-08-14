@@ -28,6 +28,7 @@ typedef struct {
     volatile uint8_t rx_complete;  // 接收完成标志位
     
     uint16_t timeout_cnt;          // 超时计数器 (ms)
+    uint8_t last_ex_code;          // 最近一次写应答异常码，0 表示无异常
     uint16_t expected_reg_cnt;     // 期望读取的寄存器数
     uint16_t temp_buf[64];         // 临时寄存器解析缓冲区
     

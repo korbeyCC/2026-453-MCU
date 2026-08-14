@@ -249,6 +249,33 @@ static void send_write_multiple_cmd(Modbus_Master_t *master, uint16_t startAddr,
     HAL_UARTEx_ReceiveToIdle_DMA(master->huart, master->rx_buf, sizeof(master->rx_buf));
 }
 
+// ========================== 内部：解析写异常应答 86/xx ==========================
+static bool parse_write_exception(Modbus_Master_t *master, uint8_t *ex_code)
+{
+    uint16_t crc_recv, crc_calc;
+
+    if (master->rx_count < 5) {
+        return false;
+    }
+    if (master->rx_buf[0] != master->slave_addr) {
+        return false;
+    }
+    if (master->rx_buf[1] != (uint8_t)(master->tx_buf[1] | 0x80)) {
+        return false;
+    }
+
+    crc_recv = ((uint16_t)master->rx_buf[3] << 8) | master->rx_buf[4];
+    crc_calc = MID_Modbus_CRC16(master->rx_buf, 3);
+    if (crc_recv != crc_calc) {
+        return false;
+    }
+
+    if (ex_code != NULL) {
+        *ex_code = master->rx_buf[2];
+    }
+    return true;
+}
+
 // ========================== 对外接口：主站初始化 ==========================
 void MID_Modbus_Init(void)
 {
@@ -306,6 +333,7 @@ bool MID_Modbus_WriteSingleReg(Modbus_Master_t *master, uint16_t reg_addr, uint1
     if (master == NULL) return false;
     if (master->state != MODBUS_STATE_IDLE) return false;
 
+    master->last_ex_code = 0;
     send_write_single_cmd(master, reg_addr, value, true);
     master->state    = MODBUS_STATE_WAIT_WRITE_RESP;
     master->write_cb = callback;
@@ -317,6 +345,7 @@ void MID_Modbus_WriteSingleRegNoWait(Modbus_Master_t *master, uint16_t reg_addr,
 {
     if (master == NULL) return;
 
+    master->last_ex_code = 0;
     send_write_single_cmd(master, reg_addr, value, false);
     while (__HAL_UART_GET_FLAG(master->huart, UART_FLAG_TC) == RESET) {
     }
@@ -407,8 +436,9 @@ void MID_Modbus_Process_1ms(void)
                 m->timeout_cnt += MODBUS_INTERVAL_MS;
                 if (m->timeout_cnt >= MODBUS_WRITE_TIMEOUT_MS) {
                     HAL_UART_DMAStop(m->huart); // 超时强制关闭 DMA
-                    m->state       = MODBUS_STATE_IDLE;
-                    m->rx_complete = 0;
+                    m->state        = MODBUS_STATE_IDLE;
+                    m->rx_complete  = 0;
+                    m->last_ex_code = 0;
                     if (m->write_cb != NULL) {
                         m->write_cb(0); // 传入 success = 0
                         m->write_cb = NULL;
@@ -418,9 +448,12 @@ void MID_Modbus_Process_1ms(void)
 
                 if (m->rx_complete) {
                     m->rx_complete = 0;
-                    // 写命令回执：正常响应应为 8 字节，并且功能码匹配
+                    // 写命令回执：正常 8 字节回显，或 5 字节异常帧 8x/xx
+                    m->last_ex_code = 0;
                     if (m->rx_count >= 8 && m->rx_buf[1] == m->tx_buf[1]) {
                         status_ok = 1;
+                    } else if (parse_write_exception(m, &m->last_ex_code)) {
+                        status_ok = 0;
                     } else {
                         status_ok = 0;
                     }

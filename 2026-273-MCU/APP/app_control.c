@@ -215,6 +215,34 @@ void APP_Control_UpdateParamsFromAppData(void)
     g_sys_context.max_travel_hall    = (int32_t)roundf(app_data.max_travel_range_mm * g_sys_context.counts_per_mm);
 }
 
+// ===================================================================
+// 逐轴独立停稳检测与停机管理状态
+// ===================================================================
+static uint8_t s_axis_stable_cnt[4]   = {0, 0, 0, 0};                                     // 轴停稳计数器
+static bool s_axis_is_settled[4]      = {false, false, false, false};                     // 轴停稳标志
+static uint32_t s_last_check_halls[4] = {0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF}; // 轴上次检测绝对高度
+
+/**
+ * @brief 准备切入停机归档阶段，初始化各轴独立停稳跟踪状态
+ * @param motor_mask 参与本次运动的电机掩码 (如单轴微调为 1<<m_idx, 四轴联动为 0x0F)
+ * @param next_step  目标停机状态 (SYS_STEP_TOTAL_DONE 或 SYS_STEP_TUNE_DONE)
+ */
+static void APP_Control_PrepareStopSettling(uint8_t motor_mask, Motor_ctl_Step_t next_step)
+{
+    g_sys_context.active_motor_mask = motor_mask;
+    g_sys_context.system_step       = next_step;
+
+    for (int i = 0; i < 4; i++) {
+        s_last_check_halls[i] = 0xFFFFFFFF;
+        s_axis_stable_cnt[i]  = 0;
+        if (motor_mask & (1 << i)) {
+            s_axis_is_settled[i] = false; // 参与运动的轴需要检测停稳
+        } else {
+            s_axis_is_settled[i] = true; // 未参与运动的轴直接视为已就绪
+        }
+    }
+}
+
 /**
  * @brief 全面复位 Sys_Ctrl_Context_t 运行状态与电机绝对位置 (在恢复出厂设置或系统大重置时调用)
  */
@@ -235,6 +263,7 @@ void APP_Control_ResetSystemContext(void)
     // 3. 复位系统状态机、错误码与微调标志
     g_sys_context.system_fault_code = FAULT_CODE_NONE;
     g_sys_context.system_step       = SYS_STEP_READY;
+    g_sys_context.active_motor_mask = 0x0F;
     g_sys_context.is_single_tuning  = false;
     g_sys_context.max_travel_diff   = 0;
 }
@@ -252,9 +281,10 @@ void APP_Control_StartSingleTune(uint8_t m_idx)
         g_sys_context.g_motor_status[i].base_abs_hall    = g_sys_context.g_motor_status[i].current_abs_hall;
     }
 
-    g_sys_context.is_single_tuning         = true; // 显式标记正在单轴微调
-    g_sys_context.single_tune_motor_idx    = m_idx;
-    g_sys_context.single_tune_start_hall   = g_sys_context.g_motor_status[m_idx].hall_value;
+    g_sys_context.active_motor_mask         = (uint8_t)(1 << m_idx);
+    g_sys_context.is_single_tuning          = true; // 显式标记正在单轴微调
+    g_sys_context.single_tune_motor_idx     = m_idx;
+    g_sys_context.single_tune_start_hall    = g_sys_context.g_motor_status[m_idx].hall_value;
     g_sys_context.single_tune_orig_abs_hall = g_sys_context.g_motor_status[m_idx].current_abs_hall;
     g_sys_context.single_tune_target_counts = (uint32_t)roundf((float)app_data.single_tune_step_mm * g_sys_context.counts_per_mm);
 
@@ -276,7 +306,7 @@ void APP_Control_StartSingleTune(uint8_t m_idx)
 
     g_sys_context.system_step = SYS_STEP_SINGLE_TUNE;
     Debug_Printf("[SYS] Enter SINGLE_TUNE: Motor=%d, Dir=%s, Step=%dmm, TargetCounts=%d, Speed=%dRPM (Half Speed)\r\n",
-                 m_idx, (g_sys_context.single_tune_dir == 0) ? "UP" : "DOWN",
+                 m_idx + 1, (g_sys_context.single_tune_dir == 0) ? "UP" : "DOWN",
                  app_data.single_tune_step_mm, g_sys_context.single_tune_target_counts, tune_rpm);
 }
 
@@ -292,7 +322,7 @@ void APP_Control_CancelSingleTune(void)
         g_sys_context.g_motor_status[m_idx].target_cmd   = CMD_STOP;
         g_sys_context.g_motor_status[m_idx].target_speed = 0;
 
-        g_sys_context.system_step = SYS_STEP_TUNE_DONE;
+        APP_Control_PrepareStopSettling((uint8_t)(1 << m_idx), SYS_STEP_TUNE_DONE);
         xQueueSend(g_motor_ctrl_queue, &stop_msg, pdMS_TO_TICKS(10));
     }
 }
@@ -381,22 +411,22 @@ void APP_Control_UpdateStateAndStatistics(void)
         uint32_t abs_pulse = (raw_diff >= 0) ? (uint32_t)raw_diff : (uint32_t)(-raw_diff);
 
         // 2. 根据该轴有效运动方向，求解带有物理高度方向的 signed_delta
-        uint8_t cmd = g_sys_context.g_motor_status[i].target_cmd;
+        uint8_t cmd          = g_sys_context.g_motor_status[i].target_cmd;
         int32_t signed_delta = 0;
 
         if (cmd == CMD_FORWARD) {
             g_sys_context.g_motor_status[i].last_motion_cmd = CMD_FORWARD;
-            signed_delta = (int32_t)abs_pulse;  // 上升：绝对高度增加
+            signed_delta                                    = (int32_t)abs_pulse; // 上升：绝对高度增加
         } else if (cmd == CMD_REVERSE) {
             g_sys_context.g_motor_status[i].last_motion_cmd = CMD_REVERSE;
-            signed_delta = -(int32_t)abs_pulse; // 下降：绝对高度减少
+            signed_delta                                    = -(int32_t)abs_pulse; // 下降：绝对高度减少
         } else {
             // CMD_STOP 停机/静止阶段：直接使用带符号的物理脉冲差 (raw_diff)，绝不依赖历史运动方向！
             signed_delta = raw_diff;
         }
 
         // 3. 求解当前绝对高度 (起点高度 + 方向增量)
-        int32_t calc_abs_hall = g_sys_context.g_motor_status[i].base_abs_hall + signed_delta;
+        int32_t calc_abs_hall                            = g_sys_context.g_motor_status[i].base_abs_hall + signed_delta;
         g_sys_context.g_motor_status[i].current_abs_hall = calc_abs_hall;
 
         // A. 本次运动过程中的位移增量 ΔH_i
@@ -427,13 +457,12 @@ void APP_Control_UpdateStateAndStatistics(void)
 void APP_ControlTask(void *pvParameters)
 {
     MID_SIGNAL_Msg sig_msg;
-    static int16_t last_sent_speed[4]   = {-1, -1, -1, -1};
-    static uint32_t last_check_halls[4] = {0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF};
-    static uint8_t stop_stable_cnt      = 0;
+    static int16_t last_sent_speed[4] = {-1, -1, -1, -1};
 
     // 1. 初始化系统上下文与 PID (匹配 5ms/200Hz 极速控制)
     g_sys_context.system_step       = SYS_STEP_Boot;
     g_sys_context.is_hardware_ready = false;
+    g_sys_context.active_motor_mask = 0x0F;
     g_sys_context.is_single_tuning  = false;
     g_sys_context.base_speed        = 0;
     g_sys_context.system_fault_code = 0;
@@ -502,8 +531,9 @@ void APP_ControlTask(void *pvParameters)
                             }
                             if (limit_blocked) break;
 
-                            g_sys_context.is_single_tuning = false;
-                            g_sys_context.base_speed       = run_rpm;
+                            g_sys_context.is_single_tuning  = false;
+                            g_sys_context.active_motor_mask = 0x0F;
+                            g_sys_context.base_speed        = run_rpm;
 
                             speed_msg.cmd_type   = CMD_SET_SPEED;
                             speed_msg.motor_mask = 0x0F;
@@ -551,8 +581,9 @@ void APP_ControlTask(void *pvParameters)
                             }
                             if (limit_blocked) break;
 
-                            g_sys_context.is_single_tuning = false;
-                            g_sys_context.base_speed       = run_rpm;
+                            g_sys_context.is_single_tuning  = false;
+                            g_sys_context.active_motor_mask = 0x0F;
+                            g_sys_context.base_speed        = run_rpm;
 
                             speed_msg.cmd_type   = CMD_SET_SPEED;
                             speed_msg.motor_mask = 0x0F;
@@ -631,15 +662,10 @@ void APP_ControlTask(void *pvParameters)
                     g_sys_context.g_motor_status[m_idx].target_cmd   = CMD_STOP;
                     g_sys_context.g_motor_status[m_idx].target_speed = 0;
 
-                    stop_stable_cnt = 0;
-                    for (int i = 0; i < 4; i++) {
-                        last_check_halls[i] = 0xFFFFFFFF;
-                    }
-
-                    g_sys_context.system_step = SYS_STEP_TUNE_DONE;
+                    APP_Control_PrepareStopSettling((uint8_t)(1 << m_idx), SYS_STEP_TUNE_DONE);
                     xQueueSend(g_motor_ctrl_queue, &stop_msg, pdMS_TO_TICKS(10));
                     Debug_Printf("[SYS] Single Tune Reached Target Counts (%d >= %d), Stopping Motor %d...\r\n",
-                                 abs_delta, g_sys_context.single_tune_target_counts, m_idx);
+                                 abs_delta, g_sys_context.single_tune_target_counts, m_idx + 1);
                 }
 
                 APP_Control_DebugPrint();
@@ -707,13 +733,8 @@ void APP_ControlTask(void *pvParameters)
                             last_sent_speed[i]                           = 0;
                         }
 
-                        stop_stable_cnt = 0;
-                        for (int i = 0; i < 4; i++) {
-                            last_check_halls[i] = 0xFFFFFFFF;
-                        }
-
                         Motor_Ctrl_Msg_t stop_msg = {CMD_STOP, 0x0F, 0};
-                        g_sys_context.system_step = SYS_STEP_TOTAL_DONE;
+                        APP_Control_PrepareStopSettling(0x0F, SYS_STEP_TOTAL_DONE);
                         xQueueSend(g_motor_ctrl_queue, &stop_msg, pdMS_TO_TICKS(10));
                         APP_Control_SetLightOff(); // 停机一次性关两个灯
                         Debug_Printf("[SYS] Remot C Key (Stop Signal) Pressed, sending CMD_STOP...\r\n");
@@ -726,12 +747,9 @@ void APP_ControlTask(void *pvParameters)
                         g_sys_context.g_motor_status[i].target_speed = 0;
                         last_sent_speed[i]                           = 0;
                     }
-                    stop_stable_cnt = 0;
-                    for (int i = 0; i < 4; i++) {
-                        last_check_halls[i] = 0xFFFFFFFF;
-                    }
+
                     Motor_Ctrl_Msg_t stop_msg = {CMD_STOP, 0x0F, 0};
-                    g_sys_context.system_step = SYS_STEP_TOTAL_DONE;
+                    APP_Control_PrepareStopSettling(0x0F, SYS_STEP_TOTAL_DONE);
                     xQueueSend(g_motor_ctrl_queue, &stop_msg, pdMS_TO_TICKS(10));
                     APP_Control_SetLightOff(); // 到界停机一次性关两个灯
                 } else if (APP_Control_CheckSafety()) {
@@ -741,6 +759,7 @@ void APP_ControlTask(void *pvParameters)
                         uint8_t current_cmd                 = g_sys_context.g_motor_status[0].target_cmd;
                         g_sys_context.rebound_cmd           = (current_cmd == CMD_FORWARD) ? CMD_REVERSE : CMD_FORWARD;
                         g_sys_context.rebound_target_counts = (uint32_t)roundf((float)app_data.rebound_travel_mm * g_sys_context.counts_per_mm);
+                        g_sys_context.active_motor_mask     = 0x0F;
 
                         // 反弹速度设为正常计算速度的一半 (若过小则保底 100 RPM)
                         uint16_t rebound_speed_rpm = g_sys_context.calc_base_rpm / 2;
@@ -787,7 +806,7 @@ void APP_ControlTask(void *pvParameters)
                             last_sent_speed[i]                           = 0;
                         }
                         Motor_Ctrl_Msg_t stop_msg = {CMD_STOP, 0x0F, 0};
-                        g_sys_context.system_step = SYS_STEP_TOTAL_DONE;
+                        APP_Control_PrepareStopSettling(0x0F, SYS_STEP_TOTAL_DONE);
                         xQueueSend(g_motor_ctrl_queue, &stop_msg, pdMS_TO_TICKS(10));
                     }
                 } else {
@@ -893,7 +912,7 @@ void APP_ControlTask(void *pvParameters)
                     }
                 }
 
-                // 4. 反弹完成：直接下发全轴 STOP，切入 SYS_STEP_TUNE_DONE 统一接管停稳判定与 Flash 固化！
+                // 4. 反弹完成：直接下发全轴 STOP，切入 SYS_STEP_TOTAL_DONE 统一接管停稳判定与 Flash 固化！
                 if (rebound_done) {
                     xQueueReset(g_motor_ctrl_queue);
                     for (int i = 0; i < 4; i++) {
@@ -901,13 +920,9 @@ void APP_ControlTask(void *pvParameters)
                         g_sys_context.g_motor_status[i].target_speed = 0;
                         last_sent_speed[i]                           = 0;
                     }
-                    stop_stable_cnt = 0;
-                    for (int i = 0; i < 4; i++) {
-                        last_check_halls[i] = 0xFFFFFFFF;
-                    }
 
                     Motor_Ctrl_Msg_t stop_msg = {CMD_STOP, 0x0F, 0};
-                    g_sys_context.system_step = SYS_STEP_TOTAL_DONE;
+                    APP_Control_PrepareStopSettling(0x0F, SYS_STEP_TOTAL_DONE);
                     xQueueSend(g_motor_ctrl_queue, &stop_msg, pdMS_TO_TICKS(10));
                     Debug_Printf("[SYS] Rebound Distance Reached (AvgCounts=%.0f), Sending CMD_STOP & Entering SYS_STEP_TOTAL_DONE...\r\n", avg_reb_counts);
                 }
@@ -916,89 +931,95 @@ void APP_ControlTask(void *pvParameters)
                 break;
             }
 
-            // === 停机归档阶段（含 4 轴连续静止检测） ===
+            // === 停机归档阶段（逐轴独立停稳检测与停机 + 运动轴全停后单次 Flash 归档） ===
             case SYS_STEP_TOTAL_DONE:
             case SYS_STEP_TUNE_DONE: {
                 APP_Control_SetLightOff(); // 停机刹车阶段一次性关闭 2 路灯带
                 // 1. 无条件调用通用解算函数更新 4 轴绝对高度、伸出行程及极差
                 APP_Control_UpdateStateAndStatistics();
 
-                // 检查 4 路霍尔原始数据是否相比上一次 20ms 无任何变化
-                bool is_all_same = true;
+                bool all_active_settled = true;
+
+                // 2. 遍历 4 个轴，进行逐轴独立静止判定
                 for (int i = 0; i < 4; i++) {
-                    if (g_sys_context.g_motor_status[i].hall_value != last_check_halls[i]) {
-                        is_all_same         = false;
-                        last_check_halls[i] = g_sys_context.g_motor_status[i].hall_value;
+                    // 若该轴未参与本次运动，无需等待其静止，直接视为已停稳
+                    if (!(g_sys_context.active_motor_mask & (1 << i))) {
+                        s_axis_is_settled[i] = true;
+                        continue;
                     }
-                }
 
-                if (is_all_same) {
-                    stop_stable_cnt++;
-                } else {
-                    stop_stable_cnt = 0;
-                }
+                    // 检查霍尔值是否与上一次采样相同
+                    if (g_sys_context.g_motor_status[i].hall_value == s_last_check_halls[i]) {
+                        if (!s_axis_is_settled[i]) {
+                            s_axis_stable_cnt[i]++;
+                            if (s_axis_stable_cnt[i] >= STOP_STABLE_CHECK_CNT) {
+                                s_axis_is_settled[i] = true;
 
-                // 连续确认静止次数后，确认物理电机已完全停稳
-                if (stop_stable_cnt >= STOP_STABLE_CHECK_CNT) {
-                    stop_stable_cnt = 0;
+                                // 某轴一停稳，立即先对该单轴下发 0x0005 停机指令（释放刹车进入待机）
+                                Motor_Ctrl_Msg_t idle_stop_msg = {CMD_IDLE_STOP, (uint8_t)(1 << i), 0};
+                                xQueueSend(g_motor_ctrl_queue, &idle_stop_msg, pdMS_TO_TICKS(10));
+                                Debug_Printf("[SYS] Motor %d Settled & Stable: Sent 0x0005 CMD_IDLE_STOP.\r\n", i + 1);
 
-                    // 1. 若仅为真正的单轴微调完成阶段，才将微调过程改变的霍尔增量累加更新至 min_mount_halls 并固化 Flash！
-                    if (g_sys_context.system_step == SYS_STEP_TUNE_DONE && g_sys_context.is_single_tuning && g_sys_context.single_tune_motor_idx < 4) {
-                        g_sys_context.is_single_tuning = false; // 复位微调标记
-                        uint8_t m_idx                  = g_sys_context.single_tune_motor_idx;
+                                // 若该轴为单轴微调目标轴，在彻底停稳后根据真实最终脉冲精确结算 min_mount_halls
+                                if (g_sys_context.is_single_tuning && i == g_sys_context.single_tune_motor_idx) {
+                                    g_sys_context.is_single_tuning = false; // 消费微调标记
+                                    uint32_t final_hall            = g_sys_context.g_motor_status[i].hall_value;
+                                    int32_t raw_diff               = (int32_t)(final_hall - g_sys_context.single_tune_start_hall);
+                                    uint32_t abs_pulse             = (raw_diff >= 0) ? (uint32_t)raw_diff : (uint32_t)(-raw_diff);
 
-                        // 根据微调实际运动的原始脉冲差与设定方向，精确解算微调变动值
-                        int32_t raw_diff   = (int32_t)(g_sys_context.g_motor_status[m_idx].hall_value - g_sys_context.single_tune_start_hall);
-                        uint32_t abs_pulse = (raw_diff >= 0) ? (uint32_t)raw_diff : (uint32_t)(-raw_diff);
+                                    int32_t tune_delta = (g_sys_context.single_tune_dir == 0) ? (int32_t)abs_pulse : -(int32_t)abs_pulse;
+                                    app_data.min_mount_halls[i] += tune_delta;
+                                    Debug_Printf("[SYS] Single Tune Final Settled! Motor %d (Dir=%s) FinalDelta=%d, New min_mount_hall=%d.\r\n",
+                                                 i + 1, (g_sys_context.single_tune_dir == 0) ? "UP" : "DOWN",
+                                                 tune_delta, app_data.min_mount_halls[i]);
+                                }
 
-                        int32_t tune_delta = 0;
-                        if (g_sys_context.single_tune_dir == 0) {
-                            tune_delta = (int32_t)abs_pulse;  // 正转/上升微调：零点加上正增量
-                        } else {
-                            tune_delta = -(int32_t)abs_pulse; // 反转/下降微调：零点减去负增量
+                                // 刷新该轴在内存中的绝对高度和基准
+                                app_data.motor_abs_halls[i]                      = g_sys_context.g_motor_status[i].current_abs_hall;
+                                g_sys_context.g_motor_status[i].base_abs_hall    = g_sys_context.g_motor_status[i].current_abs_hall;
+                                g_sys_context.g_motor_status[i].start_drive_hall = g_sys_context.g_motor_status[i].hall_value;
+                                g_sys_context.g_motor_status[i].stall_cnt        = 0;
+                                g_sys_context.delta_h[i]                         = 0.0f;
+                            }
                         }
-
-                        app_data.min_mount_halls[m_idx] += tune_delta; // 累加微调变动值
-                        Debug_Printf("[SYS] Single Tune Complete! Motor %d (Dir=%s) Delta=%d, New min_mount_hall=%d. Saved to Flash.\r\n",
-                                     m_idx, (g_sys_context.single_tune_dir == 0) ? "UP" : "DOWN",
-                                     tune_delta, app_data.min_mount_halls[m_idx]);
+                    } else {
+                        // 霍尔值仍在变动（尚未停稳），更新历史并清零该轴稳定计数
+                        s_last_check_halls[i] = g_sys_context.g_motor_status[i].hall_value;
+                        s_axis_stable_cnt[i]  = 0;
+                        s_axis_is_settled[i]  = false;
                     }
 
-                    // 2. 同步 Flash 存储数据与控制内存基准
+                    if (!s_axis_is_settled[i]) {
+                        all_active_settled = false;
+                    }
+                }
+
+                // 3. 当所有参与运动的轴均已彻底停稳（单轴微调仅需 1 轴，四轴联动需 4 轴）：
+                if (all_active_settled) {
+                    // 重置停稳检测历史
                     for (int i = 0; i < 4; i++) {
-                        last_check_halls[i]                              = 0xFFFFFFFF;
-                        app_data.motor_abs_halls[i]                      = g_sys_context.g_motor_status[i].current_abs_hall;
-                        g_sys_context.g_motor_status[i].base_abs_hall    = g_sys_context.g_motor_status[i].current_abs_hall;
-                        g_sys_context.g_motor_status[i].start_drive_hall = g_sys_context.g_motor_status[i].hall_value;
-                        g_sys_context.g_motor_status[i].stall_cnt        = 0;
-                        g_sys_context.delta_h[i]                         = 0.0f;
+                        s_last_check_halls[i] = 0xFFFFFFFF;
+                        s_axis_stable_cnt[i]  = 0;
+                        s_axis_is_settled[i]  = false;
                     }
 
-                    // 3. 立即同步固化存 Flash
+                    // 立即同步固化存 Flash（仅执行 1 次落盘）
                     APP_Data_Storage();
+                    Debug_Printf("[SYS] All Active Motors Settled & Flash Archived Successfully!\r\n");
 
-                    // 3.1 停稳且归档完成后，把运动刹车 0x0009 切成停机 0x0005
-                    {
-                        Motor_Ctrl_Msg_t idle_stop_msg = {CMD_IDLE_STOP, 0x0F, 0};
-                        xQueueSend(g_motor_ctrl_queue, &idle_stop_msg, pdMS_TO_TICKS(10));
-                        Debug_Printf("[SYS] Stop Stable & Archived: send 0x0005 idle stop\r\n");
-                    }
-
-                    // 4. 以最新的 min_mount_halls 重新计算 4 轴绝对伸出行程 travel_rel 及极差 max_travel_diff
+                    // 以最新的 min_mount_halls 重新计算 4 轴绝对伸出行程 travel_rel 及极差 max_travel_diff
                     APP_Control_UpdateStateAndStatistics();
 
-                    // 5. 重置 4 轴 PID 控制器历史状态（清零积分项，防止带入上一次控制残留）
+                    // 重置 4 轴 PID 控制器历史状态
                     for (int i = 0; i < 4; i++) {
                         APP_PID_Init(&motor_pids[i], PID_DEFAULT_KP, PID_DEFAULT_KI, PID_DEFAULT_KD,
                                      PID_DEFAULT_DEADZONE, PID_DEFAULT_OUT_MAX, PID_DEFAULT_OUT_MIN, PID_DEFAULT_IOUT_MAX);
                     }
 
                     g_sys_context.base_speed = 0;
-
                     APP_Control_DebugPrint();
 
-                    // 6. 停稳归档完成后的三向流转决策：
-                    // A. 检查是否存在不可恢复的硬件故障 (如 485 通信中断)
+                    // 4. 停稳归档完成后的流转决策 (故障 / 自愈对齐 / 就绪)
                     bool has_comm_fault = false;
                     for (int i = 0; i < 4; i++) {
                         if (g_sys_context.g_motor_status[i].comm_error > 0) {
@@ -1008,12 +1029,10 @@ void APP_ControlTask(void *pvParameters)
                     }
 
                     if (has_comm_fault || g_sys_context.system_fault_code == FAULT_CODE_COMM) {
-                        // 通信中断：切入急停锁死状态，禁止自愈重平！
                         g_sys_context.system_fault_code = FAULT_CODE_COMM;
                         g_sys_context.system_step       = SYS_STEP_FAULT_STOP;
                         Debug_Printf("[SYS] Stop Check: 485 Comm Fault Active! Entering SYS_STEP_FAULT_STOP Lockout State.\r\n");
                     } else if (g_sys_context.max_travel_diff > (float)g_sys_context.max_sync_diff_hall) {
-                        // 通信正常且物理极差超限：触发 SYS_STEP_AUTO_ALIGN 自愈恢复
                         for (int i = 0; i < 4; i++) {
                             g_sys_context.g_motor_status[i].base_abs_hall    = g_sys_context.g_motor_status[i].current_abs_hall;
                             g_sys_context.g_motor_status[i].start_drive_hall = g_sys_context.g_motor_status[i].hall_value;
@@ -1022,7 +1041,6 @@ void APP_ControlTask(void *pvParameters)
                         Debug_Printf("[SYS] Stop Check: Sync Diff Exceeded (Diff=%.1f > Limit=%d)! Triggering AUTO_ALIGN Self-Healing...\r\n",
                                      g_sys_context.max_travel_diff, g_sys_context.max_sync_diff_hall);
                     } else {
-                        // 成功归档且无故障就绪：清空故障代码
                         g_sys_context.system_fault_code = FAULT_CODE_NONE;
                         g_sys_context.system_step       = SYS_STEP_READY;
                         Debug_Printf("[SYS] State -> READY (AbsHalls:[%d,%d,%d,%d], MaxDiff=%.1f)\r\n",
@@ -1055,12 +1073,9 @@ void APP_ControlTask(void *pvParameters)
                         g_sys_context.g_motor_status[i].target_speed = 0;
                         last_sent_speed[i]                           = 0;
                     }
-                    stop_stable_cnt = 0;
-                    for (int i = 0; i < 4; i++) {
-                        last_check_halls[i] = 0xFFFFFFFF;
-                    }
+
                     Motor_Ctrl_Msg_t stop_msg = {CMD_STOP, 0x0F, 0};
-                    g_sys_context.system_step = SYS_STEP_TUNE_DONE;
+                    APP_Control_PrepareStopSettling(0x0F, SYS_STEP_TUNE_DONE);
                     xQueueSend(g_motor_ctrl_queue, &stop_msg, pdMS_TO_TICKS(10));
                     Debug_Printf("[SYS] AUTO_ALIGN Completed! Sync Diff Converged (Diff=%.1f <= Limit=%.1f). Re-entering SYS_STEP_TUNE_DONE...\r\n",
                                  g_sys_context.max_travel_diff, target_converge_diff);
@@ -1153,14 +1168,9 @@ void APP_ControlTask(void *pvParameters)
                             last_sent_speed[i]                           = 0;
                         }
 
-                        stop_stable_cnt = 0;
-                        for (int i = 0; i < 4; i++) {
-                            last_check_halls[i] = 0xFFFFFFFF;
-                        }
-
-                        Motor_Ctrl_Msg_t stop_msg = {CMD_STOP, 0x0F, 0};
+                        Motor_Ctrl_Msg_t stop_msg       = {CMD_STOP, 0x0F, 0};
                         g_sys_context.system_fault_code = FAULT_CODE_NONE;
-                        g_sys_context.system_step       = SYS_STEP_TOTAL_DONE; // 切入归档存盘，若有极差偏差会自动触发 AUTO_ALIGN 自动重平纠正！
+                        APP_Control_PrepareStopSettling(0x0F, SYS_STEP_TOTAL_DONE);
                         xQueueSend(g_motor_ctrl_queue, &stop_msg, pdMS_TO_TICKS(10));
                         APP_Control_SetLightOff(); // 消除报警后关闭警示双闪灯
                         Debug_Printf("[SYS] Fault Lockout Cleared by User Key! Sent CMD_STOP & Entering SYS_STEP_TOTAL_DONE for Archiving & Auto-Align...\r\n");

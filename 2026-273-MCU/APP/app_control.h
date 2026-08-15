@@ -118,6 +118,7 @@ typedef struct {
     volatile uint32_t hall_update_seq[4]; // 4 轴霍尔成功更新打卡序列号
 
     // 单轴微调与过流反弹控制状态字段
+    uint8_t active_motor_mask;          // 当前运动参与的电机掩码 (单轴微调为 1<<m_idx, 四轴联动为 0x0F)
     volatile bool is_single_tuning;     // 是否正在执行单轴微调标志 (严格防护 Flash min_mount_halls 污染)
     uint8_t single_tune_dir;            // 微调方向 (0: 正转/上升, 1: 反转/下降)
     uint8_t single_tune_motor_idx;      // 当前微调的目标电机 (0~3)

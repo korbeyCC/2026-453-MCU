@@ -90,61 +90,238 @@ static const modbus_read_callback_t Motor_ReadHall_Callbacks[4] = {
 static const modbus_read_callback_t Motor_ReadCurrent_Callbacks[4] = {
     Motor1_ReadCurrent_Callback, Motor2_ReadCurrent_Callback, Motor3_ReadCurrent_Callback, Motor4_ReadCurrent_Callback};
 
+// ========================== 硬件初始化写应答跟踪 ==========================
+
+#define COMM_INIT_ALL_MASK 0x0F
+
+static volatile uint8_t s_init_done_mask;
+static volatile uint8_t s_init_ok_mask;
+
+static void Init_Write_Callback_Generic(uint8_t motor_idx, uint8_t success)
+{
+    uint8_t bit = (uint8_t)(1u << motor_idx);
+    if (success) {
+        s_init_ok_mask |= bit;
+    } else {
+        s_init_ok_mask &= (uint8_t)~bit;
+    }
+    s_init_done_mask |= bit;
+}
+
+#define DEFINE_INIT_WRITE_CALLBACK(num, idx)                     \
+    static void Motor##num##_InitWrite_Callback(uint8_t success) \
+    {                                                            \
+        Init_Write_Callback_Generic(idx, success);               \
+    }
+
+DEFINE_INIT_WRITE_CALLBACK(1, 0)
+DEFINE_INIT_WRITE_CALLBACK(2, 1)
+DEFINE_INIT_WRITE_CALLBACK(3, 2)
+DEFINE_INIT_WRITE_CALLBACK(4, 3)
+
+static const modbus_write_callback_t Motor_InitWrite_Callbacks[4] = {
+    Motor1_InitWrite_Callback, Motor2_InitWrite_Callback, Motor3_InitWrite_Callback, Motor4_InitWrite_Callback};
+
+static void ReadBaud_Callback_Generic(uint8_t motor_idx, uint16_t *pData, uint8_t success)
+{
+    uint8_t bit = (uint8_t)(1u << motor_idx);
+    if (success && pData != NULL) {
+        s_init_ok_mask |= bit;
+        Debug_Printf("[COMM] Motor %d 19200 Response SUCCESS: 0x2009 = %u (0x%04X)\r\n", motor_idx + 1, pData[0], pData[0]);
+    } else {
+        s_init_ok_mask &= (uint8_t)~bit;
+    }
+    s_init_done_mask |= bit;
+}
+
+#define DEFINE_READ_BAUD_CALLBACK(num, idx)                                      \
+    static void Motor##num##_ReadBaud_Callback(uint16_t *pData, uint8_t success) \
+    {                                                                            \
+        ReadBaud_Callback_Generic(idx, pData, success);                          \
+    }
+
+DEFINE_READ_BAUD_CALLBACK(1, 0)
+DEFINE_READ_BAUD_CALLBACK(2, 1)
+DEFINE_READ_BAUD_CALLBACK(3, 2)
+DEFINE_READ_BAUD_CALLBACK(4, 3)
+
+static const modbus_read_callback_t Motor_ReadBaud_Callbacks[4] = {
+    Motor1_ReadBaud_Callback, Motor2_ReadBaud_Callback, Motor3_ReadBaud_Callback, Motor4_ReadBaud_Callback};
+
+static void App_Comm_WaitInitWrites(uint8_t pending_mask)
+{
+    while ((s_init_done_mask & pending_mask) != pending_mask) {
+        MID_Modbus_Process_1ms();
+        vTaskDelay(pdMS_TO_TICKS(1));
+    }
+}
+
+static void App_Comm_WriteRegUntilAllOk(uint16_t reg, uint16_t val, const char *name, uint8_t accept_ex)
+{
+    uint8_t ok_mask      = 0;
+    uint16_t retry_round = 0;
+
+    Debug_Printf("[COMM] Init %s (0x%04X=0x%04X)\r\n", name, reg, val);
+
+    while (ok_mask != COMM_INIT_ALL_MASK) {
+        uint8_t pending_mask = ok_mask;
+        s_init_done_mask     = ok_mask;
+        s_init_ok_mask       = ok_mask;
+
+        for (int i = 0; i < 4; i++) {
+            if (ok_mask & (1u << i)) {
+                continue;
+            }
+            if (MID_Modbus_WriteSingleReg(&modbus_masters[i], reg, val, Motor_InitWrite_Callbacks[i])) {
+                pending_mask |= (uint8_t)(1u << i);
+            }
+        }
+
+        if (pending_mask == ok_mask) {
+            MID_Modbus_Process_1ms();
+            vTaskDelay(pdMS_TO_TICKS(1));
+            continue;
+        }
+
+        App_Comm_WaitInitWrites(pending_mask);
+        ok_mask = s_init_ok_mask;
+
+        if (accept_ex != 0) {
+            for (int i = 0; i < 4; i++) {
+                uint8_t bit = (uint8_t)(1u << i);
+                if ((pending_mask & bit) == 0 || (ok_mask & bit) != 0) {
+                    continue;
+                }
+                if (modbus_masters[i].last_ex_code == accept_ex) {
+                    ok_mask |= bit;
+                    Debug_Printf("[COMM] Init %s motor %d accept ex=0x%02X\r\n", name, i + 1, accept_ex);
+                }
+            }
+        }
+
+        if (ok_mask != COMM_INIT_ALL_MASK) {
+            retry_round++;
+            if ((retry_round % 20u) == 0u) {
+                Debug_Printf("[COMM] Init %s retry %u ok_mask=0x%02X\r\n", name, retry_round, ok_mask);
+            }
+        }
+    }
+}
+
+static void App_Comm_SwitchBaudUntilAllOk(void)
+{
+    uint8_t ok_mask      = 0;
+    uint16_t retry_round = 0;
+
+    Debug_Printf("[COMM] Executing 5-Cycle 19200 Enable-Switch-Read + 115200 Confirmation Handshake...\r\n");
+
+    while (ok_mask != COMM_INIT_ALL_MASK) {
+        retry_round++;
+
+        for (int i = 0; i < 4; i++) {
+            if (ok_mask & (1u << i)) {
+                continue;
+            }
+
+            // 1. 确保 MCU 串口处于 19200 BPS
+            MID_Modbus_SetMasterBaudRate(&modbus_masters[i], 19200);
+
+            // 2. 在 19200 下重复执行 使能 0x200E -> 切波特率 0x2009=7 -> 读确认 (最多 5 次)
+            bool no_resp_in_19200 = false;
+
+            for (int cycle = 1; cycle <= 5; cycle++) {
+                // Step 0: 先开通信功能码写使能，否则后续写 0x2009 可能被拒绝
+                s_init_done_mask &= ~(1u << i);
+                s_init_ok_mask &= ~(1u << i);
+                if (MID_Modbus_WriteSingleReg(&modbus_masters[i], 0x200E, 0x0001, Motor_InitWrite_Callbacks[i])) {
+                    App_Comm_WaitInitWrites(1u << i);
+                }
+                if (s_init_ok_mask & (1u << i)) {
+                    Debug_Printf("[COMM] Motor %d [19200 Cycle %d/5] Write Enable OK\r\n", i + 1, cycle);
+                } else {
+                    Debug_Printf("[COMM] Motor %d [19200 Cycle %d/5] Write Enable no ACK, continue switch\r\n", i + 1, cycle);
+                }
+
+                // Step A: 写 0x2009 = 7
+                MID_Modbus_WriteSingleRegNoWait(&modbus_masters[i], 0x2009, 7);
+                vTaskDelay(pdMS_TO_TICKS(50));
+
+                // Step B: 在 19200 下下发 03 读 0x2009 命令
+                s_init_done_mask &= ~(1u << i);
+                s_init_ok_mask &= ~(1u << i);
+
+                if (MID_Modbus_ReadRegs(&modbus_masters[i], 0x2009, 1, Motor_ReadBaud_Callbacks[i])) {
+                    App_Comm_WaitInitWrites(1u << i);
+                }
+
+                if (s_init_ok_mask & (1u << i)) {
+                    // 19200 下依然有应答，说明驱动器仍在 19200
+                    Debug_Printf("[COMM] Motor %d [19200 Cycle %d/5] Responded at 19200.\r\n", i + 1, cycle);
+                } else {
+                    // 19200 下无应答！说明驱动器收到 0x2009=7 后已变身 115200！
+                    Debug_Printf("[COMM] Motor %d [19200 Cycle %d/5] NO response at 19200 -> Switching to 115200 for Confirmation...\r\n", i + 1, cycle);
+                    no_resp_in_19200 = true;
+                    break;
+                }
+            }
+
+            // 3. 在 19200 无应答后，切到 115200 再发读命令确认一次
+            if (no_resp_in_19200) {
+                MID_Modbus_SetMasterBaudRate(&modbus_masters[i], 115200);
+                vTaskDelay(pdMS_TO_TICKS(10));
+
+                s_init_done_mask &= ~(1u << i);
+                s_init_ok_mask &= ~(1u << i);
+
+                if (MID_Modbus_ReadRegs(&modbus_masters[i], 0x2009, 1, Motor_ReadBaud_Callbacks[i])) {
+                    App_Comm_WaitInitWrites(1u << i);
+                }
+
+                if (s_init_ok_mask & (1u << i)) {
+                    // 115200 读确认成功！锁定 115200！
+                    ok_mask |= (1u << i);
+                    Debug_Printf("[COMM] Motor %d 115200 Read Confirmation SUCCESSFUL! Channel Locked.\r\n", i + 1);
+                } else {
+                    // 115200 读确认失败，切回 19200 重新回到姿势循环
+                    MID_Modbus_SetMasterBaudRate(&modbus_masters[i], 19200);
+                    Debug_Printf("[COMM] Motor %d 115200 Read Confirmation FAILED -> Reverting to 19200 to repeat cycle.\r\n", i + 1);
+                }
+            }
+        }
+
+        if (ok_mask != COMM_INIT_ALL_MASK) {
+            Debug_Printf("[COMM] Baudrate Handshake Round %u: ok_mask=0x%02X, retrying unconfirmed channels...\r\n", retry_round, ok_mask);
+            vTaskDelay(pdMS_TO_TICKS(50));
+        }
+    }
+
+    Debug_Printf("[COMM] ALL 4 Motors Baudrate 115200 Handshake & Double-Confirmation SUCCESSFUL!\r\n");
+}
+
 // ========================== 485 并行 Modbus 硬件初始化序列 ==========================
 
 static void App_Comm_InitHardwareSequence(void)
 {
-    // 1. 以初始 19200 BPS 向驱动器发送 0x2009 = 7 指令，提升驱动器通信波特率至 115200 BPS
-    for (int i = 0; i < 4; i++) {
-        MID_Modbus_WriteSingleReg(&modbus_masters[i], 0x2009, 7, Motor_Cmd_Callbacks[i]);
-    }
+    /* 波特率指令也无限重试，直到 4 路都收到 115200 应答 */
+    App_Comm_SwitchBaudUntilAllOk();
 
-    uint8_t wait_ms = 0;
-    while (wait_ms < 50) {
-        MID_Modbus_Process_1ms();
-        vTaskDelay(pdMS_TO_TICKS(1));
-        wait_ms++;
-    }
-
-    // 2. 单片机本地 4 路 RS485 串口重新初始化切频提升至 115200 BPS
-    MID_Modbus_SetBaudRate(115200);
-
-    // 3. 执行后续 6 步硬件初始化序列 (含 0x2000=0x0007 上电故障复位)
+    /* 后续每条配置都等 4 路成功后才进入下一条 */
     struct {
         uint16_t reg;
         uint16_t val;
         const char *name;
+        uint8_t accept_ex;
     } init_steps[] = {
-        {0x2000, 0x0007, "Fault Reset"},
-        {0x200E, 0x0000, "Write Enable"},
-        {0x2006, 0x0002, "Run Mode"},
-        {0x2007, 0x0003, "Speed Mode"},
-        {0x2001, 300, "Set Speed 300"},
-        {0x2000, 0x0005, "Start Drive"}};
+        {0x200E, 0x0001, "Write Enable", 0},
+        {0x2000, 0x0007, "Fault Reset", 0x03}, /* 正常回显或 86 03 都算过 */
+        {0x2006, 0x0002, "Run Mode", 0},
+        {0x2007, 0x0003, "Speed Mode", 0},
+        {0x2001, 300, "Set Speed 300", 0},
+        {0x2000, 0x0005, "Start Drive", 0}};
 
     int num_steps = sizeof(init_steps) / sizeof(init_steps[0]);
-
     for (int step = 0; step < num_steps; step++) {
-        for (int i = 0; i < 4; i++) {
-            Modbus_Master_t *m = &modbus_masters[i];
-            MID_Modbus_WriteSingleReg(m, init_steps[step].reg, init_steps[step].val, Motor_Cmd_Callbacks[i]);
-        }
-
-        uint8_t wait_cnt = 0;
-        while (wait_cnt < 100) {
-            MID_Modbus_Process_1ms();
-            vTaskDelay(pdMS_TO_TICKS(1));
-            wait_cnt++;
-
-            bool all_idle = true;
-            for (int i = 0; i < 4; i++) {
-                if (modbus_masters[i].state != MODBUS_STATE_IDLE) {
-                    all_idle = false;
-                    break;
-                }
-            }
-            if (all_idle) break;
-        }
+        App_Comm_WriteRegUntilAllOk(init_steps[step].reg, init_steps[step].val, init_steps[step].name, init_steps[step].accept_ex);
     }
 
     g_sys_context.is_hardware_ready = true;
@@ -172,9 +349,9 @@ void APP_CommTask(void *pvParameters)
     // 1. 执行托管的 4 路电机驱动器硬件初始化
     App_Comm_InitHardwareSequence();
 
-    TickType_t xLastWakeTime     = xTaskGetTickCount();
-    static uint16_t timer_4ms_cnt        = 0;
-    static uint16_t current_poll_cnt[4]  = {0, 0, 0, 0};
+    TickType_t xLastWakeTime            = xTaskGetTickCount();
+    static uint16_t timer_4ms_cnt       = 0;
+    static uint16_t current_poll_cnt[4] = {0, 0, 0, 0};
 
     static int16_t pending_speed[4];
     static bool has_pending_speed[4] = {false, false, false, false};
@@ -217,13 +394,15 @@ void APP_CommTask(void *pvParameters)
                 }
                 // Tier 2: 其次下发待更新的运行/停止控制指令 (写 0x2000)
                 else if (has_pending_cmd[i]) {
-                    uint16_t reg_val = 0x0009; // 默认 STOP
+                    uint16_t reg_val = 0x0009; // 默认刹车停机
                     if (pending_cmd[i] == CMD_FORWARD) {
                         reg_val = 0x0001;
                     } else if (pending_cmd[i] == CMD_REVERSE) {
                         reg_val = 0x0002;
                     } else if (pending_cmd[i] == CMD_STOP) {
                         reg_val = 0x0009;
+                    } else if (pending_cmd[i] == CMD_IDLE_STOP) {
+                        reg_val = 0x0005;
                     }
 
                     if (MID_Modbus_WriteSingleReg(m, 0x2000, reg_val, Motor_Cmd_Callbacks[i])) {

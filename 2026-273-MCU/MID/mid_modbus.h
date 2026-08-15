@@ -28,6 +28,7 @@ typedef struct {
     volatile uint8_t rx_complete;  // 接收完成标志位
     
     uint16_t timeout_cnt;          // 超时计数器 (ms)
+    uint8_t last_ex_code;          // 最近一次写应答异常码，0 表示无异常
     uint16_t expected_reg_cnt;     // 期望读取的寄存器数
     uint16_t temp_buf[64];         // 临时寄存器解析缓冲区
     
@@ -45,7 +46,10 @@ uint16_t MID_Modbus_CRC16(uint8_t *pData, uint16_t len);
 
 bool MID_Modbus_ReadRegs(Modbus_Master_t *master, uint16_t start_addr, uint16_t reg_count, modbus_read_callback_t callback);
 bool MID_Modbus_WriteSingleReg(Modbus_Master_t *master, uint16_t reg_addr, uint16_t value, modbus_write_callback_t callback);
+bool MID_Modbus_WriteSingleRegThenSwitchBaud(Modbus_Master_t *master, uint16_t reg_addr, uint16_t value, uint32_t baudrate, modbus_write_callback_t callback);
 bool MID_Modbus_WriteMultipleRegs(Modbus_Master_t *master, uint16_t start_addr, uint16_t reg_count, uint16_t *data, modbus_write_callback_t callback);
+void MID_Modbus_WriteSingleRegNoWait(Modbus_Master_t *master, uint16_t reg_addr, uint16_t value);
+void MID_Modbus_SetMasterBaudRate(Modbus_Master_t *master, uint32_t baudrate);
 void MID_Modbus_SetBaudRate(uint32_t baudrate);
 
 #endif // __MID_MODBUS_H

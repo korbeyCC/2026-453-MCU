@@ -11,8 +11,8 @@ extern UART_HandleTypeDef huart4;
 Modbus_Master_t modbus_masters[4];
 
 // 时间配置常数 (单位: ms)
-#define MODBUS_READ_TIMEOUT_MS  15
-#define MODBUS_WRITE_TIMEOUT_MS 15
+#define MODBUS_READ_TIMEOUT_MS  30
+#define MODBUS_WRITE_TIMEOUT_MS 30
 #define MODBUS_INTERVAL_MS      1
 
 // Modbus 功能码
@@ -47,8 +47,7 @@ static const uint8_t auchCRCHi[] = {
     0x01, 0xC0, 0x80, 0x41, 0x01, 0xC0, 0x80, 0x41, 0x00, 0xC1,
     0x81, 0x40, 0x00, 0xC1, 0x81, 0x40, 0x01, 0xC0, 0x80, 0x41,
     0x00, 0xC1, 0x81, 0x40, 0x01, 0xC0, 0x80, 0x41, 0x01, 0xC0,
-    0x80, 0x41, 0x00, 0xC1, 0x81, 0x40
-};
+    0x80, 0x41, 0x00, 0xC1, 0x81, 0x40};
 
 /* CRC低字节校验表 */
 static const uint8_t auchCRCLo[] = {
@@ -77,8 +76,7 @@ static const uint8_t auchCRCLo[] = {
     0x99, 0x59, 0x58, 0x98, 0x88, 0x48, 0x49, 0x89, 0x4B, 0x8B,
     0x8A, 0x4A, 0x4E, 0x8E, 0x8F, 0x4F, 0x8D, 0x4D, 0x4C, 0x8C,
     0x44, 0x84, 0x85, 0x45, 0x87, 0x47, 0x46, 0x86, 0x82, 0x42,
-    0x43, 0x83, 0x41, 0x81, 0x80, 0x40
-};
+    0x43, 0x83, 0x41, 0x81, 0x80, 0x40};
 
 // ========================== CRC 计算函数 ==========================
 uint16_t MID_Modbus_CRC16(uint8_t *pData, uint16_t len)
@@ -101,13 +99,11 @@ uint16_t MID_Modbus_CRC16(uint8_t *pData, uint16_t len)
  */
 void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size)
 {
-    for (int i = 0; i < 4; i++)
-    {
-        if (huart == modbus_masters[i].huart)
-        {
-            modbus_masters[i].rx_count = Size;
+    for (int i = 0; i < 4; i++) {
+        if (huart == modbus_masters[i].huart) {
+            modbus_masters[i].rx_count    = Size;
             modbus_masters[i].rx_complete = 1;
-            
+
             // 接收已完成，不在此处重新挂载以防止总线杂波和重入锁死，改在下发发送命令后按需开启
             break;
         }
@@ -119,7 +115,7 @@ static bool parse_response(Modbus_Master_t *master, uint16_t *destBuf, uint16_t 
 {
     uint16_t crc_recv, crc_calc;
     uint16_t i, byteCount;
-    
+
     if (master->rx_count < 5) return false;
     if (master->rx_buf[0] != master->slave_addr) return false;
 
@@ -145,11 +141,11 @@ static bool parse_response(Modbus_Master_t *master, uint16_t *destBuf, uint16_t 
 static void send_read_cmd(Modbus_Master_t *master, uint16_t startAddr, uint16_t regCount)
 {
     uint16_t crc;
-    
+
     // 发送前重置 DMA 状态并清空完成标志，彻底杜绝 HAL_BUSY 锁死及脏数据拼接
     HAL_UART_DMAStop(master->huart);
-    master->rx_count      = 0;
-    master->rx_complete   = 0;
+    master->rx_count    = 0;
+    master->rx_complete = 0;
     master->timeout_cnt = 0;
 
     master->tx_buf[0] = master->slave_addr;
@@ -158,26 +154,42 @@ static void send_read_cmd(Modbus_Master_t *master, uint16_t startAddr, uint16_t 
     master->tx_buf[3] = startAddr & 0xFF;
     master->tx_buf[4] = (regCount >> 8) & 0xFF;
     master->tx_buf[5] = regCount & 0xFF;
-    
-    crc = MID_Modbus_CRC16(master->tx_buf, 6);
+
+    crc               = MID_Modbus_CRC16(master->tx_buf, 6);
     master->tx_buf[6] = (crc >> 8) & 0xFF;
     master->tx_buf[7] = crc & 0xFF;
-    
+
     // 调用 HAL 库串口发送 (阻塞 100ms 最大超时保护)
     HAL_UART_Transmit(master->huart, master->tx_buf, 8, 100);
-    
+
     // 发送完毕，立刻重新挂载 DMA 接收监听本次应答，保障缓冲区的纯净
     HAL_UARTEx_ReceiveToIdle_DMA(master->huart, master->rx_buf, sizeof(master->rx_buf));
 }
 
+// ========================== 内部：仅重配波特率，不拆 MSP/DMA/NVIC ==========================
+static void apply_uart_baud(UART_HandleTypeDef *huart, uint32_t baudrate)
+{
+    HAL_UART_DMAStop(huart);
+    huart->Init.BaudRate = baudrate;
+    /* gState 非 RESET 时 HAL_UART_Init 只会重配寄存器，不会再走 MspDeInit/MspInit */
+    HAL_UART_Init(huart);
+}
+
+static void reset_master_rx(Modbus_Master_t *master)
+{
+    memset(master->rx_buf, 0, sizeof(master->rx_buf));
+    master->rx_complete = 0;
+    master->rx_count    = 0;
+}
+
 // ========================== 内部：组包发送写单个寄存器命令 ==========================
-static void send_write_single_cmd(Modbus_Master_t *master, uint16_t regAddr, uint16_t value)
+static void send_write_single_cmd(Modbus_Master_t *master, uint16_t regAddr, uint16_t value, bool start_rx)
 {
     uint16_t crc;
-    
+
     HAL_UART_DMAStop(master->huart);
-    master->rx_count      = 0;
-    master->rx_complete   = 0;
+    master->rx_count    = 0;
+    master->rx_complete = 0;
     master->timeout_cnt = 0;
 
     master->tx_buf[0] = master->slave_addr;
@@ -186,14 +198,19 @@ static void send_write_single_cmd(Modbus_Master_t *master, uint16_t regAddr, uin
     master->tx_buf[3] = regAddr & 0xFF;
     master->tx_buf[4] = (value >> 8) & 0xFF;
     master->tx_buf[5] = value & 0xFF;
-    
-    crc = MID_Modbus_CRC16(master->tx_buf, 6);
+
+    crc               = MID_Modbus_CRC16(master->tx_buf, 6);
     master->tx_buf[6] = (crc >> 8) & 0xFF;
     master->tx_buf[7] = crc & 0xFF;
-    
+
+    // 清除 TC 标志位，确保后续能够精确捕获当前帧的物理发送完成
+    __HAL_UART_CLEAR_FLAG(master->huart, UART_FLAG_TC);
+
     HAL_UART_Transmit(master->huart, master->tx_buf, 8, 100);
-    
-    HAL_UARTEx_ReceiveToIdle_DMA(master->huart, master->rx_buf, sizeof(master->rx_buf));
+
+    if (start_rx) {
+        HAL_UARTEx_ReceiveToIdle_DMA(master->huart, master->rx_buf, sizeof(master->rx_buf));
+    }
 }
 
 // ========================== 内部：组包发送写多个寄存器命令 ==========================
@@ -202,10 +219,10 @@ static void send_write_multiple_cmd(Modbus_Master_t *master, uint16_t startAddr,
     uint16_t crc;
     uint16_t i;
     uint16_t tx_len;
-    
+
     HAL_UART_DMAStop(master->huart);
-    master->rx_count      = 0;
-    master->rx_complete   = 0;
+    master->rx_count    = 0;
+    master->rx_complete = 0;
     master->timeout_cnt = 0;
 
     master->tx_buf[0] = master->slave_addr;
@@ -215,58 +232,83 @@ static void send_write_multiple_cmd(Modbus_Master_t *master, uint16_t startAddr,
     master->tx_buf[4] = (regCount >> 8) & 0xFF;
     master->tx_buf[5] = regCount & 0xFF;
     master->tx_buf[6] = regCount * 2; // 字节数
-    
+
     // 拷贝并转换大端字节序
     for (i = 0; i < regCount; i++) {
         master->tx_buf[7 + i * 2] = (data[i] >> 8) & 0xFF;
         master->tx_buf[8 + i * 2] = data[i] & 0xFF;
     }
-    
-    tx_len = 7 + regCount * 2;
-    crc = MID_Modbus_CRC16(master->tx_buf, tx_len);
+
+    tx_len                     = 7 + regCount * 2;
+    crc                        = MID_Modbus_CRC16(master->tx_buf, tx_len);
     master->tx_buf[tx_len]     = (crc >> 8) & 0xFF;
     master->tx_buf[tx_len + 1] = crc & 0xFF;
-    
+
     HAL_UART_Transmit(master->huart, master->tx_buf, tx_len + 2, 100);
-    
+
     HAL_UARTEx_ReceiveToIdle_DMA(master->huart, master->rx_buf, sizeof(master->rx_buf));
+}
+
+// ========================== 内部：解析写异常应答 86/xx ==========================
+static bool parse_write_exception(Modbus_Master_t *master, uint8_t *ex_code)
+{
+    uint16_t crc_recv, crc_calc;
+
+    if (master->rx_count < 5) {
+        return false;
+    }
+    if (master->rx_buf[0] != master->slave_addr) {
+        return false;
+    }
+    if (master->rx_buf[1] != (uint8_t)(master->tx_buf[1] | 0x80)) {
+        return false;
+    }
+
+    crc_recv = ((uint16_t)master->rx_buf[3] << 8) | master->rx_buf[4];
+    crc_calc = MID_Modbus_CRC16(master->rx_buf, 3);
+    if (crc_recv != crc_calc) {
+        return false;
+    }
+
+    if (ex_code != NULL) {
+        *ex_code = master->rx_buf[2];
+    }
+    return true;
 }
 
 // ========================== 对外接口：主站初始化 ==========================
 void MID_Modbus_Init(void)
 {
     // 1. 绑定底层串口并设定从站地址 (由于是点对点485，各物理线上驱动器默认地址均为 0x01)
-    modbus_masters[0].huart = &huart1;
-    modbus_masters[0].slave_addr = 0x01; 
-    modbus_masters[0].state = MODBUS_STATE_IDLE;
-    
-    modbus_masters[1].huart = &huart2;
-    modbus_masters[1].slave_addr = 0x01; 
-    modbus_masters[1].state = MODBUS_STATE_IDLE;
-    
-    modbus_masters[2].huart = &huart3;
-    modbus_masters[2].slave_addr = 0x01; 
-    modbus_masters[2].state = MODBUS_STATE_IDLE;
-    
-    modbus_masters[3].huart = &huart4;
-    modbus_masters[3].slave_addr = 0x01; 
-    modbus_masters[3].state = MODBUS_STATE_IDLE;
+    modbus_masters[0].huart      = &huart1;
+    modbus_masters[0].slave_addr = 0x01;
+    modbus_masters[0].state      = MODBUS_STATE_IDLE;
+
+    modbus_masters[1].huart      = &huart2;
+    modbus_masters[1].slave_addr = 0x01;
+    modbus_masters[1].state      = MODBUS_STATE_IDLE;
+
+    modbus_masters[2].huart      = &huart3;
+    modbus_masters[2].slave_addr = 0x01;
+    modbus_masters[2].state      = MODBUS_STATE_IDLE;
+
+    modbus_masters[3].huart      = &huart4;
+    modbus_masters[3].slave_addr = 0x01;
+    modbus_masters[3].state      = MODBUS_STATE_IDLE;
 
     // 2. 软件手动开启串口全局中断及 NVIC 配置 (防止CubeMX未开)
     IRQn_Type irqs[4] = {USART1_IRQn, USART2_IRQn, USART3_IRQn, UART4_IRQn};
-    for (int i = 0; i < 4; i++)
-    {
+    for (int i = 0; i < 4; i++) {
         HAL_NVIC_SetPriority(irqs[i], 5, 0); // 抢占优先级5 (允许FreeRTOS中断API调用)
         HAL_NVIC_EnableIRQ(irqs[i]);
     }
 
     // 3. 重置各串口 DMA 为就绪，此时不挂载接收，发送命令时才触发挂载
-    for (int i = 0; i < 4; i++)
-    {
+    for (int i = 0; i < 4; i++) {
         memset(modbus_masters[i].rx_buf, 0, sizeof(modbus_masters[i].rx_buf));
         modbus_masters[i].rx_complete = 0;
-        modbus_masters[i].rx_count = 0;
-        
+        modbus_masters[i].rx_count    = 0;
+
         HAL_UART_DMAStop(modbus_masters[i].huart);
     }
 }
@@ -291,7 +333,44 @@ bool MID_Modbus_WriteSingleReg(Modbus_Master_t *master, uint16_t reg_addr, uint1
     if (master == NULL) return false;
     if (master->state != MODBUS_STATE_IDLE) return false;
 
-    send_write_single_cmd(master, reg_addr, value);
+    master->last_ex_code = 0;
+    send_write_single_cmd(master, reg_addr, value, true);
+    master->state    = MODBUS_STATE_WAIT_WRITE_RESP;
+    master->write_cb = callback;
+    return true;
+}
+
+// ========================== 对外接口：单向写单寄存器 (等待 TC 发送完，不等待应答) ==========================
+void MID_Modbus_WriteSingleRegNoWait(Modbus_Master_t *master, uint16_t reg_addr, uint16_t value)
+{
+    if (master == NULL) return;
+
+    master->last_ex_code = 0;
+    send_write_single_cmd(master, reg_addr, value, false);
+    while (__HAL_UART_GET_FLAG(master->huart, UART_FLAG_TC) == RESET) {
+    }
+    master->state = MODBUS_STATE_IDLE;
+}
+
+// ========================== 对外接口：写单寄存器后立刻切波特率再听应答 ==========================
+bool MID_Modbus_WriteSingleRegThenSwitchBaud(Modbus_Master_t *master, uint16_t reg_addr, uint16_t value, uint32_t baudrate, modbus_write_callback_t callback)
+{
+    if (master == NULL) return false;
+    if (master->state != MODBUS_STATE_IDLE) return false;
+
+    /* 1. 先按当前 19200 波特率下发写指令 */
+    send_write_single_cmd(master, reg_addr, value, false);
+
+    /* 2. 严格等待物理移位寄存器将 8 字节完完全全吐到总线上（TC 置位），绝不在传输中途截断断电/重置波特率 */
+    while (__HAL_UART_GET_FLAG(master->huart, UART_FLAG_TC) == RESET) {
+    }
+
+    /* 3. 物理帧发送完毕，立刻切换本地波特率至 115200，准备接收驱动器以 115200 发回的模式 B 应答 */
+    apply_uart_baud(master->huart, baudrate);
+    reset_master_rx(master);
+    master->timeout_cnt = 0;
+    HAL_UARTEx_ReceiveToIdle_DMA(master->huart, master->rx_buf, sizeof(master->rx_buf));
+
     master->state    = MODBUS_STATE_WAIT_WRITE_RESP;
     master->write_cb = callback;
     return true;
@@ -317,45 +396,36 @@ bool MID_Modbus_WriteMultipleRegs(Modbus_Master_t *master, uint16_t start_addr, 
 void MID_Modbus_Process_1ms(void)
 {
     uint8_t status_ok;
-    
-    for (int i = 0; i < 4; i++)
-    {
+
+    for (int i = 0; i < 4; i++) {
         Modbus_Master_t *m = &modbus_masters[i];
-        
-        switch (m->state)
-        {
+
+        switch (m->state) {
             case MODBUS_STATE_IDLE:
                 break;
 
             case MODBUS_STATE_WAIT_READ_RESP:
                 m->timeout_cnt += MODBUS_INTERVAL_MS;
-                if (m->timeout_cnt >= MODBUS_READ_TIMEOUT_MS)
-                {
+                if (m->timeout_cnt >= MODBUS_READ_TIMEOUT_MS) {
                     HAL_UART_DMAStop(m->huart); // 超时强制关闭本次 DMA，防止污染
                     m->state       = MODBUS_STATE_IDLE;
                     m->rx_complete = 0;
-                    if (m->read_cb != NULL)
-                    {
+                    if (m->read_cb != NULL) {
                         m->read_cb(NULL, 0); // 传入 success = 0 代表超时失败
                         m->read_cb = NULL;
                     }
                     break;
                 }
-                
-                if (m->rx_complete)
-                {
+
+                if (m->rx_complete) {
                     m->rx_complete = 0;
-                    if (parse_response(m, m->temp_buf, m->expected_reg_cnt))
-                    {
+                    if (parse_response(m, m->temp_buf, m->expected_reg_cnt)) {
                         status_ok = 1;
-                    }
-                    else
-                    {
+                    } else {
                         status_ok = 0;
                     }
                     m->state = MODBUS_STATE_IDLE;
-                    if (m->read_cb != NULL)
-                    {
+                    if (m->read_cb != NULL) {
                         m->read_cb(m->temp_buf, status_ok);
                         m->read_cb = NULL;
                     }
@@ -364,34 +434,31 @@ void MID_Modbus_Process_1ms(void)
 
             case MODBUS_STATE_WAIT_WRITE_RESP:
                 m->timeout_cnt += MODBUS_INTERVAL_MS;
-                if (m->timeout_cnt >= MODBUS_WRITE_TIMEOUT_MS)
-                {
+                if (m->timeout_cnt >= MODBUS_WRITE_TIMEOUT_MS) {
                     HAL_UART_DMAStop(m->huart); // 超时强制关闭 DMA
-                    m->state       = MODBUS_STATE_IDLE;
-                    m->rx_complete = 0;
-                    if (m->write_cb != NULL)
-                    {
+                    m->state        = MODBUS_STATE_IDLE;
+                    m->rx_complete  = 0;
+                    m->last_ex_code = 0;
+                    if (m->write_cb != NULL) {
                         m->write_cb(0); // 传入 success = 0
                         m->write_cb = NULL;
                     }
                     break;
                 }
-                
-                if (m->rx_complete)
-                {
+
+                if (m->rx_complete) {
                     m->rx_complete = 0;
-                    // 写命令回执：正常响应应为 8 字节，并且功能码匹配
-                    if (m->rx_count >= 8 && m->rx_buf[1] == m->tx_buf[1])
-                    {
+                    // 写命令回执：正常 8 字节回显，或 5 字节异常帧 8x/xx
+                    m->last_ex_code = 0;
+                    if (m->rx_count >= 8 && m->rx_buf[1] == m->tx_buf[1]) {
                         status_ok = 1;
-                    }
-                    else
-                    {
+                    } else if (parse_write_exception(m, &m->last_ex_code)) {
+                        status_ok = 0;
+                    } else {
                         status_ok = 0;
                     }
                     m->state = MODBUS_STATE_IDLE;
-                    if (m->write_cb != NULL)
-                    {
+                    if (m->write_cb != NULL) {
                         m->write_cb(status_ok);
                         m->write_cb = NULL;
                     }
@@ -406,20 +473,31 @@ void MID_Modbus_Process_1ms(void)
 }
 
 /**
+ * @brief  重新设置单个主站串口波特率，并清空接收/状态机
+ * @param  master   目标主站
+ * @param  baudrate 目标波特率 (如 19200 / 115200)
+ */
+void MID_Modbus_SetMasterBaudRate(Modbus_Master_t *master, uint32_t baudrate)
+{
+    if (master == NULL || master->huart == NULL) {
+        return;
+    }
+
+    apply_uart_baud(master->huart, baudrate);
+    reset_master_rx(master);
+    master->timeout_cnt = 0;
+    master->state       = MODBUS_STATE_IDLE;
+    master->read_cb     = NULL;
+    master->write_cb    = NULL;
+}
+
+/**
  * @brief  重新设置 4 路 Modbus RS485 串口的通信波特率
  * @param  baudrate 目标波特率 (如 115200)
  */
 void MID_Modbus_SetBaudRate(uint32_t baudrate)
 {
-    UART_HandleTypeDef *huarts[4] = {&huart1, &huart2, &huart3, &huart4};
     for (int i = 0; i < 4; i++) {
-        HAL_UART_DMAStop(huarts[i]);
-        HAL_UART_DeInit(huarts[i]);
-        huarts[i]->Init.BaudRate = baudrate;
-        HAL_UART_Init(huarts[i]);
-        memset(modbus_masters[i].rx_buf, 0, sizeof(modbus_masters[i].rx_buf));
-        modbus_masters[i].rx_complete = 0;
-        modbus_masters[i].rx_count    = 0;
-        modbus_masters[i].state       = MODBUS_STATE_IDLE;
+        MID_Modbus_SetMasterBaudRate(&modbus_masters[i], baudrate);
     }
 }

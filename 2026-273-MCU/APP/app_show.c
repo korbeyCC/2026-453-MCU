@@ -12,6 +12,8 @@ static uint8_t CharToSegIndex(char c)
 {
     if (c >= '0' && c <= '9') return (c - '0');
     if (c == '-') return 18;
+    if (c == 'E' || c == 'e') return 14;
+    if (c == 'r' || c == 'R') return 28; // r
     if (c == 'P' || c == 'p') return 17;
     if (c == 'U' || c == 'u') return 21;
     if (c == 'D' || c == 'd') return 13;
@@ -42,9 +44,24 @@ void APP_ShowTask(void *pvParameters)
         }
 
         // ====================================================
-        // 优先最高优先级：提示动画 (当 prompt_ticks > 0 时，显示如 "-P1-", "-q2-", "-UP-", "-DW-")
+        // 最高优先级 1：故障急停报警显示 (显示 ErrX, 如 Err1:堵转, Err2:通信中断, Err3:同步差超限)
         // ====================================================
-        if (prompt_ticks > 0) {
+        if (g_sys_context.system_step == SYS_STEP_FAULT_STOP) {
+            SEG_Flag[0] = SEG_Flag[1] = SEG_Flag[2] = SEG_Flag[3] = 0;
+            SEG_W[0] = 14; // E
+            SEG_W[1] = 28; // r
+            SEG_W[2] = 28; // r
+            uint8_t fault = g_sys_context.system_fault_code;
+            if (fault >= 1 && fault <= 9) {
+                SEG_W[3] = fault;
+            } else {
+                SEG_W[3] = 18; // -
+            }
+        }
+        // ====================================================
+        // 优先级 2：提示动画 (当 prompt_ticks > 0 时，显示如 "-P1-", "-q2-", "-UP-", "-DW-")
+        // ====================================================
+        else if (prompt_ticks > 0) {
             SEG_Flag[0] = SEG_Flag[1] = SEG_Flag[2] = SEG_Flag[3] = 0;
             size_t len = strlen(prompt_str);
             for (int i = 0; i < 4; i++) {

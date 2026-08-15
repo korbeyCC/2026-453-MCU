@@ -376,21 +376,6 @@ static void APP_Control_SetLightOff(void)
 }
 
 /**
- * @brief 仅在故障急停状态下进行 1Hz 警示双闪
- */
-static void APP_Control_UpdateStripLights(void)
-{
-    if (g_sys_context.system_step == SYS_STEP_FAULT_STOP) {
-        // 故障急停状态：灯带 1Hz 双闪警示
-        static uint8_t blink_cnt = 0;
-        blink_cnt++;
-        bool blink = ((blink_cnt / 12) % 2 == 0);
-        MID_LED_Write(MID_LED_1, blink);
-        MID_LED_Write(MID_LED_2, blink);
-    }
-}
-
-/**
  * @brief 核心控制解算：统一解算 4 轴绝对高度、位移增量 ΔH、绝对伸出行程 travel_rel 及极差统计量
  * @note 严格采用物理脉冲绝对值结合电机运动方向符号，彻底解决倒转/反弹时的负数突变与极差暴涨问题
  */
@@ -1255,9 +1240,6 @@ void APP_ControlTask(void *pvParameters)
             default:
                 break;
         }
-
-        // 根据电机运动方向实时控制 2 路灯带 (正转亮 1 号灯带 LED_1，反转亮 2 号灯带 LED_2)
-        APP_Control_UpdateStripLights();
 
         // 严格 20.0ms 绝对周期挂起 (50Hz 定频调度)
         vTaskDelayUntil(&xLastWakeTime, pdMS_TO_TICKS(20));

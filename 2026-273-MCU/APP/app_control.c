@@ -503,6 +503,23 @@ void APP_ControlTask(void *pvParameters)
 
             // === READY 状态：就绪待命 ===
             case SYS_STEP_READY: {
+                // 0. 待机状态实时 485 通信健康度巡检
+                bool has_comm_loss = false;
+                for (int i = 0; i < 4; i++) {
+                    if (g_sys_context.g_motor_status[i].comm_error >= SAFETY_COMM_ERR_MAX_CNT) {
+                        has_comm_loss = true;
+                        Debug_Printf("[ERR] Standby Comm Loss! Motor %d (CommErr=%d >= Limit=%d)\r\n",
+                                     i + 1, g_sys_context.g_motor_status[i].comm_error, SAFETY_COMM_ERR_MAX_CNT);
+                        break;
+                    }
+                }
+                if (has_comm_loss) {
+                    g_sys_context.system_fault_code = FAULT_CODE_COMM;
+                    g_sys_context.system_step       = SYS_STEP_FAULT_STOP;
+                    APP_Control_SetLightOff(); // 待机切入故障时先关闭普通指示灯，等待 1Hz 警示双闪
+                    break;
+                }
+
                 // 检查遥控信号触发下行 / 上行
                 if (has_event && sig_msg.event == MID_SIGNAL_EVT_TRIGGER) {
                     Motor_Ctrl_Msg_t speed_msg;
@@ -633,6 +650,60 @@ void APP_ControlTask(void *pvParameters)
                 uint8_t m_idx       = g_sys_context.single_tune_motor_idx;
                 uint32_t now_hall   = g_sys_context.g_motor_status[m_idx].hall_value;
                 uint32_t start_hall = g_sys_context.single_tune_start_hall;
+
+                // 0. 检查用户按键打断（如按 C 键停止）
+                if (has_event && sig_msg.event == MID_SIGNAL_EVT_TRIGGER) {
+                    if (sig_msg.signal_id == MID_SIGNAL_REMOT_2) {
+                        APP_Control_CancelSingleTune();
+                        Debug_Printf("[SYS] Single Tune Interrupted by User Remot C Key!\r\n");
+                        break;
+                    }
+                }
+
+                // 1. 安防防线一：通信中断检查 (若任一轴掉线，立即紧急停机)
+                bool has_comm_loss = false;
+                for (int i = 0; i < 4; i++) {
+                    if (g_sys_context.g_motor_status[i].comm_error >= SAFETY_COMM_ERR_MAX_CNT) {
+                        has_comm_loss = true;
+                        Debug_Printf("[ERR] Single Tune Comm Loss! Motor %d (CommErr=%d >= Limit=%d)\r\n",
+                                     i + 1, g_sys_context.g_motor_status[i].comm_error, SAFETY_COMM_ERR_MAX_CNT);
+                        break;
+                    }
+                }
+                if (has_comm_loss) {
+                    xQueueReset(g_motor_ctrl_queue);
+                    Motor_Ctrl_Msg_t stop_msg                        = {CMD_STOP, (uint8_t)(1 << m_idx), 0};
+                    g_sys_context.g_motor_status[m_idx].target_cmd   = CMD_STOP;
+                    g_sys_context.g_motor_status[m_idx].target_speed = 0;
+                    g_sys_context.system_fault_code                  = FAULT_CODE_COMM;
+
+                    APP_Control_PrepareStopSettling((uint8_t)(1 << m_idx), SYS_STEP_FAULT_STOP);
+                    xQueueSend(g_motor_ctrl_queue, &stop_msg, pdMS_TO_TICKS(10));
+                    break;
+                }
+
+                // 2. 安防防线二：微调目标轴过流堵转检查
+                if (g_sys_context.g_motor_status[m_idx].current_deciA > app_data.stall_current_threshold) {
+                    g_sys_context.g_motor_status[m_idx].stall_cnt++;
+                    if (g_sys_context.g_motor_status[m_idx].stall_cnt >= SAFETY_STALL_MAX_CNT) {
+                        xQueueReset(g_motor_ctrl_queue);
+                        Motor_Ctrl_Msg_t stop_msg                        = {CMD_STOP, (uint8_t)(1 << m_idx), 0};
+                        g_sys_context.g_motor_status[m_idx].target_cmd   = CMD_STOP;
+                        g_sys_context.g_motor_status[m_idx].target_speed = 0;
+                        g_sys_context.system_fault_code                  = FAULT_CODE_STALL;
+
+                        APP_Control_PrepareStopSettling((uint8_t)(1 << m_idx), SYS_STEP_TUNE_DONE);
+                        xQueueSend(g_motor_ctrl_queue, &stop_msg, pdMS_TO_TICKS(10));
+                        Debug_Printf("[ERR] Single Tune OverCurrent Stall! Motor %d (Curr=%.2fA > Limit=%.2fA). Stopping & Archiving...\r\n",
+                                     m_idx + 1, (float)g_sys_context.g_motor_status[m_idx].current_deciA / 100.0f,
+                                     (float)app_data.stall_current_threshold / 100.0f);
+                        break;
+                    }
+                } else {
+                    if (g_sys_context.g_motor_status[m_idx].stall_cnt > 0) {
+                        g_sys_context.g_motor_status[m_idx].stall_cnt--;
+                    }
+                }
 
                 // 若驱动器状态命令尚未 ACK 匹配成功，在 20ms 周期内持续补发，强保驱动器启动
                 if (g_sys_context.g_motor_status[m_idx].current_cmd != g_sys_context.g_motor_status[m_idx].target_cmd ||

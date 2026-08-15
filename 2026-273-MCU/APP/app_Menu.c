@@ -67,13 +67,13 @@ static void APP_Menu_AdjustParam(bool is_inc)
             }
             break;
 
-        case 3: // Set_W = 3: single_tune_speed_rpm (10 ~ 1500 RPM)
+        case 3: // Set_W = 3: motor_dir_invert (0: 默认正向, 1: 极性反转)
             if (is_inc) {
-                if (app_data.single_tune_speed_rpm <= 1490) app_data.single_tune_speed_rpm += 10;
-                else app_data.single_tune_speed_rpm = 1500;
+                if (app_data.motor_dir_invert < 1) app_data.motor_dir_invert++;
+                else app_data.motor_dir_invert = 1;
             } else {
-                if (app_data.single_tune_speed_rpm >= 20) app_data.single_tune_speed_rpm -= 10;
-                else app_data.single_tune_speed_rpm = 10;
+                if (app_data.motor_dir_invert > 0) app_data.motor_dir_invert--;
+                else app_data.motor_dir_invert = 0;
             }
             break;
 

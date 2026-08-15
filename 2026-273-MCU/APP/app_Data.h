@@ -16,7 +16,7 @@ typedef struct
     uint16_t lead_mm;                   // 丝杆导程 (单位: mm，默认 8)
     uint16_t hall_coef;                 // 霍尔系数 (默认 30)
     uint16_t single_tune_step_mm;      // 单轴微调步进距离 (单位: 1mm，默认 1mm，4路共享) - 对应 P1 菜单 q8
-    uint16_t single_tune_speed_rpm;    // 单轴微调速度 (单位: RPM，默认 100)
+    uint16_t motor_dir_invert;         // 丝杆运动方向极性 (0: 默认正向, 1: 极性反转，默认 1) - 对应 P1 菜单 q3
     uint16_t rebound_travel_mm;        // 堵转反弹行程 (单位: mm，默认 1000mm = 1米) - 对应 P1 菜单 q9
     uint16_t reserved[3];              // 预留空间对齐 32 字节
 } APP_DATA_HandleTypeDef;

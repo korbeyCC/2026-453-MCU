@@ -396,9 +396,9 @@ void APP_CommTask(void *pvParameters)
                 else if (has_pending_cmd[i]) {
                     uint16_t reg_val = 0x0009; // 默认刹车停机
                     if (pending_cmd[i] == CMD_FORWARD) {
-                        reg_val = 0x0001;
+                        reg_val = (app_data.motor_dir_invert == 0) ? 0x0001 : 0x0002;
                     } else if (pending_cmd[i] == CMD_REVERSE) {
-                        reg_val = 0x0002;
+                        reg_val = (app_data.motor_dir_invert == 0) ? 0x0002 : 0x0001;
                     } else if (pending_cmd[i] == CMD_STOP) {
                         reg_val = 0x0009;
                     } else if (pending_cmd[i] == CMD_IDLE_STOP) {

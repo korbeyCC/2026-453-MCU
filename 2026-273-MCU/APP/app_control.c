@@ -406,8 +406,8 @@ void APP_Control_UpdateStateAndStatistics(void)
             g_sys_context.g_motor_status[i].last_motion_cmd = CMD_REVERSE;
             signed_delta                                    = -(int32_t)abs_pulse; // 下降：绝对高度减少
         } else {
-            // CMD_STOP 停机/静止阶段：直接使用带符号的物理脉冲差 (raw_diff)，绝不依赖历史运动方向！
-            signed_delta = raw_diff;
+            // CMD_STOP 停机/静止阶段：使用带符号的物理脉冲差 (raw_diff) 并结合丝杆极性映射为高度方向
+            signed_delta = (app_data.motor_dir_invert == 0) ? raw_diff : -raw_diff;
         }
 
         // 3. 求解当前绝对高度 (起点高度 + 方向增量)

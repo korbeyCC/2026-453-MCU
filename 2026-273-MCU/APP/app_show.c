@@ -92,7 +92,7 @@ void APP_ShowTask(void *pvParameters)
                     case 0: param_val = reset_factory_flag; break; // (1, 0) 项显示恢复出厂开关
                     case 1: param_val = app_data.max_travel_range_mm; break;
                     case 2: param_val = app_data.target_speed_mm_min; break;
-                    case 3: param_val = app_data.single_tune_speed_rpm; break;
+                    case 3: param_val = app_data.motor_dir_invert; break;
                     case 4: param_val = app_data.max_sync_diff_mm; break;
                     case 5: param_val = app_data.stall_current_threshold; break;
                     case 6: param_val = app_data.lead_mm; break;

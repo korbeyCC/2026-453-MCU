@@ -27,6 +27,11 @@ void APP_Data_Init(void)
         APP_Data_ResetDefault();
     }
 
+    // 极性参数合法性防护 (仅允许 0 或 1，若非法或未配置默认置 1 反向丝杆)
+    if (app_data.motor_dir_invert > 1) {
+        app_data.motor_dir_invert = 1;
+    }
+
     // 强制使能 PVD 检测及硬件 PLS 阈值配置 (PVD 检测阈值调低至 2.6V，防范负载及波动噪声)
     // 注：由于 CubeMX 已经自动生成了 NVIC (PVD_IRQn) 中断使能，此处仅需配置并使能 PVD 硬件外设本身即可
     PWR_PVDTypeDef getConfigPVD;
@@ -48,7 +53,7 @@ void APP_Data_ResetDefault(void)
     app_data.max_sync_diff_mm        = 5;    // 默认 5 mm
     app_data.lead_mm                 = 8;    // 默认 8 mm
     app_data.hall_coef               = 30;   // 默认 30
-    app_data.single_tune_speed_rpm   = 100;  // 默认微调转速 100 RPM
+    app_data.motor_dir_invert        = 1;    // 默认 1 (反向丝杆，极性反转)
     app_data.single_tune_step_mm     = 1;    // 默认微调步进 1 mm
     app_data.rebound_travel_mm       = 1000; // 默认堵转反弹行程 1000 mm (1米)
 

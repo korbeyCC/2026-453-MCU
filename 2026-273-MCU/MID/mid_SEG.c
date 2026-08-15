@@ -30,6 +30,7 @@ static const uint8_t seg7code[] = {
     0x58, // c  25
     0x76, // H  26
     0x54, // n  27
+    0x50, // r  28
 };
 
 /**

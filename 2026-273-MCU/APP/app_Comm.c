@@ -394,13 +394,15 @@ void APP_CommTask(void *pvParameters)
                 }
                 // Tier 2: 其次下发待更新的运行/停止控制指令 (写 0x2000)
                 else if (has_pending_cmd[i]) {
-                    uint16_t reg_val = 0x0009; // 默认 STOP
+                    uint16_t reg_val = 0x0009; // 默认刹车停机
                     if (pending_cmd[i] == CMD_FORWARD) {
                         reg_val = 0x0001;
                     } else if (pending_cmd[i] == CMD_REVERSE) {
                         reg_val = 0x0002;
                     } else if (pending_cmd[i] == CMD_STOP) {
                         reg_val = 0x0009;
+                    } else if (pending_cmd[i] == CMD_IDLE_STOP) {
+                        reg_val = 0x0005;
                     }
 
                     if (MID_Modbus_WriteSingleReg(m, 0x2000, reg_val, Motor_Cmd_Callbacks[i])) {

@@ -977,6 +977,13 @@ void APP_ControlTask(void *pvParameters)
                     // 3. 立即同步固化存 Flash
                     APP_Data_Storage();
 
+                    // 3.1 停稳且归档完成后，把运动刹车 0x0009 切成停机 0x0005
+                    {
+                        Motor_Ctrl_Msg_t idle_stop_msg = {CMD_IDLE_STOP, 0x0F, 0};
+                        xQueueSend(g_motor_ctrl_queue, &idle_stop_msg, pdMS_TO_TICKS(10));
+                        Debug_Printf("[SYS] Stop Stable & Archived: send 0x0005 idle stop\r\n");
+                    }
+
                     // 4. 以最新的 min_mount_halls 重新计算 4 轴绝对伸出行程 travel_rel 及极差 max_travel_diff
                     APP_Control_UpdateStateAndStatistics();
 

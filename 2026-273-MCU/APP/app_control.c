@@ -218,6 +218,7 @@ void APP_Control_UpdateParamsFromAppData(void)
 // ===================================================================
 // 逐轴独立停稳检测与停机管理状态
 // ===================================================================
+static void APP_Control_SetLightOff(void);
 static uint8_t s_axis_stable_cnt[4]   = {0, 0, 0, 0};                                     // 轴停稳计数器
 static bool s_axis_is_settled[4]      = {false, false, false, false};                     // 轴停稳标志
 static uint32_t s_last_check_halls[4] = {0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF}; // 轴上次检测绝对高度
@@ -324,6 +325,46 @@ void APP_Control_CancelSingleTune(void)
 
         APP_Control_PrepareStopSettling((uint8_t)(1 << m_idx), SYS_STEP_TUNE_DONE);
         xQueueSend(g_motor_ctrl_queue, &stop_msg, pdMS_TO_TICKS(10));
+    }
+}
+
+/**
+ * @brief 用户按键确认清除故障急停状态 (当 485 通信恢复/条件满足时)
+ * @return true: 成功清除并进入归档自愈; false: 硬件通信故障仍存在，忽略清除
+ */
+bool APP_Control_ClearFault(void)
+{
+    if (g_sys_context.system_step != SYS_STEP_FAULT_STOP) {
+        return false;
+    }
+
+    // 检查 4 轴 485 通信状态是否完全恢复正常
+    bool comm_ok = true;
+    for (int i = 0; i < 4; i++) {
+        if (g_sys_context.g_motor_status[i].comm_error > 0) {
+            comm_ok = false;
+            break;
+        }
+    }
+
+    if (comm_ok) {
+        xQueueReset(g_motor_ctrl_queue);
+
+        for (int i = 0; i < 4; i++) {
+            g_sys_context.g_motor_status[i].target_cmd   = CMD_STOP;
+            g_sys_context.g_motor_status[i].target_speed = 0;
+        }
+
+        Motor_Ctrl_Msg_t stop_msg       = {CMD_STOP, 0x0F, 0};
+        g_sys_context.system_fault_code = FAULT_CODE_NONE;
+        APP_Control_PrepareStopSettling(0x0F, SYS_STEP_TOTAL_DONE);
+        xQueueSend(g_motor_ctrl_queue, &stop_msg, pdMS_TO_TICKS(10));
+        APP_Control_SetLightOff(); // 消除报警后关闭灯带
+        Debug_Printf("[SYS] Fault Lockout Cleared by User Key! Sent CMD_STOP & Entering SYS_STEP_TOTAL_DONE for Archiving & Auto-Align...\r\n");
+        return true;
+    } else {
+        Debug_Printf("[SYS] User Acknowledge Ignored: 485 Comm Fault Still Active!\r\n");
+        return false;
     }
 }
 
@@ -1212,26 +1253,10 @@ void APP_ControlTask(void *pvParameters)
                     Debug_Printf("[SYS] 485 Comm Restored: Sent CMD_STOP to Motors, Keeping FAULT_STOP Alarm Active Until User Acknowledge...\r\n");
                 }
 
-                // 3. 场景 B：用户手动按按键取消报警（按 C 键 / 板载按键）：【既下发 STOP，也切入归档存盘与自动纠正】
+                // 3. 场景 B：遥控/外接信号按键触发取消报警
                 if (has_event && (sig_msg.event == MID_SIGNAL_EVT_TRIGGER || sig_msg.event == MID_SIGNAL_EVT_LONG)) {
-                    if (comm_ok) {
+                    if (APP_Control_ClearFault()) {
                         has_sent_stop_on_comm_restore = false;
-                        xQueueReset(g_motor_ctrl_queue);
-
-                        for (int i = 0; i < 4; i++) {
-                            g_sys_context.g_motor_status[i].target_cmd   = CMD_STOP;
-                            g_sys_context.g_motor_status[i].target_speed = 0;
-                            last_sent_speed[i]                           = 0;
-                        }
-
-                        Motor_Ctrl_Msg_t stop_msg       = {CMD_STOP, 0x0F, 0};
-                        g_sys_context.system_fault_code = FAULT_CODE_NONE;
-                        APP_Control_PrepareStopSettling(0x0F, SYS_STEP_TOTAL_DONE);
-                        xQueueSend(g_motor_ctrl_queue, &stop_msg, pdMS_TO_TICKS(10));
-                        APP_Control_SetLightOff(); // 消除报警后关闭警示双闪灯
-                        Debug_Printf("[SYS] Fault Lockout Cleared by User Key! Sent CMD_STOP & Entering SYS_STEP_TOTAL_DONE for Archiving & Auto-Align...\r\n");
-                    } else {
-                        Debug_Printf("[SYS] User Acknowledge Ignored: 485 Comm Fault Still Active!\r\n");
                     }
                 }
                 break;

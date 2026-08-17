@@ -170,6 +170,12 @@ void APP_MenuTask(void *pvParameters)
                     Debug_Printf("[SYS] Single Tune Interrupted by Key Press.\r\n");
                 }
             }
+            // 如果系统正处于故障急停锁死状态，按下任意板载按键均尝试取消报警并恢复
+            else if (g_sys_context.system_step == SYS_STEP_FAULT_STOP) {
+                if (msg.event == MID_KEY_EVT_LEASS || msg.event == MID_KEY_EVT_PRESS || msg.event == MID_KEY_EVT_LONG) {
+                    APP_Control_ClearFault();
+                }
+            }
             // ====================================================
             // 维度长按切换：长按 K6 切换一维 dim1 (0 -> 1 -> 2 -> 0)
             // ====================================================

@@ -140,6 +140,7 @@ void APP_Control_ResetSystemContext(void);
 void APP_Control_UpdateStateAndStatistics(void);
 void APP_Control_StartSingleTune(uint8_t m_idx);
 void APP_Control_CancelSingleTune(void);
+bool APP_Control_ClearFault(void);
 void APP_ControlTask(void *pvParameters);
 
 #endif // __APP_CONTROL_H

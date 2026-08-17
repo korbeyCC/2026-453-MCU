@@ -11,8 +11,8 @@ uint8_t dim2               = 0; // 维度二具体项 / 电机索引 (0~3)
 uint16_t adjust_hold_ticks = 0;
 
 // 数码管提示动画全局变量
-char prompt_str[6]      = {0};
-uint16_t prompt_ticks   = 0;
+char prompt_str[6]    = {0};
+uint16_t prompt_ticks = 0;
 
 #if ENABLE_STALL_CURRENT_AUTO_SAVE
 static uint8_t save_debounce_cnt = 0; // 0.3s 及时保存倒计时
@@ -49,31 +49,43 @@ static void APP_Menu_AdjustParam(bool is_inc)
 
         case 1: // Set_W = 1: max_travel_range_mm (100 ~ 5000mm)
             if (is_inc) {
-                if (app_data.max_travel_range_mm <= 4950) app_data.max_travel_range_mm += 50;
-                else app_data.max_travel_range_mm = 5000;
+                if (app_data.max_travel_range_mm <= 4950)
+                    app_data.max_travel_range_mm += 50;
+                else
+                    app_data.max_travel_range_mm = 5000;
             } else {
-                if (app_data.max_travel_range_mm >= 150) app_data.max_travel_range_mm -= 50;
-                else app_data.max_travel_range_mm = 100;
+                if (app_data.max_travel_range_mm >= 150)
+                    app_data.max_travel_range_mm -= 50;
+                else
+                    app_data.max_travel_range_mm = 100;
             }
             break;
 
         case 2: // Set_W = 2: target_speed_mm_min (100 ~ 2000 mm/min)
             if (is_inc) {
-                if (app_data.target_speed_mm_min <= 1950) app_data.target_speed_mm_min += 50;
-                else app_data.target_speed_mm_min = 2000;
+                if (app_data.target_speed_mm_min <= 1950)
+                    app_data.target_speed_mm_min += 50;
+                else
+                    app_data.target_speed_mm_min = 2000;
             } else {
-                if (app_data.target_speed_mm_min >= 150) app_data.target_speed_mm_min -= 50;
-                else app_data.target_speed_mm_min = 100;
+                if (app_data.target_speed_mm_min >= 150)
+                    app_data.target_speed_mm_min -= 50;
+                else
+                    app_data.target_speed_mm_min = 100;
             }
             break;
 
         case 3: // Set_W = 3: motor_dir_invert (0: 默认正向, 1: 极性反转)
             if (is_inc) {
-                if (app_data.motor_dir_invert < 1) app_data.motor_dir_invert++;
-                else app_data.motor_dir_invert = 1;
+                if (app_data.motor_dir_invert < 1)
+                    app_data.motor_dir_invert++;
+                else
+                    app_data.motor_dir_invert = 1;
             } else {
-                if (app_data.motor_dir_invert > 0) app_data.motor_dir_invert--;
-                else app_data.motor_dir_invert = 0;
+                if (app_data.motor_dir_invert > 0)
+                    app_data.motor_dir_invert--;
+                else
+                    app_data.motor_dir_invert = 0;
             }
             break;
 
@@ -87,11 +99,15 @@ static void APP_Menu_AdjustParam(bool is_inc)
 
         case 5: // Set_W = 5: stall_current_threshold (50 ~ 2000 = 0.50A ~ 20.00A)
             if (is_inc) {
-                if (app_data.stall_current_threshold <= 1990) app_data.stall_current_threshold += 10;
-                else app_data.stall_current_threshold = 2000;
+                if (app_data.stall_current_threshold <= 1990)
+                    app_data.stall_current_threshold += 10;
+                else
+                    app_data.stall_current_threshold = 2000;
             } else {
-                if (app_data.stall_current_threshold >= 60) app_data.stall_current_threshold -= 10;
-                else app_data.stall_current_threshold = 50;
+                if (app_data.stall_current_threshold >= 60)
+                    app_data.stall_current_threshold -= 10;
+                else
+                    app_data.stall_current_threshold = 50;
             }
 #if ENABLE_STALL_CURRENT_AUTO_SAVE
             save_debounce_cnt = 6; // 仅在启用宏时触发 0.3s 及时保存
@@ -124,11 +140,15 @@ static void APP_Menu_AdjustParam(bool is_inc)
 
         case 9: // Set_W = 9: rebound_travel_mm (10 ~ 5000 mm，默认 1000mm)
             if (is_inc) {
-                if (app_data.rebound_travel_mm <= 4990) app_data.rebound_travel_mm += 10;
-                else app_data.rebound_travel_mm = 5000;
+                if (app_data.rebound_travel_mm <= 4990)
+                    app_data.rebound_travel_mm += 10;
+                else
+                    app_data.rebound_travel_mm = 5000;
             } else {
-                if (app_data.rebound_travel_mm >= 20) app_data.rebound_travel_mm -= 10;
-                else app_data.rebound_travel_mm = 10;
+                if (app_data.rebound_travel_mm >= 20)
+                    app_data.rebound_travel_mm -= 10;
+                else
+                    app_data.rebound_travel_mm = 10;
             }
             break;
 
@@ -165,14 +185,14 @@ void APP_MenuTask(void *pvParameters)
         if (MID_Key_GetSingleEvent(&msg, 0) == pdTRUE) {
             // 如果系统正处于单轴微调动作中，按下任意按键均取消微调
             if (g_sys_context.system_step == SYS_STEP_SINGLE_TUNE) {
-                if (msg.event == MID_KEY_EVT_LEASS || msg.event == MID_KEY_EVT_PRESS) {
+                if (msg.event == MID_KEY_EVT_LEASS || msg.event == MID_KEY_EVT_LONG || msg.event == MID_KEY_EVT_Long_REP) {
                     APP_Control_CancelSingleTune();
                     Debug_Printf("[SYS] Single Tune Interrupted by Key Press.\r\n");
                 }
             }
             // 如果系统正处于故障急停锁死状态，按下任意板载按键均尝试取消报警并恢复
             else if (g_sys_context.system_step == SYS_STEP_FAULT_STOP) {
-                if (msg.event == MID_KEY_EVT_LEASS || msg.event == MID_KEY_EVT_PRESS || msg.event == MID_KEY_EVT_LONG) {
+                if (msg.event == MID_KEY_EVT_LEASS || msg.event == MID_KEY_EVT_LONG || msg.event == MID_KEY_EVT_Long_REP) {
                     APP_Control_ClearFault();
                 }
             }
@@ -184,7 +204,7 @@ void APP_MenuTask(void *pvParameters)
                 if (dim1 == 1) {
                     if (reset_factory_flag == 7) {
                         reset_factory_flag = 0;
-                        APP_Data_ResetDefault(); // (1, 0) 设为 7 触发恢复出厂设置
+                        APP_Data_ResetDefault();          // (1, 0) 设为 7 触发恢复出厂设置
                         APP_Control_ResetSystemContext(); // 全面重置系统上下文状态与 4 轴运行位置
                         Debug_Printf("[SYS] Factory Reset Executed via Menu (1, 0 = 7)!\r\n");
                     } else {
@@ -195,15 +215,16 @@ void APP_MenuTask(void *pvParameters)
                     }
                 }
 
-                dim1 = (dim1 + 1) % 3; // 维度一切换
-                dim2 = 0;              // 切入新维度时均从第 0 项 (0) 开始！
+                dim1              = (dim1 + 1) % 3; // 维度一切换
+                dim2              = 0;              // 切入新维度时均从第 0 项 (0) 开始！
                 adjust_hold_ticks = 0;
 
                 char buf[10];
                 snprintf(buf, sizeof(buf), "-P%d-", dim1);
                 APP_Menu_SetPrompt(buf, 40); // 切换维度提示 "-P0-", "-P1-", "-P2-" (保持 2.0s)
                 Debug_Printf("[SYS] Menu Switched to Dimension 1 = %d (%s)\r\n",
-                             dim1, (dim1 == 0) ? "REALTIME" : (dim1 == 1) ? "APP_SETTING" : "DEBUG_READONLY");
+                             dim1, (dim1 == 0) ? "REALTIME" : (dim1 == 1) ? "APP_SETTING"
+                                                                          : "DEBUG_READONLY");
             }
             // ====================================================
             // 维度 0：主界面 & 实时监测层 (dim1 == 0)
@@ -249,9 +270,10 @@ void APP_MenuTask(void *pvParameters)
                         // 最后一项 (9) 按 K6：检查 (1,0) 是否调至 7 (q0 == 7 触发恢复出厂)
                         if (reset_factory_flag == 7) {
                             reset_factory_flag = 0;
-                            APP_Data_ResetDefault(); // 恢复全部出厂默认参数并存盘 Flash
+                            APP_Data_ResetDefault();          // 恢复全部出厂默认参数并存盘 Flash
                             APP_Control_ResetSystemContext(); // 全面重置系统上下文状态与 4 轴运行位置
-                            dim1 = 0; dim2 = 0;
+                            dim1              = 0;
+                            dim2              = 0;
                             adjust_hold_ticks = 0;
                             APP_Menu_SetPrompt("-rSt-", 30); // 闪烁显示 "-rSt-" (Reset) 1.5s
                             Debug_Printf("[SYS] Factory Reset Executed via Menu (1, 0 = 7)! Restored Default Factory Settings.\r\n");
@@ -259,7 +281,8 @@ void APP_MenuTask(void *pvParameters)
                             reset_factory_flag = 0;
                             APP_Data_Storage();
                             APP_Control_UpdateParamsFromAppData();
-                            dim1 = 0; dim2 = 0;
+                            dim1              = 0;
+                            dim2              = 0;
                             adjust_hold_ticks = 0;
                             APP_Menu_SetPrompt("-P0-", 20);
                             Debug_Printf("[SYS] Menu Setting Complete & Saved to Flash! Exit to dim1 = 0.\r\n");
@@ -279,18 +302,17 @@ void APP_MenuTask(void *pvParameters)
                     } else {
                         // 第一项 (1,0) 按 K5：不保存退出
                         reset_factory_flag = 0;
-                        dim1 = 0; dim2 = 0;
-                        adjust_hold_ticks = 0;
+                        dim1               = 0;
+                        dim2               = 0;
+                        adjust_hold_ticks  = 0;
                         APP_Menu_SetPrompt("-P0-", 20);
                         Debug_Printf("[SYS] Menu Setting Cancelled (No Save). Exit to dim1 = 0.\r\n");
                     }
                 }
-                // C. K1 (+) / K2 (-) 参数调节
+                // C. K1 (+) / K2 (-) 参数调节 (短按松手单步响应 + 长按快速连发)
                 else if ((msg.key_id == MID_KEY_ID_K1 || msg.key_id == MID_KEY_ID_K2) &&
-                         (msg.event == MID_KEY_EVT_PRESS || msg.event == MID_KEY_EVT_LEASS || msg.event == MID_KEY_EVT_Long_REP)) {
-                    if (msg.event != MID_KEY_EVT_LEASS) {
-                        APP_Menu_AdjustParam(msg.key_id == MID_KEY_ID_K1);
-                    }
+                         (msg.event == MID_KEY_EVT_LEASS || msg.event == MID_KEY_EVT_Long_REP)) {
+                    APP_Menu_AdjustParam(msg.key_id == MID_KEY_ID_K1); // 通过 K1/K2 按键 ID 判断是增加还是减少
                 }
             }
             // ====================================================
@@ -302,7 +324,8 @@ void APP_MenuTask(void *pvParameters)
                     if (dim2 < 3) {
                         dim2++;
                     } else {
-                        dim1 = 0; dim2 = 0;
+                        dim1 = 0;
+                        dim2 = 0;
                         APP_Menu_SetPrompt("-P0-", 20);
                         Debug_Printf("[SYS] Read-Only View Completed. Exit to dim1 = 0.\r\n");
                         continue;
@@ -321,7 +344,8 @@ void APP_MenuTask(void *pvParameters)
                         APP_Menu_SetPrompt(buf, 20);
                         Debug_Printf("[SYS] Debug Read-Only View Prev Item: dim2 = %d\r\n", dim2);
                     } else {
-                        dim1 = 0; dim2 = 0;
+                        dim1 = 0;
+                        dim2 = 0;
                         APP_Menu_SetPrompt("-P0-", 20);
                         Debug_Printf("[SYS] Exit Debug Read-Only View to dim1 = 0.\r\n");
                     }

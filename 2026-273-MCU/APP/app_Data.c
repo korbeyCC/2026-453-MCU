@@ -49,7 +49,7 @@ void APP_Data_ResetDefault(void)
     app_data.max_travel_range_mm     = 2000; // 默认 2000 mm
     app_data.reduction_ratio         = 30;   // 默认减速比 30
     app_data.target_speed_mm_min     = 750;  // 默认 750 mm/min
-    app_data.stall_current_threshold = 700;  // 默认 700 (7.00A)
+    app_data.stall_current_threshold = 350;  // 默认 350 (3.50A，较之前 7.00A 减半以匹配实测堵转限制)
     app_data.max_sync_diff_mm        = 5;    // 默认 5 mm
     app_data.lead_mm                 = 8;    // 默认 8 mm
     app_data.hall_coef               = 30;   // 默认 30

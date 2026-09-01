@@ -31,11 +31,13 @@
 #define AUTO_ALIGN_SPEED_RPM         300  // 四轴自主台面平行恢复基准转速 (RPM)
 #define AUTO_ALIGN_TARGET_DIFF_RATIO 0.3f // 对齐极差目标收敛比例 (收敛至 max_sync_diff_hall * 0.3 以内完成)
 
-// 系统故障代码定义
+// 系统故障代码定义 (用于全系统状态监控与数码管 ErrX 报警显示)
 #define FAULT_CODE_NONE              0 // 正常无故障
-#define FAULT_CODE_STALL             1 // 过流堵转保护 (已反弹)
-#define FAULT_CODE_COMM              2 // 485 通信中断故障
-#define FAULT_CODE_SYNC              3 // 严重同步差超限故障
+#define FAULT_CODE_STALL             1 // 运行过流堵转 (Err1)
+#define FAULT_CODE_COMM              2 // 485 通信中断故障 (Err2)
+#define FAULT_CODE_SYNC              3 // 运行同步差超限故障 (Err3)
+#define FAULT_CODE_REBOUND_STALL     4 // 反弹过程二次堵转 (Err4)
+#define FAULT_CODE_REBOUND_SYNC      5 // 反弹过程同步差超限/卡死倾斜 (Err5)
 
 // ===================================================================
 // 动态 PID 纠偏与基础初始化宏配置

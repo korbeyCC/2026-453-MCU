@@ -948,7 +948,82 @@ void APP_ControlTask(void *pvParameters)
                 // 1. 无条件调用通用解算函数更新 4 轴绝对高度、伸出行程及极差
                 APP_Control_UpdateStateAndStatistics();
 
-                // 解算 4 轴反弹累计增量 (计算平均反弹步数)
+                // 2. 安防防线 1：485 通信中断检查
+                bool has_comm_err = false;
+                for (int i = 0; i < 4; i++) {
+                    if (g_sys_context.g_motor_status[i].comm_error >= SAFETY_COMM_ERR_MAX_CNT) {
+                        has_comm_err = true;
+                        Debug_Printf("[ERR] Rebound Comm Loss! Motor %d (CommErr=%d >= Limit=%d)\r\n",
+                                     i + 1, g_sys_context.g_motor_status[i].comm_error, SAFETY_COMM_ERR_MAX_CNT);
+                        break;
+                    }
+                }
+                if (has_comm_err) {
+                    xQueueReset(g_motor_ctrl_queue);
+                    for (int i = 0; i < 4; i++) {
+                        g_sys_context.g_motor_status[i].target_cmd   = CMD_STOP;
+                        g_sys_context.g_motor_status[i].target_speed = 0;
+                        last_sent_speed[i]                           = 0;
+                    }
+                    Motor_Ctrl_Msg_t stop_msg       = {CMD_STOP, 0x0F, 0};
+                    g_sys_context.system_fault_code = FAULT_CODE_COMM;
+                    APP_Control_PrepareStopSettling(0x0F, SYS_STEP_FAULT_STOP);
+                    xQueueSend(g_motor_ctrl_queue, &stop_msg, pdMS_TO_TICKS(10));
+                    Debug_Printf("[SYS] Rebound Aborted: Comm Loss! Entering FAULT_STOP.\r\n");
+                    break;
+                }
+
+                // 3. 安防防线 2：反弹过程中四轴同步差超限（防止个别柱子卡死不退导致台面严重倾斜拉偏）
+                if (g_sys_context.max_travel_diff > (float)g_sys_context.max_sync_diff_hall) {
+                    xQueueReset(g_motor_ctrl_queue);
+                    for (int i = 0; i < 4; i++) {
+                        g_sys_context.g_motor_status[i].target_cmd   = CMD_STOP;
+                        g_sys_context.g_motor_status[i].target_speed = 0;
+                        last_sent_speed[i]                           = 0;
+                    }
+                    Motor_Ctrl_Msg_t stop_msg       = {CMD_STOP, 0x0F, 0};
+                    g_sys_context.system_fault_code = FAULT_CODE_REBOUND_SYNC;
+                    APP_Control_PrepareStopSettling(0x0F, SYS_STEP_TOTAL_DONE);
+                    xQueueSend(g_motor_ctrl_queue, &stop_msg, pdMS_TO_TICKS(10));
+                    Debug_Printf("[ERR] Rebound Sync Diff Exceeded (Diff=%.1f > Limit=%d)! Stopping Rebound & Entering SYS_STEP_TOTAL_DONE to Auto-Align...\r\n",
+                                 g_sys_context.max_travel_diff, g_sys_context.max_sync_diff_hall);
+                    break;
+                }
+
+                // 4. 安防防线 3：反弹过程中二次过流堵转检查 (反向运动受阻)
+                bool has_rebound_stall = false;
+                for (int i = 0; i < 4; i++) {
+                    if (g_sys_context.g_motor_status[i].current_deciA > app_data.stall_current_threshold) {
+                        g_sys_context.g_motor_status[i].stall_cnt++;
+                        if (g_sys_context.g_motor_status[i].stall_cnt >= SAFETY_STALL_MAX_CNT) {
+                            has_rebound_stall = true;
+                            Debug_Printf("[ERR] Rebound Second Stall! Motor %d (Curr=%.2fA > Limit=%.2fA)\r\n",
+                                         i + 1, (float)g_sys_context.g_motor_status[i].current_deciA / 100.0f,
+                                         (float)app_data.stall_current_threshold / 100.0f);
+                            break;
+                        }
+                    } else {
+                        if (g_sys_context.g_motor_status[i].stall_cnt > 0) {
+                            g_sys_context.g_motor_status[i].stall_cnt--;
+                        }
+                    }
+                }
+                if (has_rebound_stall) {
+                    xQueueReset(g_motor_ctrl_queue);
+                    for (int i = 0; i < 4; i++) {
+                        g_sys_context.g_motor_status[i].target_cmd   = CMD_STOP;
+                        g_sys_context.g_motor_status[i].target_speed = 0;
+                        last_sent_speed[i]                           = 0;
+                    }
+                    Motor_Ctrl_Msg_t stop_msg       = {CMD_STOP, 0x0F, 0};
+                    g_sys_context.system_fault_code = FAULT_CODE_REBOUND_STALL;
+                    APP_Control_PrepareStopSettling(0x0F, SYS_STEP_TOTAL_DONE);
+                    xQueueSend(g_motor_ctrl_queue, &stop_msg, pdMS_TO_TICKS(10));
+                    Debug_Printf("[SYS] Rebound Second Stall Detected! Stopping Rebound & Entering SYS_STEP_TOTAL_DONE to Auto-Align/Lockout...\r\n");
+                    break;
+                }
+
+                // 5. 解算 4 轴反弹累计增量 (计算平均反弹步数)
                 float sum_reb_counts = 0.0f;
                 for (int i = 0; i < 4; i++) {
                     int32_t reb_h = g_sys_context.g_motor_status[i].current_abs_hall - g_sys_context.g_motor_status[i].base_abs_hall;
@@ -956,7 +1031,7 @@ void APP_ControlTask(void *pvParameters)
                 }
                 float avg_reb_counts = sum_reb_counts / 4.0f;
 
-                // 2. 堵转反弹阶段实时 PID 纠偏调速 (保持顶部台面绝对平行，采用正常速度的一半)
+                // 6. 堵转反弹阶段实时 PID 纠偏调速 (保持顶部台面绝对平行，采用正常速度的一半)
                 uint16_t rebound_speed_rpm = g_sys_context.calc_base_rpm / 2;
                 if (rebound_speed_rpm < 100) rebound_speed_rpm = 100;
                 APP_Control_RunPID(rebound_speed_rpm);
@@ -977,7 +1052,7 @@ void APP_ControlTask(void *pvParameters)
                     }
                 }
 
-                // 3. 检查反弹终止条件（完成目标行程，到达到界物理极值，或用户中途按下 C 键/停止按键）
+                // 7. 检查反弹终止条件（完成目标行程，到达到界物理极值，或用户中途按下 C 键/停止按键）
                 bool rebound_done = (avg_reb_counts >= (float)g_sys_context.rebound_target_counts);
 
                 if (has_event && sig_msg.event == MID_SIGNAL_EVT_TRIGGER) {
@@ -1009,7 +1084,7 @@ void APP_ControlTask(void *pvParameters)
                     }
                 }
 
-                // 4. 反弹完成：直接下发全轴 STOP，切入 SYS_STEP_TOTAL_DONE 统一接管停稳判定与 Flash 固化！
+                // 8. 反弹完成：直接下发全轴 STOP，切入 SYS_STEP_TOTAL_DONE 统一接管停稳判定与 Flash 固化！
                 if (rebound_done) {
                     xQueueReset(g_motor_ctrl_queue);
                     for (int i = 0; i < 4; i++) {
@@ -1129,14 +1204,16 @@ void APP_ControlTask(void *pvParameters)
                         g_sys_context.system_fault_code = FAULT_CODE_COMM;
                         g_sys_context.system_step       = SYS_STEP_FAULT_STOP;
                         Debug_Printf("[SYS] Stop Check: 485 Comm Fault Active! Entering SYS_STEP_FAULT_STOP Lockout State.\r\n");
-                    } else if (g_sys_context.max_travel_diff > (float)g_sys_context.max_sync_diff_hall) {
+                    } else if (g_sys_context.max_travel_diff > (float)g_sys_context.max_sync_diff_hall ||
+                               g_sys_context.system_fault_code == FAULT_CODE_REBOUND_SYNC ||
+                               g_sys_context.system_fault_code == FAULT_CODE_REBOUND_STALL) {
                         for (int i = 0; i < 4; i++) {
                             g_sys_context.g_motor_status[i].base_abs_hall    = g_sys_context.g_motor_status[i].current_abs_hall;
                             g_sys_context.g_motor_status[i].start_drive_hall = g_sys_context.g_motor_status[i].hall_value;
                         }
                         g_sys_context.system_step = SYS_STEP_AUTO_ALIGN;
-                        Debug_Printf("[SYS] Stop Check: Sync Diff Exceeded (Diff=%.1f > Limit=%d)! Triggering AUTO_ALIGN Self-Healing...\r\n",
-                                     g_sys_context.max_travel_diff, g_sys_context.max_sync_diff_hall);
+                        Debug_Printf("[SYS] Stop Check: Sync Diff Exceeded or Rebound Fault (FaultCode=%d, Diff=%.1f > Limit=%d)! Triggering AUTO_ALIGN Self-Healing...\r\n",
+                                     g_sys_context.system_fault_code, g_sys_context.max_travel_diff, g_sys_context.max_sync_diff_hall);
                     } else {
                         g_sys_context.system_fault_code = FAULT_CODE_NONE;
                         g_sys_context.system_step       = SYS_STEP_READY;

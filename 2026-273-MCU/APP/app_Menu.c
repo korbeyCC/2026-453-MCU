@@ -98,17 +98,17 @@ static void APP_Menu_AdjustParam(bool is_inc)
             }
             break;
 
-        case 5: // Set_W = 5: stall_current_threshold (50 ~ 2000 = 0.50A ~ 20.00A)
+        case 5: // Set_W = 5: stall_current_threshold (限制在 [STALL_CURRENT_THRESHOLD_MIN, STALL_CURRENT_THRESHOLD_MAX] 之内)
             if (is_inc) {
-                if (app_data.stall_current_threshold <= 1990)
+                if (app_data.stall_current_threshold + 10 <= STALL_CURRENT_THRESHOLD_MAX)
                     app_data.stall_current_threshold += 10;
                 else
-                    app_data.stall_current_threshold = 2000;
+                    app_data.stall_current_threshold = STALL_CURRENT_THRESHOLD_MAX;
             } else {
-                if (app_data.stall_current_threshold >= 60)
+                if (app_data.stall_current_threshold >= STALL_CURRENT_THRESHOLD_MIN + 10)
                     app_data.stall_current_threshold -= 10;
                 else
-                    app_data.stall_current_threshold = 50;
+                    app_data.stall_current_threshold = STALL_CURRENT_THRESHOLD_MIN;
             }
 #if ENABLE_STALL_CURRENT_AUTO_SAVE
             save_debounce_cnt = 6; // 仅在启用宏时触发 0.3s 及时保存

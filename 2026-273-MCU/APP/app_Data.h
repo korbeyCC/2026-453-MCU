@@ -3,6 +3,14 @@
 
 #include "app_main.h"
 
+// 驱动器硬件参数与开机配置基准
+#define DRIVER_RATED_STALL_CURRENT_DECI_A      750   // 驱动器额定堵转电流基准: 7.50A (单位: 0.01A)
+#define DRIVER_INIT_STALL_CURRENT_PERCENT      120   // 开机 485 配置百分比: 120% (对应 F07.12 寄存器值 1200)
+
+// 主控堵转电流阈值可调范围 (单位: 0.01A)
+#define STALL_CURRENT_THRESHOLD_MIN            50    // 下限: 0.50A
+#define STALL_CURRENT_THRESHOLD_MAX            ((DRIVER_RATED_STALL_CURRENT_DECI_A * DRIVER_INIT_STALL_CURRENT_PERCENT) / 100) // 上限: 9.00A (900)
+
 // 掉电保存高度行程等数据包结构体 (32位对齐)
 typedef struct
 {

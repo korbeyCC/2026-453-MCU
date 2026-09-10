@@ -314,7 +314,7 @@ static void App_Comm_InitHardwareSequence(void)
     } init_steps[] = {
         {0x200E, 0x0001, "Write Enable", 0},
         {0x2000, 0x0007, "Fault Reset", 0x03}, /* 正常回显或 86 03 都算过 */
-        {0x070C, 1200, "Stall Current Limit 120%", 0}, /* F07.12: 堵转限制电流提高至 120.0% (相对额定电流) */
+        {0x070C, (uint16_t)(DRIVER_INIT_STALL_CURRENT_PERCENT * 10), "Stall Current Limit", 0}, /* F07.12: 堵转限制电流 (相对额定电流百分比*10, 默认 1200 = 120.0%) */
         {0x2006, 0x0002, "Run Mode", 0},
         {0x2007, 0x0003, "Speed Mode", 0},
         {0x2001, 300, "Set Speed 300", 0},

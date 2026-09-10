@@ -3,6 +3,8 @@
 #include "mid_Key.h"
 #include "app_Menu.h"
 #include "app_control.h"
+#include "mid_run_led.h"
+#include "mid_buzzer.h"
 #include <math.h>
 
 /**
@@ -30,9 +32,51 @@ void APP_ShowTask(void *pvParameters)
     uint8_t SEG_Flag[4] = {0, 0, 0, 0};     // 小数点缓冲区
     uint8_t SEG_Show_Data[4];               // 输出段码缓冲区
 
+#define HW_TEST_LED_BEEP_TOGGLE_2S 0 // 1: 硬件测试模式(LED与蜂鸣器两秒同步翻转), 0: 恢复正常业务模式
+
     uint16_t flicker_cnt = 0;               // 交替周期计数器 (50ms 周期)
 
+#if HW_TEST_LED_BEEP_TOGGLE_2S
+    // 上电初始同步亮起并鸣叫
+    MID_RunLED_Write(true);
+    MID_Buzzer_Write(true);
+#endif
+
     while (1) {
+#if HW_TEST_LED_BEEP_TOGGLE_2S
+        // 【硬件测试模式】LED 与蜂鸣器每 2 秒同步翻转一次 (2s 亮+鸣 / 2s 灭+静)
+        static uint16_t s_hw_test_timer = 0;
+        static bool s_hw_test_state = true;
+        s_hw_test_timer += 50;
+        if (s_hw_test_timer >= 2000) {
+            s_hw_test_timer = 0;
+            s_hw_test_state = !s_hw_test_state;
+            MID_RunLED_Write(s_hw_test_state);
+            MID_Buzzer_Write(s_hw_test_state);
+        }
+#else
+        // 2026-453 状态指示灯 (PA12) 与运行蜂鸣器 (PD2) 联动控制
+        if (g_sys_context.system_step == SYS_STEP_FAULT_STOP) {
+            MID_RunLED_SetMode(RUN_LED_MODE_BLINK_FAULT);
+            MID_Buzzer_SetMode(BUZZER_MODE_ALARM);
+        } else if (g_sys_context.system_step == SYS_STEP_TOTAL_RUNNING ||
+                   g_sys_context.system_step == SYS_STEP_TOTAL_FORWARD ||
+                   g_sys_context.system_step == SYS_STEP_TOTAL_REVERSE ||
+                   g_sys_context.system_step == SYS_STEP_SINGLE_TUNE ||
+                   g_sys_context.system_step == SYS_STEP_TOTAL_REBOUND ||
+                   g_sys_context.system_step == SYS_STEP_AUTO_ALIGN) {
+            MID_RunLED_SetMode(RUN_LED_MODE_BLINK_RUN);
+            MID_Buzzer_SetMode(BUZZER_MODE_RUNNING);
+        } else {
+            MID_RunLED_SetMode(RUN_LED_MODE_STEADY_ON);
+            MID_Buzzer_SetMode(BUZZER_MODE_MUTE);
+        }
+
+        // 50ms 步进驱动指示灯与蜂鸣器节拍
+        MID_RunLED_Process(50);
+        MID_Buzzer_Process(50);
+#endif
+
         // 维护调值不闪烁计时器
         if (adjust_hold_ticks > 0) {
             adjust_hold_ticks--;

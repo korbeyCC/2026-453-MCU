@@ -12,6 +12,9 @@
 #include "mid_signal.h"
 #include "mid_led.h"
 #include "mid_modbus.h"
+#include "mid_run_led.h"
+#include "mid_buzzer.h"
+#include "mid_brake.h"
 
 void MID_Init(void);
 

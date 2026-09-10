@@ -2,6 +2,7 @@
 #include "mid_Key.h"
 #include "app_Data.h"
 #include "app_control.h"
+#include "mid_buzzer.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -183,6 +184,8 @@ void APP_MenuTask(void *pvParameters)
 
         // 检查全局唯一按键队列
         if (MID_Key_GetSingleEvent(&msg, 0) == pdTRUE) {
+            MID_Buzzer_TriggerBeep(40); // 453 按键有效触发提示音 40ms
+
             // 如果系统正处于单轴微调动作中，按下任意按键均取消微调
             if (g_sys_context.system_step == SYS_STEP_SINGLE_TUNE) {
                 if (msg.event == MID_KEY_EVT_LEASS || msg.event == MID_KEY_EVT_LONG || msg.event == MID_KEY_EVT_Long_REP) {

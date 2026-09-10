@@ -9,6 +9,7 @@
 #include "app_pid.h"
 #include "mid_Key.h"
 #include "app_Menu.h"
+#include "mid_brake.h"
 
 // 实例化全局控制上下文
 Sys_Ctrl_Context_t g_sys_context;
@@ -233,6 +234,11 @@ static void APP_Control_PrepareStopSettling(uint8_t motor_mask, Motor_ctl_Step_t
     g_sys_context.active_motor_mask = motor_mask;
     g_sys_context.system_step       = next_step;
 
+    // 453 抱闸控制：若是致命故障急停状态，立即锁定抱闸自锁
+    if (next_step == SYS_STEP_FAULT_STOP) {
+        MID_Brake_Lock();
+    }
+
     for (int i = 0; i < 4; i++) {
         s_last_check_halls[i] = 0xFFFFFFFF;
         s_axis_stable_cnt[i]  = 0;
@@ -267,6 +273,7 @@ void APP_Control_ResetSystemContext(void)
     g_sys_context.active_motor_mask = 0x0F;
     g_sys_context.is_single_tuning  = false;
     g_sys_context.max_travel_diff   = 0;
+    MID_Brake_Lock(); // 系统复位锁定抱闸自锁
 }
 
 /**
@@ -294,6 +301,10 @@ void APP_Control_StartSingleTune(uint8_t m_idx)
     if (tune_rpm < 100) tune_rpm = 100;
 
     xQueueReset(g_motor_ctrl_queue);
+
+    // 453 机械抱闸安全时序：先通电松开抱闸，延时 80ms 等待机械脱开
+    MID_Brake_Release();
+    vTaskDelay(pdMS_TO_TICKS(80));
 
     Motor_Ctrl_Msg_t speed_msg = {CMD_SET_SPEED, (uint8_t)(1 << m_idx), tune_rpm};
     Motor_Ctrl_Msg_t cmd_msg   = {(g_sys_context.single_tune_dir == 0) ? CMD_FORWARD : CMD_REVERSE, (uint8_t)(1 << m_idx), 0};
@@ -598,6 +609,10 @@ void APP_ControlTask(void *pvParameters)
                             g_sys_context.avg_delta_h = 0.0f;
                             g_sys_context.max_dh_diff = 0.0f;
 
+                            // 453 机械抱闸安全时序：启动前先通电松开抱闸，延时 80ms 等待机械脱开
+                            MID_Brake_Release();
+                            vTaskDelay(pdMS_TO_TICKS(80));
+
                             xQueueReset(g_motor_ctrl_queue);
                             xQueueSend(g_motor_ctrl_queue, &speed_msg, pdMS_TO_TICKS(10));
                             xQueueSend(g_motor_ctrl_queue, &cmd_msg, pdMS_TO_TICKS(10));
@@ -647,6 +662,10 @@ void APP_ControlTask(void *pvParameters)
                             }
                             g_sys_context.avg_delta_h = 0.0f;
                             g_sys_context.max_dh_diff = 0.0f;
+
+                            // 453 机械抱闸安全时序：启动前先通电松开抱闸，延时 80ms 等待机械脱开
+                            MID_Brake_Release();
+                            vTaskDelay(pdMS_TO_TICKS(80));
 
                             xQueueReset(g_motor_ctrl_queue);
                             xQueueSend(g_motor_ctrl_queue, &speed_msg, pdMS_TO_TICKS(10));
@@ -873,6 +892,8 @@ void APP_ControlTask(void *pvParameters)
 
                         Motor_Ctrl_Msg_t speed_msg = {CMD_SET_SPEED, 0x0F, rebound_speed_rpm};
                         Motor_Ctrl_Msg_t cmd_msg   = {(Motor_Cmd_Type_t)g_sys_context.rebound_cmd, 0x0F, 0};
+
+                        MID_Brake_Release(); // 453 机械抱闸：确保抱闸处于释放状态
 
                         xQueueSend(g_motor_ctrl_queue, &speed_msg, pdMS_TO_TICKS(10));
                         xQueueSend(g_motor_ctrl_queue, &cmd_msg, pdMS_TO_TICKS(10));
@@ -1177,6 +1198,7 @@ void APP_ControlTask(void *pvParameters)
 
                     // 立即同步固化存 Flash（仅执行 1 次落盘）
                     APP_Data_Storage();
+                    MID_Brake_Lock(); // 453 机械抱闸安全时序：运动轴彻底停稳后断电抱紧自锁
                     Debug_Printf("[SYS] All Active Motors Settled & Flash Archived Successfully!\r\n");
 
                     // 以最新的 min_mount_halls 重新计算 4 轴绝对伸出行程 travel_rel 及极差 max_travel_diff
@@ -1203,6 +1225,7 @@ void APP_ControlTask(void *pvParameters)
                     if (has_comm_fault || g_sys_context.system_fault_code == FAULT_CODE_COMM) {
                         g_sys_context.system_fault_code = FAULT_CODE_COMM;
                         g_sys_context.system_step       = SYS_STEP_FAULT_STOP;
+                        MID_Brake_Lock(); // 致命通信故障抱死自锁
                         Debug_Printf("[SYS] Stop Check: 485 Comm Fault Active! Entering SYS_STEP_FAULT_STOP Lockout State.\r\n");
                     } else if (g_sys_context.max_travel_diff > (float)g_sys_context.max_sync_diff_hall ||
                                g_sys_context.system_fault_code == FAULT_CODE_REBOUND_SYNC ||
@@ -1212,6 +1235,8 @@ void APP_ControlTask(void *pvParameters)
                             g_sys_context.g_motor_status[i].start_drive_hall = g_sys_context.g_motor_status[i].hall_value;
                         }
                         g_sys_context.system_step = SYS_STEP_AUTO_ALIGN;
+                        MID_Brake_Release();           // 453 抱闸控制：启动自愈重平前通电松开抱闸
+                        vTaskDelay(pdMS_TO_TICKS(80)); // 硬件脱开延时 80ms
                         Debug_Printf("[SYS] Stop Check: Sync Diff Exceeded or Rebound Fault (FaultCode=%d, Diff=%.1f > Limit=%d)! Triggering AUTO_ALIGN Self-Healing...\r\n",
                                      g_sys_context.system_fault_code, g_sys_context.max_travel_diff, g_sys_context.max_sync_diff_hall);
                     } else {

@@ -7,5 +7,8 @@ void MID_Init(void)
     MID_KEY_HardwareBinding();
     MID_SIGNAL_HardwareBinding();
     MID_LED_Init();
+    MID_RunLED_Init();
+    MID_Buzzer_Init();
+    MID_Brake_Init();
     MID_Modbus_Init();
 }

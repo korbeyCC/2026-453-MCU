@@ -20,7 +20,8 @@ typedef enum {
     CMD_INIT_START_RUN,    // 8: 0x2000 普通控制指令
     CMD_READ_HALL,         // 9: 周期读取霍尔高度 (0x3013, 2 regs)
     CMD_READ_CURRENT,      // 10: 周期读取输出电流 (0x3004, 1 reg, 0.01A)
-    CMD_IDLE_STOP          // 11: 停稳后停机 (0x0005)
+    CMD_IDLE_STOP,         // 11: 停稳后停机 (0x0005)
+    CMD_FAULT_RESET        // 12: 驱动器故障复位 (0x2000 = 0x0007)
 } Motor_Cmd_Type_t;
 
 // 控制消息队列数据结构

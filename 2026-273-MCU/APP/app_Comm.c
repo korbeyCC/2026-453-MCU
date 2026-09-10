@@ -313,8 +313,12 @@ static void App_Comm_InitHardwareSequence(void)
         uint8_t accept_ex;
     } init_steps[] = {
         {0x200E, 0x0001, "Write Enable", 0},
-        {0x2000, 0x0007, "Fault Reset", 0x03}, /* 正常回显或 86 03 都算过 */
-        {0x070C, 1200, "Stall Current Limit 120%", 0}, /* F07.12: 堵转限制电流提高至 120.0% (相对额定电流) */
+        {0x2000, 0x0007, "Fault Reset", 0x03},                                                  /* 正常回显或 86 03 都算过 */
+        {0x070C, (uint16_t)(DRIVER_INIT_STALL_CURRENT_PERCENT * 10), "Stall Current Limit", 0}, /* F07.12: 堵转限制电流 (相对额定电流百分比*10, 默认 1200 = 120.0%) */
+        {0x0709, DRIVER_FAULT_AUTO_RESET_TIME, "Auto Reset Time", 0},                           /* F07.09: 故障自动复位间隔 5.0s (写入 50，防频繁冲击) */
+        {0x070A, DRIVER_FAULT_AUTO_RESET_TIMES, "Auto Reset Times", 0},                         /* F07.10: 故障自动复位次数 (10次重试自愈) */
+        {0x0804, DRIVER_485_TIMEOUT_TIME_VAL, "485 Timeout 0.1s", 0},                           /* F08.04: 485 通信超时故障时间 0.1s (写入 1，100ms 极速停机) */
+        {0x0805, DRIVER_485_TIMEOUT_ACTION, "Stop on Comm Loss", 0},                            /* F08.05: 485 传输错误处理 (0: 报警并自由停机) */
         {0x2006, 0x0002, "Run Mode", 0},
         {0x2007, 0x0003, "Speed Mode", 0},
         {0x2001, 300, "Set Speed 300", 0},
@@ -360,6 +364,8 @@ void APP_CommTask(void *pvParameters)
     static Motor_Cmd_Type_t pending_cmd[4];
     static bool has_pending_cmd[4] = {false, false, false, false};
 
+    static bool has_pending_fault_reset[4] = {false, false, false, false};
+
     while (1) {
         // 1. 1ms 无延迟实时推进 Modbus 接收解析与状态机释放 (ACK 收到后最快 1ms 解锁 IDLE)
         MID_Modbus_Process_1ms();
@@ -368,13 +374,15 @@ void APP_CommTask(void *pvParameters)
         if (++timer_4ms_cnt >= 4) {
             timer_4ms_cnt = 0;
 
-            // 消费控制队列命令并分别归类至转速槽 (0x2001) 与命令槽 (0x2000)
+            // 消费控制队列命令并分别归类至转速槽 (0x2001)、复位槽 (0x2000=0x0007) 与命令槽 (0x2000)
             while (xQueueReceive(g_motor_ctrl_queue, &ctrl_msg, 0) == pdTRUE) {
                 for (int i = 0; i < 4; i++) {
                     if (ctrl_msg.motor_mask & (1 << i)) {
                         if (ctrl_msg.cmd_type == CMD_SET_SPEED) {
                             pending_speed[i]     = ctrl_msg.speed_rpm;
                             has_pending_speed[i] = true;
+                        } else if (ctrl_msg.cmd_type == CMD_FAULT_RESET) {
+                            has_pending_fault_reset[i] = true;
                         } else {
                             pending_cmd[i]     = ctrl_msg.cmd_type;
                             has_pending_cmd[i] = true;
@@ -387,8 +395,14 @@ void APP_CommTask(void *pvParameters)
                 Modbus_Master_t *m = &modbus_masters[i];
                 if (m->state != MODBUS_STATE_IDLE) continue;
 
+                // Tier 0: 最高优先级：先下发驱动器故障复位指令 (写 0x2000 = 0x0007 消除驱动器爆红灯)
+                if (has_pending_fault_reset[i]) {
+                    if (MID_Modbus_WriteSingleReg(m, 0x2000, 0x0007, Motor_Cmd_Callbacks[i])) {
+                        has_pending_fault_reset[i] = false;
+                    }
+                }
                 // Tier 1: 优先下发待更新的转速设置指令 (写 0x2001)
-                if (has_pending_speed[i]) {
+                else if (has_pending_speed[i]) {
                     if (MID_Modbus_WriteSingleReg(m, 0x2001, pending_speed[i], Motor_Speed_Callbacks[i])) {
                         has_pending_speed[i] = false;
                     }

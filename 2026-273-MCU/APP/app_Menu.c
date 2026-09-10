@@ -2,6 +2,7 @@
 #include "mid_Key.h"
 #include "app_Data.h"
 #include "app_control.h"
+#include "mid_buzzer.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -97,17 +98,17 @@ static void APP_Menu_AdjustParam(bool is_inc)
             }
             break;
 
-        case 5: // Set_W = 5: stall_current_threshold (50 ~ 2000 = 0.50A ~ 20.00A)
+        case 5: // Set_W = 5: stall_current_threshold (限制在 [STALL_CURRENT_THRESHOLD_MIN, STALL_CURRENT_THRESHOLD_MAX] 之内)
             if (is_inc) {
-                if (app_data.stall_current_threshold <= 1990)
+                if (app_data.stall_current_threshold + 10 <= STALL_CURRENT_THRESHOLD_MAX)
                     app_data.stall_current_threshold += 10;
                 else
-                    app_data.stall_current_threshold = 2000;
+                    app_data.stall_current_threshold = STALL_CURRENT_THRESHOLD_MAX;
             } else {
-                if (app_data.stall_current_threshold >= 60)
+                if (app_data.stall_current_threshold >= STALL_CURRENT_THRESHOLD_MIN + 10)
                     app_data.stall_current_threshold -= 10;
                 else
-                    app_data.stall_current_threshold = 50;
+                    app_data.stall_current_threshold = STALL_CURRENT_THRESHOLD_MIN;
             }
 #if ENABLE_STALL_CURRENT_AUTO_SAVE
             save_debounce_cnt = 6; // 仅在启用宏时触发 0.3s 及时保存
@@ -183,6 +184,8 @@ void APP_MenuTask(void *pvParameters)
 
         // 检查全局唯一按键队列
         if (MID_Key_GetSingleEvent(&msg, 0) == pdTRUE) {
+            MID_Buzzer_TriggerBeep(40); // 453 按键有效触发提示音 40ms
+
             // 如果系统正处于单轴微调动作中，按下任意按键均取消微调
             if (g_sys_context.system_step == SYS_STEP_SINGLE_TUNE) {
                 if (msg.event == MID_KEY_EVT_LEASS || msg.event == MID_KEY_EVT_LONG || msg.event == MID_KEY_EVT_Long_REP) {

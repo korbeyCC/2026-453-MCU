@@ -32,6 +32,13 @@ void APP_Data_Init(void)
         app_data.motor_dir_invert = 1;
     }
 
+    // 堵转电流阈值边界防御 (限制在 [STALL_CURRENT_THRESHOLD_MIN, STALL_CURRENT_THRESHOLD_MAX] 之内)
+    if (app_data.stall_current_threshold > STALL_CURRENT_THRESHOLD_MAX) {
+        app_data.stall_current_threshold = STALL_CURRENT_THRESHOLD_MAX;
+    } else if (app_data.stall_current_threshold < STALL_CURRENT_THRESHOLD_MIN) {
+        app_data.stall_current_threshold = STALL_CURRENT_THRESHOLD_MIN;
+    }
+
     // 强制使能 PVD 检测及硬件 PLS 阈值配置 (PVD 检测阈值调低至 2.6V，防范负载及波动噪声)
     // 注：由于 CubeMX 已经自动生成了 NVIC (PVD_IRQn) 中断使能，此处仅需配置并使能 PVD 硬件外设本身即可
     PWR_PVDTypeDef getConfigPVD;
@@ -49,7 +56,7 @@ void APP_Data_ResetDefault(void)
     app_data.max_travel_range_mm     = 2000; // 默认 2000 mm
     app_data.reduction_ratio         = 30;   // 默认减速比 30
     app_data.target_speed_mm_min     = 750;  // 默认 750 mm/min
-    app_data.stall_current_threshold = 350;  // 默认 350 (3.50A，较之前 7.00A 减半以匹配实测堵转限制)
+    app_data.stall_current_threshold = 700;  // 默认 7.00A (需低于驱动器堵转上限 STALL_CURRENT_THRESHOLD_MAX = 7.5A*120% = 9.00A = 900)
     app_data.max_sync_diff_mm        = 5;    // 默认 5 mm
     app_data.lead_mm                 = 8;    // 默认 8 mm
     app_data.hall_coef               = 30;   // 默认 30

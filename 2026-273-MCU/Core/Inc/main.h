@@ -80,6 +80,14 @@ void Error_Handler(void);
 #define LED_1_Pin GPIO_PIN_5
 #define LED_1_GPIO_Port GPIOB
 
+/* 2026-453 新增硬件引脚定义 */
+#define RUN_LED_Pin GPIO_PIN_12
+#define RUN_LED_GPIO_Port GPIOA
+#define BRAKE_Pin GPIO_PIN_15
+#define BRAKE_GPIO_Port GPIOA
+#define BEEP_Pin GPIO_PIN_2
+#define BEEP_GPIO_Port GPIOD
+
 /* USER CODE BEGIN Private defines */
 
 /* USER CODE END Private defines */

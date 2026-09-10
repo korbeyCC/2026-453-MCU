@@ -340,8 +340,9 @@ void APP_Control_CancelSingleTune(void)
 }
 
 /**
- * @brief 用户按键确认清除故障急停状态 (当 485 通信恢复/条件满足时)
- * @return true: 成功清除并进入归档自愈; false: 硬件通信故障仍存在，忽略清除
+ * @brief 用户按键确认清除故障急停状态并下发自由停机归档
+ * @note 仅在通信正常且驱动器故障已恢复应答后开放调用
+ * @return true: 成功清除并下发自由停机归档; false: 硬件通信或故障仍存在，忽略清除
  */
 bool APP_Control_ClearFault(void)
 {
@@ -349,38 +350,43 @@ bool APP_Control_ClearFault(void)
         return false;
     }
 
-    // 检查 4 轴 485 通信状态是否完全恢复正常
-    bool comm_ok = true;
+    // 1. 严格核验 4 轴 485 通信状态是否完全恢复正常
     for (int i = 0; i < 4; i++) {
         if (g_sys_context.g_motor_status[i].comm_error > 0) {
-            comm_ok = false;
-            break;
+            Debug_Printf("[SYS] ClearFault blocked: Motor %d comm not ready!\r\n", i + 1);
+            return false;
         }
     }
 
-    if (comm_ok) {
-        xQueueReset(g_motor_ctrl_queue);
-
-        for (int i = 0; i < 4; i++) {
-            g_sys_context.g_motor_status[i].target_cmd   = CMD_STOP;
-            g_sys_context.g_motor_status[i].target_speed = 0;
+    // 2. 严格核验 4 轴驱动器本体是否已确认解除故障红灯
+    for (int i = 0; i < 4; i++) {
+        if (g_sys_context.g_motor_status[i].driver_status_word == 0x0004) {
+            Debug_Printf("[SYS] ClearFault blocked: Motor %d still in Driver Fault (Status=0x%04X, Code=%d)\r\n",
+                         i + 1, g_sys_context.g_motor_status[i].driver_status_word,
+                         g_sys_context.g_motor_status[i].driver_fault_code);
+            return false;
         }
-
-        // 联动下发驱动器故障复位 (0x0007)，消除驱动器本体可能存在的过流/堵转报警红灯
-        Motor_Ctrl_Msg_t reset_msg = {CMD_FAULT_RESET, 0x0F, 0};
-        xQueueSend(g_motor_ctrl_queue, &reset_msg, pdMS_TO_TICKS(10));
-
-        Motor_Ctrl_Msg_t stop_msg       = {CMD_STOP, 0x0F, 0};
-        g_sys_context.system_fault_code = FAULT_CODE_NONE;
-        APP_Control_PrepareStopSettling(0x0F, SYS_STEP_TOTAL_DONE);
-        xQueueSend(g_motor_ctrl_queue, &stop_msg, pdMS_TO_TICKS(10));
-        APP_Control_SetLightOff(); // 消除报警后关闭灯带
-        Debug_Printf("[SYS] Fault Lockout Cleared by User Key! Sent CMD_FAULT_RESET & CMD_STOP to Motors...\r\n");
-        return true;
-    } else {
-        Debug_Printf("[SYS] User Acknowledge Ignored: 485 Comm Fault Still Active!\r\n");
-        return false;
     }
+
+    xQueueReset(g_motor_ctrl_queue);
+
+    for (int i = 0; i < 4; i++) {
+        g_sys_context.g_motor_status[i].target_cmd   = CMD_IDLE_STOP;
+        g_sys_context.g_motor_status[i].target_speed = 0;
+    }
+
+    // 收到应答后开放按钮：下发自由停机 (CMD_IDLE_STOP: 写 0x2000 = 0x0005)
+    Motor_Ctrl_Msg_t idle_stop_msg = {CMD_IDLE_STOP, 0x0F, 0};
+    xQueueSend(g_motor_ctrl_queue, &idle_stop_msg, pdMS_TO_TICKS(10));
+
+    // 清除主控故障代码
+    g_sys_context.system_fault_code = FAULT_CODE_NONE;
+
+    // 进入停稳收尾与位置固化阶段 (Flash 归档绝对位置，抱闸抱紧，回到 READY)
+    APP_Control_PrepareStopSettling(0x0F, SYS_STEP_TOTAL_DONE);
+    APP_Control_SetLightOff(); // 消除报警后关闭灯带
+    Debug_Printf("[SYS] Fault Lockout Cleared by User Key! Sent CMD_IDLE_STOP (0x0005) Free Stop...\r\n");
+    return true;
 }
 
 /**
@@ -509,6 +515,8 @@ void APP_ControlTask(void *pvParameters)
     g_sys_context.system_fault_code = 0;
 
     for (int i = 0; i < 4; i++) {
+        g_sys_context.g_motor_status[i].driver_status_word = 0;
+        g_sys_context.g_motor_status[i].driver_fault_code  = 0;
         APP_PID_Init(&motor_pids[i], PID_DEFAULT_KP, PID_DEFAULT_KI, PID_DEFAULT_KD,
                      PID_DEFAULT_DEADZONE, PID_DEFAULT_OUT_MAX, PID_DEFAULT_OUT_MIN, PID_DEFAULT_IOUT_MAX);
     }
@@ -556,6 +564,24 @@ void APP_ControlTask(void *pvParameters)
                 }
                 if (has_comm_loss) {
                     g_sys_context.system_fault_code = FAULT_CODE_COMM;
+                    g_sys_context.system_step       = SYS_STEP_FAULT_STOP;
+                    APP_Control_SetLightOff(); // 待机切入故障时先关闭普通指示灯，等待 1Hz 警示双闪
+                    break;
+                }
+
+                // 1. 待机状态驱动器本体报警巡检 (0x2100 状态字 == 0x0004 驱动器故障中)
+                bool has_driver_alarm = false;
+                for (int i = 0; i < 4; i++) {
+                    if (g_sys_context.g_motor_status[i].driver_status_word == 0x0004) {
+                        has_driver_alarm = true;
+                        Debug_Printf("[ERR] Standby Driver Alarm! Motor %d: Status=0x%04X, FaultCode=%d\r\n",
+                                     i + 1, g_sys_context.g_motor_status[i].driver_status_word,
+                                     g_sys_context.g_motor_status[i].driver_fault_code);
+                        break;
+                    }
+                }
+                if (has_driver_alarm) {
+                    g_sys_context.system_fault_code = FAULT_CODE_DRIVER_ALARM; // 置 Err6 驱动器本体报警
                     g_sys_context.system_step       = SYS_STEP_FAULT_STOP;
                     APP_Control_SetLightOff(); // 待机切入故障时先关闭普通指示灯，等待 1Hz 警示双闪
                     break;
@@ -1226,11 +1252,24 @@ void APP_ControlTask(void *pvParameters)
                         }
                     }
 
+                    bool has_driver_fault = false;
+                    for (int i = 0; i < 4; i++) {
+                        if (g_sys_context.g_motor_status[i].driver_status_word == 0x0004) {
+                            has_driver_fault = true;
+                            break;
+                        }
+                    }
+
                     if (has_comm_fault || g_sys_context.system_fault_code == FAULT_CODE_COMM) {
                         g_sys_context.system_fault_code = FAULT_CODE_COMM;
                         g_sys_context.system_step       = SYS_STEP_FAULT_STOP;
                         MID_Brake_Lock(); // 致命通信故障抱死自锁
                         Debug_Printf("[SYS] Stop Check: 485 Comm Fault Active! Entering SYS_STEP_FAULT_STOP Lockout State.\r\n");
+                    } else if (has_driver_fault || g_sys_context.system_fault_code == FAULT_CODE_DRIVER_ALARM) {
+                        g_sys_context.system_fault_code = FAULT_CODE_DRIVER_ALARM;
+                        g_sys_context.system_step       = SYS_STEP_FAULT_STOP;
+                        MID_Brake_Lock(); // 驱动器报警抱死自锁
+                        Debug_Printf("[SYS] Stop Check: Driver Alarm Active! Entering SYS_STEP_FAULT_STOP Lockout State.\r\n");
                     } else if (g_sys_context.max_travel_diff > (float)g_sys_context.max_sync_diff_hall ||
                                g_sys_context.system_fault_code == FAULT_CODE_REBOUND_SYNC ||
                                g_sys_context.system_fault_code == FAULT_CODE_REBOUND_STALL) {
@@ -1325,9 +1364,22 @@ void APP_ControlTask(void *pvParameters)
                 break;
             }
 
-            // === SYS_STEP_FAULT_STOP 阶段：致命故障急停锁死状态 (报警显示、通信恢复安全下发 STOP 与用户确认解锁归档) ===
+            // === SYS_STEP_FAULT_STOP 阶段：致命故障急停锁死状态 (通信恢复自动发急停与复位，确认应答后再开放消警) ===
             case SYS_STEP_FAULT_STOP: {
-                // 1. 检查 4 轴 485 通信状态是否完全恢复正常
+                static Motor_ctl_Step_t s_last_step = SYS_STEP_Boot;
+                static bool s_last_comm_ok          = false;
+                static uint16_t s_auto_reset_timer  = 0;
+                static bool s_driver_recovered      = false;
+
+                // 刚切入 FAULT_STOP 状态时的初始化
+                if (s_last_step != SYS_STEP_FAULT_STOP) {
+                    s_last_step        = SYS_STEP_FAULT_STOP;
+                    s_last_comm_ok     = false;
+                    s_auto_reset_timer = 0;
+                    s_driver_recovered = false;
+                }
+
+                // 1. 检查 4 轴 485 通信状态
                 bool comm_ok = true;
                 for (int i = 0; i < 4; i++) {
                     if (g_sys_context.g_motor_status[i].comm_error > 0) {
@@ -1336,37 +1388,85 @@ void APP_ControlTask(void *pvParameters)
                     }
                 }
 
-                static bool has_sent_stop_on_comm_restore = false;
-
-                // 若通信中断未恢复，重置标志
-                if (!comm_ok) {
-                    has_sent_stop_on_comm_restore = false;
+                // 2. 检查 4 轴驱动器本体是否处于故障红灯状态 (0x2100 状态字 == 0x0004)
+                bool any_driver_fault = false;
+                for (int i = 0; i < 4; i++) {
+                    if (g_sys_context.g_motor_status[i].driver_status_word == 0x0004) {
+                        any_driver_fault = true;
+                        // 若主控当前尚未标记为特定故障或仍为通信故障，当通信恢复但驱动器故障时，显示为 Err6
+                        if (comm_ok && (g_sys_context.system_fault_code == FAULT_CODE_COMM || g_sys_context.system_fault_code == FAULT_CODE_NONE)) {
+                            g_sys_context.system_fault_code = FAULT_CODE_DRIVER_ALARM;
+                        }
+                        break;
+                    }
                 }
 
-                // 2. 场景 A：重新插上数据线 / 重新上电复位，通信恢复时【仅发送 STOP 停机，保持报警锁死状态】
-                if (comm_ok && !has_sent_stop_on_comm_restore) {
-                    has_sent_stop_on_comm_restore = true;
-                    xQueueReset(g_motor_ctrl_queue);
+                // 若通信断开，锁定取消报警按钮，重置标志
+                if (!comm_ok) {
+                    s_last_comm_ok     = false;
+                    s_driver_recovered = false;
+                    s_auto_reset_timer = 0;
+                }
 
-                    for (int i = 0; i < 4; i++) {
-                        g_sys_context.g_motor_status[i].target_cmd   = CMD_STOP;
-                        g_sys_context.g_motor_status[i].target_speed = 0;
-                        last_sent_speed[i]                           = 0;
+                // 3. 通信重连后：先发送紧急停机和故障恢复
+                if (comm_ok) {
+                    // A. 通信刚恢复的第一时间：立即先发送紧急刹车停机 (0x0009) 和故障恢复 (0x0007)
+                    if (!s_last_comm_ok) {
+                        s_last_comm_ok     = true;
+                        s_driver_recovered = false;
+                        s_auto_reset_timer = 0;
+                        xQueueReset(g_motor_ctrl_queue);
+
+                        for (int i = 0; i < 4; i++) {
+                            g_sys_context.g_motor_status[i].target_cmd   = CMD_STOP;
+                            g_sys_context.g_motor_status[i].target_speed = 0;
+                            last_sent_speed[i]                           = 0;
+                        }
+
+                        // 先发紧急刹车停机 (CMD_STOP: 0x0009)
+                        Motor_Ctrl_Msg_t stop_msg = {CMD_STOP, 0x0F, 0};
+                        xQueueSend(g_motor_ctrl_queue, &stop_msg, pdMS_TO_TICKS(10));
+
+                        // 紧接着发故障恢复 (CMD_FAULT_RESET: 0x0007)
+                        Motor_Ctrl_Msg_t reset_msg = {CMD_FAULT_RESET, 0x0F, 0};
+                        xQueueSend(g_motor_ctrl_queue, &reset_msg, pdMS_TO_TICKS(10));
+
+                        Debug_Printf("[SYS] 485 Comm Restored: Sent CMD_STOP (0x0009) & CMD_FAULT_RESET (0x0007). Waiting for ACK...\r\n");
                     }
 
-                    // 通信恢复时先下发故障复位清除驱动器潜在红灯，随后确保停机
-                    Motor_Ctrl_Msg_t reset_msg = {CMD_FAULT_RESET, 0x0F, 0};
-                    xQueueSend(g_motor_ctrl_queue, &reset_msg, pdMS_TO_TICKS(10));
-
-                    Motor_Ctrl_Msg_t stop_msg = {CMD_STOP, 0x0F, 0};
-                    xQueueSend(g_motor_ctrl_queue, &stop_msg, pdMS_TO_TICKS(10));
-                    Debug_Printf("[SYS] 485 Comm Restored: Sent CMD_FAULT_RESET & CMD_STOP to Motors, Keeping FAULT_STOP Alarm Active Until User Acknowledge...\r\n");
+                    // B. 持续监测应答：如果驱动器仍处于红灯故障中，每隔 400ms 主动重发复位 (克服驱动器自愈次数用尽)
+                    if (any_driver_fault) {
+                        s_driver_recovered = false;
+                        if (++s_auto_reset_timer >= 20) { // 20 帧 x 20ms = 400ms
+                            s_auto_reset_timer = 0;
+                            Motor_Ctrl_Msg_t reset_msg = {CMD_FAULT_RESET, 0x0F, 0};
+                            xQueueSend(g_motor_ctrl_queue, &reset_msg, 0);
+                            Debug_Printf("[SYS] Retry CMD_FAULT_RESET (0x0007)... DriverFaults=[%d,%d,%d,%d]\r\n",
+                                         g_sys_context.g_motor_status[0].driver_fault_code,
+                                         g_sys_context.g_motor_status[1].driver_fault_code,
+                                         g_sys_context.g_motor_status[2].driver_fault_code,
+                                         g_sys_context.g_motor_status[3].driver_fault_code);
+                        }
+                    } else {
+                        // 4 轴驱动器均已退出 0x0004 故障态，说明驱动器已确认收到复位并成功清除故障！
+                        if (!s_driver_recovered) {
+                            s_driver_recovered = true;
+                            Debug_Printf("[SYS] Driver Reset Confirmed! All 4 Motors Normal. Unlocking ClearFault Button.\r\n");
+                        }
+                    }
                 }
 
-                // 3. 场景 B：遥控/外接信号按键触发取消报警
+                // 4. 收到应答后，再开放取消报警并自由停机的按钮
                 if (has_event && (sig_msg.event == MID_SIGNAL_EVT_TRIGGER || sig_msg.event == MID_SIGNAL_EVT_LONG)) {
-                    if (APP_Control_ClearFault()) {
-                        has_sent_stop_on_comm_restore = false;
+                    if (s_driver_recovered) {
+                        if (APP_Control_ClearFault()) {
+                            s_driver_recovered = false;
+                            s_last_comm_ok     = false;
+                            s_last_step        = SYS_STEP_TOTAL_DONE;
+                        }
+                    } else {
+                        Debug_Printf("[SYS] Clear Fault Blocked: Waiting for Driver Reset Response (CommOk=%d, DriverFault=%d)\r\n",
+                                     comm_ok, any_driver_fault);
                     }
                 }
                 break;

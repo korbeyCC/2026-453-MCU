@@ -9,11 +9,6 @@
 #define SAFETY_COMM_ERR_MAX_CNT 10 // 通信连续中断判定次数 (连续 10 帧/40ms 无回应触发保护)
 #define SAFETY_STALL_MAX_CNT    10 // 堵转过流判定持续次数 (20 帧 x 20ms = 400ms 持续过流触发堵转)
 
-#define FAULT_CODE_NONE         0 // 故障代码: 正常无故障
-#define FAULT_CODE_STALL        1 // 故障代码: 过流堵转
-#define FAULT_CODE_COMM_ERR     2 // 故障代码: 通信中断
-#define FAULT_CODE_SYNC_ERR     3 // 故障代码: 4 轴同步差超限
-
 // ===================================================================
 // 系统运行速度与起跑斜坡宏配置
 // ===================================================================
@@ -35,9 +30,12 @@
 #define FAULT_CODE_NONE              0 // 正常无故障
 #define FAULT_CODE_STALL             1 // 运行过流堵转 (Err1)
 #define FAULT_CODE_COMM              2 // 485 通信中断故障 (Err2)
+#define FAULT_CODE_COMM_ERR          FAULT_CODE_COMM
 #define FAULT_CODE_SYNC              3 // 运行同步差超限故障 (Err3)
+#define FAULT_CODE_SYNC_ERR          FAULT_CODE_SYNC
 #define FAULT_CODE_REBOUND_STALL     4 // 反弹过程二次堵转 (Err4)
 #define FAULT_CODE_REBOUND_SYNC      5 // 反弹过程同步差超限/卡死倾斜 (Err5)
+#define FAULT_CODE_DRIVER_ALARM      6 // 驱动器本体报警 (Err6, 内部状态字置位故障中)
 
 // ===================================================================
 // 动态 PID 纠偏与基础初始化宏配置
@@ -82,6 +80,8 @@ typedef struct {
     int32_t current_abs_hall;  // 实时解算的绝对高度 (有符号，用于 PID 控制)
     uint32_t hall_value;       // 驱动器最新原始无符号霍尔读数 (内存数据缓存)
     uint16_t current_deciA;    // 驱动器当前输出电流 (单位: 0.01A)
+    uint16_t driver_status_word; // 驱动器状态字 1 (0x2100: 1正转 2反转 3停机 4故障 5OFF)
+    uint16_t driver_fault_code;  // 驱动器当前故障代码 (0x2102: 0无故障, 1~36对应驱动器故障表)
     uint8_t stall_cnt;         // 过流堵转判定计数器
     uint8_t comm_error;        // 通信超时错误标记
     uint8_t retry_cnt;         // 重试计数

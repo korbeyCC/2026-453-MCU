@@ -366,12 +366,16 @@ bool APP_Control_ClearFault(void)
             g_sys_context.g_motor_status[i].target_speed = 0;
         }
 
+        // 联动下发驱动器故障复位 (0x0007)，消除驱动器本体可能存在的过流/堵转报警红灯
+        Motor_Ctrl_Msg_t reset_msg = {CMD_FAULT_RESET, 0x0F, 0};
+        xQueueSend(g_motor_ctrl_queue, &reset_msg, pdMS_TO_TICKS(10));
+
         Motor_Ctrl_Msg_t stop_msg       = {CMD_STOP, 0x0F, 0};
         g_sys_context.system_fault_code = FAULT_CODE_NONE;
         APP_Control_PrepareStopSettling(0x0F, SYS_STEP_TOTAL_DONE);
         xQueueSend(g_motor_ctrl_queue, &stop_msg, pdMS_TO_TICKS(10));
         APP_Control_SetLightOff(); // 消除报警后关闭灯带
-        Debug_Printf("[SYS] Fault Lockout Cleared by User Key! Sent CMD_STOP & Entering SYS_STEP_TOTAL_DONE for Archiving & Auto-Align...\r\n");
+        Debug_Printf("[SYS] Fault Lockout Cleared by User Key! Sent CMD_FAULT_RESET & CMD_STOP to Motors...\r\n");
         return true;
     } else {
         Debug_Printf("[SYS] User Acknowledge Ignored: 485 Comm Fault Still Active!\r\n");
@@ -1350,9 +1354,13 @@ void APP_ControlTask(void *pvParameters)
                         last_sent_speed[i]                           = 0;
                     }
 
+                    // 通信恢复时先下发故障复位清除驱动器潜在红灯，随后确保停机
+                    Motor_Ctrl_Msg_t reset_msg = {CMD_FAULT_RESET, 0x0F, 0};
+                    xQueueSend(g_motor_ctrl_queue, &reset_msg, pdMS_TO_TICKS(10));
+
                     Motor_Ctrl_Msg_t stop_msg = {CMD_STOP, 0x0F, 0};
                     xQueueSend(g_motor_ctrl_queue, &stop_msg, pdMS_TO_TICKS(10));
-                    Debug_Printf("[SYS] 485 Comm Restored: Sent CMD_STOP to Motors, Keeping FAULT_STOP Alarm Active Until User Acknowledge...\r\n");
+                    Debug_Printf("[SYS] 485 Comm Restored: Sent CMD_FAULT_RESET & CMD_STOP to Motors, Keeping FAULT_STOP Alarm Active Until User Acknowledge...\r\n");
                 }
 
                 // 3. 场景 B：遥控/外接信号按键触发取消报警

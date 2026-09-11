@@ -28,9 +28,10 @@
 
 // 系统故障代码定义 (用于全系统状态监控与数码管 ErrX 报警显示)
 #define FAULT_CODE_NONE         0 // 正常无故障
-#define FAULT_CODE_STALL        1 // 过流堵转 (Err1, 涵盖：上升堵转、微调堵转、调平堵转、反弹中过流)
+#define FAULT_CODE_STALL        1 // 过流堵转 (Err1: 上升堵转、微调堵转、调平堵转、反弹中再过流)
 #define FAULT_CODE_COMM         2 // 485 通信中断故障 (Err2)
 #define FAULT_CODE_SYNC         3 // 运行同步差超限/调平超时发散故障 (Err3)
+#define FAULT_CODE_PINCH        4 // 下降防夹反弹故障 (Err4: 仅下降受阻触发防夹反弹脱困)
 #define FAULT_CODE_DRIVER_ALARM 6 // 驱动器本体报警 (Err6, 内部状态字置位故障中)
 
 // ===================================================================

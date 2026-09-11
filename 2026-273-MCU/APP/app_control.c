@@ -906,34 +906,24 @@ void APP_ControlTask(void *pvParameters)
                         // 【安全脱困策略分流】：
                         // 1. 仅当四轴处于“同步下降 (CMD_REVERSE)”过程中过流，为了防止台面压人/卡物，触发“过流反弹”防夹脱困
                         if (current_cmd == CMD_REVERSE) {
-                            g_sys_context.rebound_cmd           = CMD_FORWARD; // 向上反弹退避
+                            g_sys_context.system_fault_code     = FAULT_CODE_PINCH; // 下降防夹反弹专属故障码 (Err4)
+                            g_sys_context.rebound_cmd           = CMD_FORWARD;      // 向上反弹退避
                             g_sys_context.rebound_target_counts = (uint32_t)roundf((float)app_data.rebound_travel_mm * g_sys_context.counts_per_mm);
                             g_sys_context.active_motor_mask     = 0x0F;
 
-                            // 反弹速度设为正常计算速度的一半 (若过小则保底 100 RPM)
-                            uint16_t rebound_speed_rpm = g_sys_context.calc_base_rpm / 2;
-                            if (rebound_speed_rpm < 100) rebound_speed_rpm = 100;
-
+                            // 【安全制动第一步】：立即全轴下发 CMD_STOP (0x0009) 刹车减速，消除下降惯性，防反接冲击
                             for (int i = 0; i < 4; i++) {
-                                g_sys_context.rebound_start_hall[i]              = g_sys_context.g_motor_status[i].hall_value;
-                                g_sys_context.g_motor_status[i].start_drive_hall = g_sys_context.g_motor_status[i].hall_value;
-                                g_sys_context.g_motor_status[i].base_abs_hall    = g_sys_context.g_motor_status[i].current_abs_hall;
-                                g_sys_context.g_motor_status[i].target_cmd       = g_sys_context.rebound_cmd;
-                                g_sys_context.g_motor_status[i].target_speed     = rebound_speed_rpm;
-                                g_sys_context.g_motor_status[i].stall_cnt        = 0;
+                                g_sys_context.g_motor_status[i].target_cmd   = CMD_STOP;
+                                g_sys_context.g_motor_status[i].target_speed = 0;
+                                last_sent_speed[i]                           = 0;
                             }
 
-                            Motor_Ctrl_Msg_t speed_msg = {CMD_SET_SPEED, 0x0F, rebound_speed_rpm};
-                            Motor_Ctrl_Msg_t cmd_msg   = {(Motor_Cmd_Type_t)g_sys_context.rebound_cmd, 0x0F, 0};
-
-                            MID_Brake_Release(); // 453 机械抱闸：确保抱闸处于释放状态
-
-                            xQueueSend(g_motor_ctrl_queue, &speed_msg, pdMS_TO_TICKS(10));
-                            xQueueSend(g_motor_ctrl_queue, &cmd_msg, pdMS_TO_TICKS(10));
+                            Motor_Ctrl_Msg_t stop_msg = {CMD_STOP, 0x0F, 0};
+                            MID_Brake_Release(); // 保持机械抱闸释放，准备反弹
+                            xQueueSend(g_motor_ctrl_queue, &stop_msg, pdMS_TO_TICKS(10));
 
                             g_sys_context.system_step = SYS_STEP_TOTAL_REBOUND;
-                            Debug_Printf("[SYS] Downward Pinch Stall! Starting Upward Rebound: Speed=%dRPM, Distance=%dmm (TargetCounts=%d)...\r\n",
-                                         rebound_speed_rpm, app_data.rebound_travel_mm, g_sys_context.rebound_target_counts);
+                            Debug_Printf("[SYS] Downward Pinch Stall! Step 1: Emergency Braking Cushion (80ms) for Rebound...\r\n");
                         } else {
                             // 2. “同步上升 (CMD_FORWARD)”过程中过流：台面顶阻/超重，绝不反弹！立即刹车急停进入 FAULT_STOP 锁死 (Err1)
                             g_sys_context.system_fault_code = FAULT_CODE_STALL;
@@ -1012,6 +1002,15 @@ void APP_ControlTask(void *pvParameters)
 
             // === SYS_STEP_TOTAL_REBOUND 阶段：堵转后整体向反方向反弹运行中 ===
             case SYS_STEP_TOTAL_REBOUND: {
+                static uint8_t s_rebound_brake_ticks = 4; // 4 帧 x 20ms = 80ms 刹车减速缓冲
+                static bool s_rebound_active         = false;
+
+                if (!s_rebound_active) {
+                    s_rebound_active      = true;
+                    s_rebound_brake_ticks = 4; // 80ms 刹停缓冲
+                    Debug_Printf("[SYS] TOTAL_REBOUND: Entering 80ms Braking Cushion...\r\n");
+                }
+
                 // 1. 无条件调用通用解算函数更新 4 轴绝对高度、伸出行程及极差
                 APP_Control_UpdateStateAndStatistics();
 
@@ -1026,6 +1025,7 @@ void APP_ControlTask(void *pvParameters)
                     }
                 }
                 if (has_comm_err) {
+                    s_rebound_active = false;
                     xQueueReset(g_motor_ctrl_queue);
                     for (int i = 0; i < 4; i++) {
                         g_sys_context.g_motor_status[i].target_cmd   = CMD_STOP;
@@ -1040,8 +1040,42 @@ void APP_ControlTask(void *pvParameters)
                     break;
                 }
 
-                // 3. 安防防线 2：反弹过程中四轴同步差超限（防止个别柱子卡死不退导致台面严重倾斜拉偏）
+                // 3. 刹车减速缓冲期处理：电机刹停减速至 0，消除反接与电气冲击
+                if (s_rebound_brake_ticks > 0) {
+                    s_rebound_brake_ticks--;
+                    if (s_rebound_brake_ticks == 0) {
+                        // 刹车缓冲结束：此时电机已完全静止！刷新真实霍尔零点基准，正式启动向上反弹
+                        uint16_t rebound_speed_rpm = g_sys_context.calc_base_rpm / 2;
+                        if (rebound_speed_rpm < 100) rebound_speed_rpm = 100;
+
+                        for (int i = 0; i < 4; i++) {
+                            g_sys_context.rebound_start_hall[i]              = g_sys_context.g_motor_status[i].hall_value;
+                            g_sys_context.g_motor_status[i].start_drive_hall = g_sys_context.g_motor_status[i].hall_value;
+                            g_sys_context.g_motor_status[i].base_abs_hall    = g_sys_context.g_motor_status[i].current_abs_hall;
+                            g_sys_context.g_motor_status[i].target_cmd       = g_sys_context.rebound_cmd;
+                            g_sys_context.g_motor_status[i].target_speed     = rebound_speed_rpm;
+                            g_sys_context.g_motor_status[i].stall_cnt        = 0;
+                            last_sent_speed[i]                               = -1;
+                        }
+
+                        Motor_Ctrl_Msg_t speed_msg = {CMD_SET_SPEED, 0x0F, rebound_speed_rpm};
+                        Motor_Ctrl_Msg_t cmd_msg   = {(Motor_Cmd_Type_t)g_sys_context.rebound_cmd, 0x0F, 0};
+
+                        MID_Brake_Release(); // 453 机械抱闸：确保抱闸处于释放状态
+
+                        xQueueSend(g_motor_ctrl_queue, &speed_msg, pdMS_TO_TICKS(10));
+                        xQueueSend(g_motor_ctrl_queue, &cmd_msg, pdMS_TO_TICKS(10));
+
+                        Debug_Printf("[SYS] Braking Buffer Complete! Starting Upward Rebound: Speed=%dRPM, Distance=%dmm (TargetCounts=%d)...\r\n",
+                                     rebound_speed_rpm, app_data.rebound_travel_mm, g_sys_context.rebound_target_counts);
+                    }
+                    APP_Control_DebugPrint();
+                    break; // 缓冲期间不进行 PID 纠偏及反弹距离累加，等待刹停完成
+                }
+
+                // 4. 安防防线 2：反弹过程中四轴同步差超限（防止个别柱子卡死不退导致台面严重倾斜拉偏）
                 if (g_sys_context.max_travel_diff > (float)g_sys_context.max_sync_diff_hall) {
+                    s_rebound_active = false;
                     xQueueReset(g_motor_ctrl_queue);
                     for (int i = 0; i < 4; i++) {
                         g_sys_context.g_motor_status[i].target_cmd   = CMD_STOP;
@@ -1076,6 +1110,7 @@ void APP_ControlTask(void *pvParameters)
                     }
                 }
                 if (has_rebound_stall) {
+                    s_rebound_active = false;
                     xQueueReset(g_motor_ctrl_queue);
                     for (int i = 0; i < 4; i++) {
                         g_sys_context.g_motor_status[i].target_cmd   = CMD_STOP;
@@ -1153,6 +1188,7 @@ void APP_ControlTask(void *pvParameters)
 
                 // 8. 反弹完成：直接下发全轴 STOP，切入 SYS_STEP_TOTAL_DONE 统一接管停稳判定与 Flash 固化！
                 if (rebound_done) {
+                    s_rebound_active = false;
                     xQueueReset(g_motor_ctrl_queue);
                     for (int i = 0; i < 4; i++) {
                         g_sys_context.g_motor_status[i].target_cmd   = CMD_STOP;
@@ -1290,12 +1326,19 @@ void APP_ControlTask(void *pvParameters)
                         MID_Brake_Lock(); // 驱动器报警抱死自锁
                         Debug_Printf("[SYS] Stop Check: Driver Alarm Active! Entering SYS_STEP_FAULT_STOP Lockout (Err6).\r\n");
                     }
-                    // C. 过流堵转故障检查 (包括：上升堵转、微调堵转、反弹中过流、调平堵转)
+                    // C. 过流堵转故障检查 (包括：上升堵转、微调堵转、反弹中再过流、调平堵转)
                     else if (g_sys_context.system_fault_code == FAULT_CODE_STALL) {
                         g_sys_context.system_fault_code = FAULT_CODE_STALL;
                         g_sys_context.system_step       = SYS_STEP_FAULT_STOP;
                         MID_Brake_Lock(); // 过流堵转抱死自锁
                         Debug_Printf("[SYS] Stop Check: OverCurrent Stall Active! Entering SYS_STEP_FAULT_STOP Lockout (Err1).\r\n");
+                    }
+                    // D. 下降防夹反弹停机检查 (退避 30mm 结束停稳归档)
+                    else if (g_sys_context.system_fault_code == FAULT_CODE_PINCH) {
+                        g_sys_context.system_fault_code = FAULT_CODE_PINCH;
+                        g_sys_context.system_step       = SYS_STEP_FAULT_STOP;
+                        MID_Brake_Lock(); // 防夹反弹完成抱死自锁
+                        Debug_Printf("[SYS] Stop Check: Downward Pinch Rebound Done! Entering SYS_STEP_FAULT_STOP Lockout (Err4).\r\n");
                     }
                     // D. 同步故障检查 (包括：反弹同步差超限、调平超时/发散、运行同步差严重超限)
                     else if (g_sys_context.system_fault_code == FAULT_CODE_SYNC) {
@@ -1338,8 +1381,8 @@ void APP_ControlTask(void *pvParameters)
 
             // === SYS_STEP_AUTO_ALIGN 阶段：四轴自主台面平行恢复 (自愈重平) ===
             case SYS_STEP_AUTO_ALIGN: {
-                static bool s_align_active = false;
-                static float s_best_align_diff = 999999.0f;
+                static bool s_align_active          = false;
+                static float s_best_align_diff      = 999999.0f;
                 static uint16_t s_no_progress_ticks = 0;
 
                 // 初次进入 AUTO_ALIGN 阶段时初始化基准与看门狗
@@ -1440,7 +1483,7 @@ void APP_ControlTask(void *pvParameters)
                     s_best_align_diff   = g_sys_context.max_travel_diff;
                     s_no_progress_ticks = 0; // 差距在实质缩小，持续刷新 10 秒无进展计时器！
                 } else {
-                    s_no_progress_ticks++;   // 差距停滞或未缩小，累计无进展时间
+                    s_no_progress_ticks++; // 差距停滞或未缩小，累计无进展时间
                 }
 
                 bool is_diverged = (g_sys_context.max_travel_diff > (float)g_sys_context.max_sync_diff_hall * 1.5f);
@@ -1595,7 +1638,7 @@ void APP_ControlTask(void *pvParameters)
                     if (any_driver_fault) {
                         s_driver_recovered = false;
                         if (++s_auto_reset_timer >= 20) { // 20 帧 x 20ms = 400ms
-                            s_auto_reset_timer = 0;
+                            s_auto_reset_timer         = 0;
                             Motor_Ctrl_Msg_t reset_msg = {CMD_FAULT_RESET, 0x0F, 0};
                             xQueueSend(g_motor_ctrl_queue, &reset_msg, 0);
                             Debug_Printf("[SYS] Retry CMD_FAULT_RESET (0x0007)... DriverFaults=[%d,%d,%d,%d]\r\n",

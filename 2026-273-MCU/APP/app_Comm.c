@@ -55,22 +55,43 @@ static void Motor_ReadCurrent_Callback_Generic(uint8_t motor_idx, uint16_t *pDat
     }
 }
 
-#define DEFINE_MOTOR_CALLBACKS(num, idx)                                            \
-    static void Motor##num##_Cmd_Callback(uint8_t success)                          \
-    {                                                                               \
-        Motor_Cmd_Callback_Generic(idx, success);                                   \
-    }                                                                               \
-    static void Motor##num##_Speed_Callback(uint8_t success)                        \
-    {                                                                               \
-        Motor_Speed_Callback_Generic(idx, success);                                 \
-    }                                                                               \
-    static void Motor##num##_ReadHall_Callback(uint16_t *pData, uint8_t success)    \
-    {                                                                               \
-        Motor_ReadHall_Callback_Generic(idx, pData, success);                       \
-    }                                                                               \
-    static void Motor##num##_ReadCurrent_Callback(uint16_t *pData, uint8_t success) \
-    {                                                                               \
-        Motor_ReadCurrent_Callback_Generic(idx, pData, success);                    \
+static void Motor_ReadDriverStatus_Callback_Generic(uint8_t motor_idx, uint16_t *pData, uint8_t success)
+{
+    if (success && pData != NULL) {
+        // 抓取驱动器返回的状态字与当前故障码:
+        // pData[0]: 0x2100 (驱动器状态字1: 1正转 2反转 3停机 4故障 5OFF)
+        // pData[1]: 0x2101 (驱动器状态字2)
+        // pData[2]: 0x2102 (驱动器当前故障代码: 0无故障, 1~36对应故障代码)
+        g_sys_context.g_motor_status[motor_idx].driver_status_word = pData[0];
+        g_sys_context.g_motor_status[motor_idx].driver_fault_code  = pData[2];
+        g_sys_context.g_motor_status[motor_idx].comm_error         = 0;
+    } else {
+        if (g_sys_context.g_motor_status[motor_idx].comm_error < 255) {
+            g_sys_context.g_motor_status[motor_idx].comm_error++;
+        }
+    }
+}
+
+#define DEFINE_MOTOR_CALLBACKS(num, idx)                                                 \
+    static void Motor##num##_Cmd_Callback(uint8_t success)                               \
+    {                                                                                    \
+        Motor_Cmd_Callback_Generic(idx, success);                                        \
+    }                                                                                    \
+    static void Motor##num##_Speed_Callback(uint8_t success)                             \
+    {                                                                                    \
+        Motor_Speed_Callback_Generic(idx, success);                                      \
+    }                                                                                    \
+    static void Motor##num##_ReadHall_Callback(uint16_t *pData, uint8_t success)         \
+    {                                                                                    \
+        Motor_ReadHall_Callback_Generic(idx, pData, success);                            \
+    }                                                                                    \
+    static void Motor##num##_ReadCurrent_Callback(uint16_t *pData, uint8_t success)      \
+    {                                                                                    \
+        Motor_ReadCurrent_Callback_Generic(idx, pData, success);                         \
+    }                                                                                    \
+    static void Motor##num##_ReadDriverStatus_Callback(uint16_t *pData, uint8_t success) \
+    {                                                                                    \
+        Motor_ReadDriverStatus_Callback_Generic(idx, pData, success);                    \
     }
 
 DEFINE_MOTOR_CALLBACKS(1, 0)
@@ -89,6 +110,9 @@ static const modbus_read_callback_t Motor_ReadHall_Callbacks[4] = {
 
 static const modbus_read_callback_t Motor_ReadCurrent_Callbacks[4] = {
     Motor1_ReadCurrent_Callback, Motor2_ReadCurrent_Callback, Motor3_ReadCurrent_Callback, Motor4_ReadCurrent_Callback};
+
+static const modbus_read_callback_t Motor_ReadDriverStatus_Callbacks[4] = {
+    Motor1_ReadDriverStatus_Callback, Motor2_ReadDriverStatus_Callback, Motor3_ReadDriverStatus_Callback, Motor4_ReadDriverStatus_Callback};
 
 // ========================== 硬件初始化写应答跟踪 ==========================
 
@@ -317,7 +341,7 @@ static void App_Comm_InitHardwareSequence(void)
         {0x070C, (uint16_t)(DRIVER_INIT_STALL_CURRENT_PERCENT * 10), "Stall Current Limit", 0}, /* F07.12: 堵转限制电流 (相对额定电流百分比*10, 默认 1200 = 120.0%) */
         {0x0709, DRIVER_FAULT_AUTO_RESET_TIME, "Auto Reset Time", 0},                           /* F07.09: 故障自动复位间隔 5.0s (写入 50，防频繁冲击) */
         {0x070A, DRIVER_FAULT_AUTO_RESET_TIMES, "Auto Reset Times", 0},                         /* F07.10: 故障自动复位次数 (10次重试自愈) */
-        {0x0804, DRIVER_485_TIMEOUT_TIME_VAL, "485 Timeout 0.1s", 0},                           /* F08.04: 485 通信超时故障时间 0.1s (写入 1，100ms 极速停机) */
+        {0x0804, DRIVER_485_TIMEOUT_TIME_VAL, "485 Timeout 0.2s", 0},                           /* F08.04: 485 通信超时故障时间 0.2s (写入 2，200ms 极速停机) */
         {0x0805, DRIVER_485_TIMEOUT_ACTION, "Stop on Comm Loss", 0},                            /* F08.05: 485 传输错误处理 (0: 报警并自由停机) */
         {0x2006, 0x0002, "Run Mode", 0},
         {0x2007, 0x0003, "Speed Mode", 0},
@@ -357,6 +381,8 @@ void APP_CommTask(void *pvParameters)
     TickType_t xLastWakeTime            = xTaskGetTickCount();
     static uint16_t timer_4ms_cnt       = 0;
     static uint16_t current_poll_cnt[4] = {0, 0, 0, 0};
+    static uint16_t fault_poll_cnt[4]   = {0, 0, 0, 0};
+    static uint16_t standby_poll_cnt[4] = {0, 0, 0, 0};
 
     static int16_t pending_speed[4];
     static bool has_pending_speed[4] = {false, false, false, false};
@@ -424,17 +450,46 @@ void APP_CommTask(void *pvParameters)
                         has_pending_cmd[i] = false;
                     }
                 }
-                // Tier 3 & Tier 4: 无高优先级控制指令时，各通道独立下发周期采样
+                // Tier 3 & Tier 4: 无高优先级控制指令时，根据系统运行状态执行针对性轮询与采样
                 else {
-                    current_poll_cnt[i]++;
-                    if (current_poll_cnt[i] >= CURRENT_POLL_INTERVAL_FRAMES) {
-                        // Tier 3: 当达到抽样帧间隔时下发电流读取 (0x3004)，仅当成功下发后才复位该通道计数
-                        if (MID_Modbus_ReadRegs(m, 0x3004, 1, Motor_ReadCurrent_Callbacks[i])) {
-                            current_poll_cnt[i] = 0;
+                    if (g_sys_context.system_step == SYS_STEP_FAULT_STOP) {
+                        // 【故障停机阶段】：主动连续查询 4 轴驱动器状态字与故障代码 (0x2100, 3 regs: 0x2100, 0x2101, 0x2102)
+                        // 每 48ms (12 帧 x 4ms) 轮询一次，既维持 485 链路活跃心跳，又极速感知驱动器红灯消除与自愈状态
+                        fault_poll_cnt[i]++;
+                        if (fault_poll_cnt[i] >= 12) {
+                            if (MID_Modbus_ReadRegs(m, 0x2100, 3, Motor_ReadDriverStatus_Callbacks[i])) {
+                                fault_poll_cnt[i] = 0;
+                            }
+                        }
+                    } else if (g_sys_context.system_step == SYS_STEP_READY) {
+                        // 【就绪待命阶段】：1.0s 极低频巡检驱动器状态 (250 帧 x 4ms = 1000ms)，主动捕获驱动器待机隐患
+                        standby_poll_cnt[i]++;
+                        if (standby_poll_cnt[i] >= 250) {
+                            if (MID_Modbus_ReadRegs(m, 0x2100, 3, Motor_ReadDriverStatus_Callbacks[i])) {
+                                standby_poll_cnt[i] = 0;
+                            }
+                        } else {
+                            // 其余空闲缝隙维持 485 心跳与位置读取 (严防 100ms 超时)
+                            current_poll_cnt[i]++;
+                            if (current_poll_cnt[i] >= CURRENT_POLL_INTERVAL_FRAMES) {
+                                if (MID_Modbus_ReadRegs(m, 0x3004, 1, Motor_ReadCurrent_Callbacks[i])) {
+                                    current_poll_cnt[i] = 0;
+                                }
+                            } else {
+                                MID_Modbus_ReadRegs(m, 0x3013, 2, Motor_ReadHall_Callbacks[i]);
+                            }
                         }
                     } else {
-                        // Tier 4: 其余空闲缝隙无条件读取 0x3013 霍尔位置
-                        MID_Modbus_ReadRegs(m, 0x3013, 2, Motor_ReadHall_Callbacks[i]);
+                        // 【运行控制阶段】(TOTAL_FORWARD, TOTAL_REVERSE, TOTAL_RUNNING, TOTAL_REBOUND, SINGLE_TUNE 等)：
+                        // 绝对不查 0x2100 状态字！100% 串口带宽倾斜于 0x3013 霍尔位置与 0x3004 堵转过流！
+                        current_poll_cnt[i]++;
+                        if (current_poll_cnt[i] >= CURRENT_POLL_INTERVAL_FRAMES) {
+                            if (MID_Modbus_ReadRegs(m, 0x3004, 1, Motor_ReadCurrent_Callbacks[i])) {
+                                current_poll_cnt[i] = 0;
+                            }
+                        } else {
+                            MID_Modbus_ReadRegs(m, 0x3013, 2, Motor_ReadHall_Callbacks[i]);
+                        }
                     }
                 }
             }

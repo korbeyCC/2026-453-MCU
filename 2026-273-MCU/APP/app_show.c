@@ -56,12 +56,10 @@ void APP_ShowTask(void *pvParameters)
         }
 #else
         // 2026-453 状态指示灯 (PA12) 与运行蜂鸣器 (PD2) 联动控制
-        if (g_sys_context.system_step == SYS_STEP_FAULT_STOP) {
+        if (g_sys_context.system_step == SYS_STEP_FAULT_STOP || g_sys_context.system_fault_code != FAULT_CODE_NONE) {
             MID_RunLED_SetMode(RUN_LED_MODE_BLINK_FAULT);
             MID_Buzzer_SetMode(BUZZER_MODE_ALARM);
         } else if (g_sys_context.system_step == SYS_STEP_TOTAL_RUNNING ||
-                   g_sys_context.system_step == SYS_STEP_TOTAL_FORWARD ||
-                   g_sys_context.system_step == SYS_STEP_TOTAL_REVERSE ||
                    g_sys_context.system_step == SYS_STEP_SINGLE_TUNE ||
                    g_sys_context.system_step == SYS_STEP_TOTAL_REBOUND ||
                    g_sys_context.system_step == SYS_STEP_AUTO_ALIGN) {
@@ -88,9 +86,45 @@ void APP_ShowTask(void *pvParameters)
         }
 
         // ====================================================
-        // 最高优先级 1：故障急停报警显示 (显示 ErrX, 如 Err1:堵转, Err2:通信中断, Err3:同步差超限)
+        // 最高优先级 1：反弹阶段交替显示 (500ms 实时位置 <-> 500ms 错误码)
         // ====================================================
-        if (g_sys_context.system_step == SYS_STEP_FAULT_STOP) {
+        if (g_sys_context.system_step == SYS_STEP_TOTAL_REBOUND) {
+            if (flicker_cnt < 10) {
+                // 前 500ms 显示当前立柱实时高度 (mm)
+                uint8_t m_idx = dim2 % 4;
+                float abs_mm  = 0.0f;
+                if (g_sys_context.counts_per_mm > 0.0f) {
+                    abs_mm = (float)g_sys_context.g_motor_status[m_idx].current_abs_hall / g_sys_context.counts_per_mm;
+                }
+                int32_t val_mm = (int32_t)roundf(abs_mm);
+                if (val_mm < 0) val_mm = 0;
+                if (val_mm > 9999) val_mm = 9999;
+
+                SEG_W[0] = (uint8_t)((val_mm / 1000) % 10);
+                SEG_W[1] = (uint8_t)((val_mm / 100) % 10);
+                SEG_W[2] = (uint8_t)((val_mm / 10) % 10);
+                SEG_W[3] = (uint8_t)(val_mm % 10);
+
+                SEG_Flag[0] = SEG_Flag[1] = SEG_Flag[2] = SEG_Flag[3] = 0;
+                SEG_Flag[m_idx] = 1; // 点亮当前电机小数点
+            } else {
+                // 后 500ms 显示故障代码 (如 Err4)
+                SEG_Flag[0] = SEG_Flag[1] = SEG_Flag[2] = SEG_Flag[3] = 0;
+                SEG_W[0] = 14; // E
+                SEG_W[1] = 28; // r
+                SEG_W[2] = 28; // r
+                uint8_t fault = g_sys_context.system_fault_code;
+                if (fault >= 1 && fault <= 9) {
+                    SEG_W[3] = fault;
+                } else {
+                    SEG_W[3] = 18; // -
+                }
+            }
+        }
+        // ====================================================
+        // 优先级 2：故障急停报警显示 (显示 ErrX, 如 Err1:堵转, Err2:通信中断, Err3:同步差超限, Err4:防夹反弹)
+        // ====================================================
+        else if (g_sys_context.system_step == SYS_STEP_FAULT_STOP || g_sys_context.system_fault_code != FAULT_CODE_NONE) {
             SEG_Flag[0] = SEG_Flag[1] = SEG_Flag[2] = SEG_Flag[3] = 0;
             SEG_W[0] = 14; // E
             SEG_W[1] = 28; // r

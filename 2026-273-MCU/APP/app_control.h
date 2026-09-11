@@ -25,6 +25,8 @@
 
 #define AUTO_ALIGN_SPEED_RPM         300  // 四轴自主台面平行恢复基准转速 (RPM)
 #define AUTO_ALIGN_TARGET_DIFF_RATIO 0.3f // 对齐极差目标收敛比例 (收敛至 max_sync_diff_hall * 0.3 以内完成)
+#define AUTO_ALIGN_TIMEOUT_SEC       6    // 调平无进展看门狗超时时间 (秒)
+#define AUTO_ALIGN_TIMEOUT_TICKS     (AUTO_ALIGN_TIMEOUT_SEC * 1000 / 20) // 调平无进展看门狗总帧数 (6s * 1000 / 20ms = 300 帧)
 
 // 系统故障代码定义 (用于全系统状态监控与数码管 ErrX 报警显示)
 #define FAULT_CODE_NONE         0 // 正常无故障

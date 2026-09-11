@@ -1477,17 +1477,20 @@ void APP_ControlTask(void *pvParameters)
                 }
 
                 // -------------------------------------------------------------
-                // 安防防线 3：差距未缩小时才计时，若差距在缩小则持续刷新 10 秒；极差发散亦立即保护
+                // 安防防线 3：差距未缩小时才计时，若差距在缩小则持续刷新看门狗 (6秒)；
+                // 自适应发散保护：当前极差比历史最优值恶化反弹超过 1 个同步允许差 (max_sync_diff_hall)，判定为走反发散
                 // -------------------------------------------------------------
                 if (g_sys_context.max_travel_diff < s_best_align_diff - 2.0f) {
                     s_best_align_diff   = g_sys_context.max_travel_diff;
-                    s_no_progress_ticks = 0; // 差距在实质缩小，持续刷新 10 秒无进展计时器！
+                    s_no_progress_ticks = 0; // 差距在实质缩小，持续刷新无进展看门狗计时器！
                 } else {
-                    s_no_progress_ticks++; // 差距停滞或未缩小，累计无进展时间
+                    s_no_progress_ticks++;   // 差距停滞或未缩小，累计无进展时间
                 }
 
-                bool is_diverged = (g_sys_context.max_travel_diff > (float)g_sys_context.max_sync_diff_hall * 1.5f);
-                if (s_no_progress_ticks >= 500 || is_diverged) {
+                // 自适应发散判定：反弹恶化超过 max_sync_diff_hall 即刻刹车，天然杜绝入口死锁且全程动态紧缩
+                bool is_diverged = (g_sys_context.max_travel_diff > s_best_align_diff + (float)g_sys_context.max_sync_diff_hall);
+
+                if (s_no_progress_ticks >= AUTO_ALIGN_TIMEOUT_TICKS || is_diverged) {
                     s_align_active = false;
                     xQueueReset(g_motor_ctrl_queue);
                     for (int i = 0; i < 4; i++) {
@@ -1499,9 +1502,9 @@ void APP_ControlTask(void *pvParameters)
                     g_sys_context.system_fault_code = FAULT_CODE_SYNC; // 归为同步故障 (Err3)
                     APP_Control_PrepareStopSettling(0x0F, SYS_STEP_TOTAL_DONE);
                     xQueueSend(g_motor_ctrl_queue, &stop_msg, pdMS_TO_TICKS(10));
-                    Debug_Printf("[ERR] Auto-Align Failed: %s (Diff=%.1f, NoProgressTicks=%d)! Entering TOTAL_DONE -> Lockout (Err3).\r\n",
-                                 is_diverged ? "Sync Diff Diverged" : "10s No-Progress Timeout",
-                                 g_sys_context.max_travel_diff, s_no_progress_ticks);
+                    Debug_Printf("[ERR] Auto-Align Failed: %s (Diff=%.1f, Best=%.1f, Ticks=%d/%d)! Entering TOTAL_DONE -> Lockout (Err3).\r\n",
+                                 is_diverged ? "Sync Diff Diverged (Rebound > SyncLimit)" : "No-Progress Timeout (6s)",
+                                 g_sys_context.max_travel_diff, s_best_align_diff, s_no_progress_ticks, AUTO_ALIGN_TIMEOUT_TICKS);
                     break;
                 }
 

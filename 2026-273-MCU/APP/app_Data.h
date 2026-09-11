@@ -4,16 +4,16 @@
 #include "app_main.h"
 
 // 驱动器硬件参数与开机配置基准
-#define DRIVER_RATED_STALL_CURRENT_DECI_A      750   // 驱动器额定堵转电流基准: 7.50A (单位: 0.01A)
-#define DRIVER_INIT_STALL_CURRENT_PERCENT      120   // 开机 485 配置百分比: 120% (对应 F07.12 寄存器值 1200)
-#define DRIVER_FAULT_AUTO_RESET_TIME           50    // F07.09: 故障自动复位间隔 5.0s (单位 0.1s, 写入 50，防机械频繁冲击)
-#define DRIVER_FAULT_AUTO_RESET_TIMES          10    // F07.10: 故障自动复位次数 (配置 10 次自动重试自愈)
-#define DRIVER_485_TIMEOUT_TIME_VAL            1     // F08.04: 485 通信超时故障时间 0.1s (单位 0.1s, 写入 1，100ms 极速停机)
-#define DRIVER_485_TIMEOUT_ACTION              0     // F08.05: 485 传输错误处理 (0: 报警并停机，实测固件仅支持 0)
+#define DRIVER_RATED_STALL_CURRENT_DECI_A 750 // 驱动器额定堵转电流基准: 7.50A (单位: 0.01A)
+#define DRIVER_INIT_STALL_CURRENT_PERCENT 120 // 开机 485 配置百分比: 120% (对应 F07.12 寄存器值 1200)
+#define DRIVER_FAULT_AUTO_RESET_TIME      50  // F07.09: 故障自动复位间隔 5.0s (单位 0.1s, 写入 50，防机械频繁冲击)
+#define DRIVER_FAULT_AUTO_RESET_TIMES     10  // F07.10: 故障自动复位次数 (配置 10 次自动重试自愈)
+#define DRIVER_485_TIMEOUT_TIME_VAL       2   // F08.04: 485 通信超时故障时间 0.2s (单位 0.1s, 写入 2，200ms 极速停机)
+#define DRIVER_485_TIMEOUT_ACTION         0   // F08.05: 485 传输错误处理 (0: 报警并停机，实测固件仅支持 0)
 
 // 主控堵转电流阈值可调范围 (单位: 0.01A)
-#define STALL_CURRENT_THRESHOLD_MIN            50    // 下限: 0.50A
-#define STALL_CURRENT_THRESHOLD_MAX            ((DRIVER_RATED_STALL_CURRENT_DECI_A * DRIVER_INIT_STALL_CURRENT_PERCENT) / 100) // 上限: 9.00A (900)
+#define STALL_CURRENT_THRESHOLD_MIN 50                                                                              // 下限: 0.50A
+#define STALL_CURRENT_THRESHOLD_MAX ((DRIVER_RATED_STALL_CURRENT_DECI_A * DRIVER_INIT_STALL_CURRENT_PERCENT) / 100) // 上限: 9.00A (900)
 
 // 掉电保存高度行程等数据包结构体 (32位对齐)
 typedef struct

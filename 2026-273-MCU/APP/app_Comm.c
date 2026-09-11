@@ -341,7 +341,7 @@ static void App_Comm_InitHardwareSequence(void)
         {0x070C, (uint16_t)(DRIVER_INIT_STALL_CURRENT_PERCENT * 10), "Stall Current Limit", 0}, /* F07.12: 堵转限制电流 (相对额定电流百分比*10, 默认 1200 = 120.0%) */
         {0x0709, DRIVER_FAULT_AUTO_RESET_TIME, "Auto Reset Time", 0},                           /* F07.09: 故障自动复位间隔 5.0s (写入 50，防频繁冲击) */
         {0x070A, DRIVER_FAULT_AUTO_RESET_TIMES, "Auto Reset Times", 0},                         /* F07.10: 故障自动复位次数 (10次重试自愈) */
-        {0x0804, DRIVER_485_TIMEOUT_TIME_VAL, "485 Timeout 0.1s", 0},                           /* F08.04: 485 通信超时故障时间 0.1s (写入 1，100ms 极速停机) */
+        {0x0804, DRIVER_485_TIMEOUT_TIME_VAL, "485 Timeout 0.2s", 0},                           /* F08.04: 485 通信超时故障时间 0.2s (写入 2，200ms 极速停机) */
         {0x0805, DRIVER_485_TIMEOUT_ACTION, "Stop on Comm Loss", 0},                            /* F08.05: 485 传输错误处理 (0: 报警并自由停机) */
         {0x2006, 0x0002, "Run Mode", 0},
         {0x2007, 0x0003, "Speed Mode", 0},

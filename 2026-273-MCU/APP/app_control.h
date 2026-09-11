@@ -27,15 +27,11 @@
 #define AUTO_ALIGN_TARGET_DIFF_RATIO 0.3f // 对齐极差目标收敛比例 (收敛至 max_sync_diff_hall * 0.3 以内完成)
 
 // 系统故障代码定义 (用于全系统状态监控与数码管 ErrX 报警显示)
-#define FAULT_CODE_NONE              0 // 正常无故障
-#define FAULT_CODE_STALL             1 // 运行过流堵转 (Err1)
-#define FAULT_CODE_COMM              2 // 485 通信中断故障 (Err2)
-#define FAULT_CODE_COMM_ERR          FAULT_CODE_COMM
-#define FAULT_CODE_SYNC              3 // 运行同步差超限故障 (Err3)
-#define FAULT_CODE_SYNC_ERR          FAULT_CODE_SYNC
-#define FAULT_CODE_REBOUND_STALL     4 // 反弹过程二次堵转 (Err4)
-#define FAULT_CODE_REBOUND_SYNC      5 // 反弹过程同步差超限/卡死倾斜 (Err5)
-#define FAULT_CODE_DRIVER_ALARM      6 // 驱动器本体报警 (Err6, 内部状态字置位故障中)
+#define FAULT_CODE_NONE         0 // 正常无故障
+#define FAULT_CODE_STALL        1 // 过流堵转 (Err1, 涵盖：上升堵转、微调堵转、调平堵转、反弹中过流)
+#define FAULT_CODE_COMM         2 // 485 通信中断故障 (Err2)
+#define FAULT_CODE_SYNC         3 // 运行同步差超限/调平超时发散故障 (Err3)
+#define FAULT_CODE_DRIVER_ALARM 6 // 驱动器本体报警 (Err6, 内部状态字置位故障中)
 
 // ===================================================================
 // 动态 PID 纠偏与基础初始化宏配置
@@ -65,26 +61,24 @@ typedef enum {
     SYS_STEP_TUNE_DONE,   // 微调/停机结束 (Flash 归档与对齐校验)
     SYS_STEP_AUTO_ALIGN,  // 四轴自主台面平行恢复 (自愈重平控制中)
 
-    SYS_STEP_TOTAL_FORWARD, // 同步上升起跑段
-    SYS_STEP_TOTAL_REVERSE, // 同步下降起跑段
-    SYS_STEP_TOTAL_RUNNING, // 整体运行调速阶段（定频 PID 泵）
-    SYS_STEP_TOTAL_REBOUND, // 堵转后整体反方向反弹阶段
-    SYS_STEP_TOTAL_DONE,    // 整体结束停机中 (Flash 归档中)
-    SYS_STEP_FAULT_STOP     // 致命故障急停状态
+    SYS_STEP_TOTAL_RUNNING, // 整体运行调速阶段（定频 PID 纠偏泵）
+    SYS_STEP_TOTAL_REBOUND, // 仅下降防夹触发的反方向反弹阶段 (退避 30mm)
+    SYS_STEP_TOTAL_DONE,    // 整体结束停机中 (逐轴静止判定与 Flash 归档)
+    SYS_STEP_FAULT_STOP     // 致命故障急停状态 (抱闸咬死自锁)
 } Motor_ctl_Step_t;
 
 /* 电机单通道运行与状态监控 */
 typedef struct {
-    int32_t base_abs_hall;     // 本次运行起步前的绝对高度基准 (有符号)
-    uint32_t start_drive_hall; // 本次起步时驱动器的原始无符号读数起点 (无符号 32 位)
-    int32_t current_abs_hall;  // 实时解算的绝对高度 (有符号，用于 PID 控制)
-    uint32_t hall_value;       // 驱动器最新原始无符号霍尔读数 (内存数据缓存)
-    uint16_t current_deciA;    // 驱动器当前输出电流 (单位: 0.01A)
+    int32_t base_abs_hall;       // 本次运行起步前的绝对高度基准 (有符号)
+    uint32_t start_drive_hall;   // 本次起步时驱动器的原始无符号读数起点 (无符号 32 位)
+    int32_t current_abs_hall;    // 实时解算的绝对高度 (有符号，用于 PID 控制)
+    uint32_t hall_value;         // 驱动器最新原始无符号霍尔读数 (内存数据缓存)
+    uint16_t current_deciA;      // 驱动器当前输出电流 (单位: 0.01A)
     uint16_t driver_status_word; // 驱动器状态字 1 (0x2100: 1正转 2反转 3停机 4故障 5OFF)
     uint16_t driver_fault_code;  // 驱动器当前故障代码 (0x2102: 0无故障, 1~36对应驱动器故障表)
-    uint8_t stall_cnt;         // 过流堵转判定计数器
-    uint8_t comm_error;        // 通信超时错误标记
-    uint8_t retry_cnt;         // 重试计数
+    uint8_t stall_cnt;           // 过流堵转判定计数器
+    uint8_t comm_error;          // 通信超时错误标记
+    uint8_t retry_cnt;           // 重试计数
 
     uint8_t target_cmd;      // 目标动作指令
     int16_t target_speed;    // 目标转速

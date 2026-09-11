@@ -56,12 +56,10 @@ void APP_ShowTask(void *pvParameters)
         }
 #else
         // 2026-453 状态指示灯 (PA12) 与运行蜂鸣器 (PD2) 联动控制
-        if (g_sys_context.system_step == SYS_STEP_FAULT_STOP) {
+        if (g_sys_context.system_step == SYS_STEP_FAULT_STOP || g_sys_context.system_fault_code != FAULT_CODE_NONE) {
             MID_RunLED_SetMode(RUN_LED_MODE_BLINK_FAULT);
             MID_Buzzer_SetMode(BUZZER_MODE_ALARM);
         } else if (g_sys_context.system_step == SYS_STEP_TOTAL_RUNNING ||
-                   g_sys_context.system_step == SYS_STEP_TOTAL_FORWARD ||
-                   g_sys_context.system_step == SYS_STEP_TOTAL_REVERSE ||
                    g_sys_context.system_step == SYS_STEP_SINGLE_TUNE ||
                    g_sys_context.system_step == SYS_STEP_TOTAL_REBOUND ||
                    g_sys_context.system_step == SYS_STEP_AUTO_ALIGN) {
@@ -90,7 +88,7 @@ void APP_ShowTask(void *pvParameters)
         // ====================================================
         // 最高优先级 1：故障急停报警显示 (显示 ErrX, 如 Err1:堵转, Err2:通信中断, Err3:同步差超限)
         // ====================================================
-        if (g_sys_context.system_step == SYS_STEP_FAULT_STOP) {
+        if (g_sys_context.system_step == SYS_STEP_FAULT_STOP || g_sys_context.system_fault_code != FAULT_CODE_NONE) {
             SEG_Flag[0] = SEG_Flag[1] = SEG_Flag[2] = SEG_Flag[3] = 0;
             SEG_W[0] = 14; // E
             SEG_W[1] = 28; // r

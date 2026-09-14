@@ -256,8 +256,8 @@ void APP_MenuTask(void *pvParameters)
             // 维度 0：主界面 & 实时监测层 (dim1 == 0)
             // ====================================================
             else if (dim1 == 0) {
-                // 1. 短按 K6：轮播切换 4 轴实时读数 (Motor 0 -> 1 -> 2 -> 3 -> 0)
-                if (msg.key_id == MID_KEY_ID_K6 && msg.event == MID_KEY_EVT_LEASS) {
+                // 1. 短按 K1 或 K6：轮播切换 4 轴实时读数 (Motor 0 -> 1 -> 2 -> 3 -> 0)
+                if ((msg.key_id == MID_KEY_ID_K1 || msg.key_id == MID_KEY_ID_K6) && msg.event == MID_KEY_EVT_LEASS) {
                     dim2 = (dim2 + 1) % 4;
                     Debug_Printf("[SYS] Display Switched to Motor %d Absolute Hall/Travel.\r\n", dim2);
                 }

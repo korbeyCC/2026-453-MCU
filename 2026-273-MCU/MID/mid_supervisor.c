@@ -102,8 +102,16 @@ static Event_Result_t Filter_Level2_MenuFocus(const Sys_Event_t *p_evt)
         g_sys_context.system_step == SYS_STEP_TOTAL_RUNNING ||
         g_sys_context.system_step == SYS_STEP_TOTAL_REBOUND ||
         g_sys_context.system_step == SYS_STEP_AUTO_ALIGN) {
-        // 任意物理面板按键按下，作为打断意图直接送入控制任务邮箱
         if (p_evt->source == SYS_EVT_SRC_KEY) {
+            // 第一个按键 (K1 或 K6) 短按：放行给菜单任务，用于运行时随时切换查看各电机高度！
+            if ((p_evt->id == MID_KEY_ID_K1 || p_evt->id == MID_KEY_ID_K6) && p_evt->event_type == MID_KEY_EVT_LEASS) {
+#if SYS_SUPERVISOR_USE_FREERTOS
+                Sys_Supervisor_NotifyMenuKey(p_evt->id, p_evt->event_type, p_evt->count);
+#endif
+                return EVENT_CONSUMED; // 放行给菜单消费，不打断电机运行
+            }
+
+            // 其他物理面板按键或长按：作为打断意图直接送入控制任务邮箱
             if (p_evt->event_type == MID_KEY_EVT_LEASS || p_evt->event_type == MID_KEY_EVT_LONG || p_evt->event_type == MID_KEY_EVT_Long_REP) {
                 Sys_Mailbox_PostMotionCmd(SYS_MOTION_SRC_KEY, p_evt->id, p_evt->event_type);
                 return EVENT_CONSUMED;

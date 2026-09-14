@@ -1,4 +1,5 @@
 #include "mid_signal.h"
+#include "mid_supervisor.h"
 #include "task.h"
 
 static MID_SIGNAL_HandleTypeDef mid_signals[MID_SIGNAL_COUNT];
@@ -62,6 +63,19 @@ static bool MID_Signal_ReadPhysState(MID_Signal_ID id)
 
 static void MID_Signal_Report(MID_Signal_ID id, MID_Signal_EventType evt)
 {
+    // 1. 优先送入 LEPA 优先级管道进行栈直调拦截 (Level 0 急停、Level 1 消警、Level 2 菜单独占拦截)
+    Sys_Event_t sys_evt;
+    sys_evt.source     = SYS_EVT_SRC_SIGNAL;
+    sys_evt.id         = (uint8_t)id;
+    sys_evt.event_type = (uint8_t)evt;
+    sys_evt.count      = 0;
+    sys_evt.param      = 0;
+
+    if (Sys_Event_Dispatch(&sys_evt) == EVENT_CONSUMED) {
+        return; // 被高优先级拦截消费，终止下发至队列
+    }
+
+    // 2. 兜底兼容流入旧队列
     MID_SIGNAL_Msg msg;
     msg.signal_id = id;
     msg.event     = evt;

@@ -2,7 +2,7 @@
 #include "app_Data.h"
 #include "mid_Key.h"
 #include "app_Menu.h"
-#include "app_control.h"
+#include "mid_supervisor.h"
 #include "mid_run_led.h"
 #include "mid_buzzer.h"
 #include <math.h>
@@ -55,14 +55,12 @@ void APP_ShowTask(void *pvParameters)
             MID_Buzzer_Write(s_hw_test_state);
         }
 #else
-        // 2026-453 状态指示灯 (PA12) 与运行蜂鸣器 (PD2) 联动控制
-        if (g_sys_context.system_step == SYS_STEP_FAULT_STOP || g_sys_context.system_fault_code != FAULT_CODE_NONE) {
+        // 2026-453 状态指示灯 (PA12) 与运行蜂鸣器 (PD2) 联动控制 (接入中立视图模型)
+        Sys_Indicator_State_t ind = Sys_View_GetIndicatorState();
+        if (ind == SYS_IND_FAULT) {
             MID_RunLED_SetMode(RUN_LED_MODE_BLINK_FAULT);
             MID_Buzzer_SetMode(BUZZER_MODE_ALARM);
-        } else if (g_sys_context.system_step == SYS_STEP_TOTAL_RUNNING ||
-                   g_sys_context.system_step == SYS_STEP_SINGLE_TUNE ||
-                   g_sys_context.system_step == SYS_STEP_TOTAL_REBOUND ||
-                   g_sys_context.system_step == SYS_STEP_AUTO_ALIGN) {
+        } else if (ind == SYS_IND_RUNNING) {
             MID_RunLED_SetMode(RUN_LED_MODE_BLINK_RUN);
             MID_Buzzer_SetMode(BUZZER_MODE_RUNNING);
         } else {
@@ -85,20 +83,17 @@ void APP_ShowTask(void *pvParameters)
             flicker_cnt = 0; // 20 * 50ms = 1秒的大交替周期
         }
 
+        // 获取系统当前有效故障码 (0 为无故障)
+        uint8_t fault_code = Sys_View_GetFaultCode();
+
         // ====================================================
         // 最高优先级 1：反弹阶段交替显示 (500ms 实时位置 <-> 500ms 错误码)
         // ====================================================
-        if (g_sys_context.system_step == SYS_STEP_TOTAL_REBOUND) {
+        if (Sys_View_IsRebounding()) {
             if (flicker_cnt < 10) {
                 // 前 500ms 显示当前立柱实时高度 (mm)
                 uint8_t m_idx = dim2 % 4;
-                float abs_mm  = 0.0f;
-                if (g_sys_context.counts_per_mm > 0.0f) {
-                    abs_mm = (float)g_sys_context.g_motor_status[m_idx].current_abs_hall / g_sys_context.counts_per_mm;
-                }
-                int32_t val_mm = (int32_t)roundf(abs_mm);
-                if (val_mm < 0) val_mm = 0;
-                if (val_mm > 9999) val_mm = 9999;
+                int32_t val_mm = Sys_View_GetAxisTravelMm(m_idx);
 
                 SEG_W[0] = (uint8_t)((val_mm / 1000) % 10);
                 SEG_W[1] = (uint8_t)((val_mm / 100) % 10);
@@ -113,9 +108,8 @@ void APP_ShowTask(void *pvParameters)
                 SEG_W[0] = 14; // E
                 SEG_W[1] = 28; // r
                 SEG_W[2] = 28; // r
-                uint8_t fault = g_sys_context.system_fault_code;
-                if (fault >= 1 && fault <= 9) {
-                    SEG_W[3] = fault;
+                if (fault_code >= 1 && fault_code <= 9) {
+                    SEG_W[3] = fault_code;
                 } else {
                     SEG_W[3] = 18; // -
                 }
@@ -124,14 +118,13 @@ void APP_ShowTask(void *pvParameters)
         // ====================================================
         // 优先级 2：故障急停报警显示 (显示 ErrX, 如 Err1:堵转, Err2:通信中断, Err3:同步差超限, Err4:防夹反弹)
         // ====================================================
-        else if (g_sys_context.system_step == SYS_STEP_FAULT_STOP || g_sys_context.system_fault_code != FAULT_CODE_NONE) {
+        else if (fault_code != 0 || Sys_Mode_IsFaultLocked()) {
             SEG_Flag[0] = SEG_Flag[1] = SEG_Flag[2] = SEG_Flag[3] = 0;
             SEG_W[0] = 14; // E
             SEG_W[1] = 28; // r
             SEG_W[2] = 28; // r
-            uint8_t fault = g_sys_context.system_fault_code;
-            if (fault >= 1 && fault <= 9) {
-                SEG_W[3] = fault;
+            if (fault_code >= 1 && fault_code <= 9) {
+                SEG_W[3] = fault_code;
             } else {
                 SEG_W[3] = 18; // -
             }
@@ -201,17 +194,10 @@ void APP_ShowTask(void *pvParameters)
                 SEG_W[2] = dim2 % 4;  // 0 ~ 3
                 SEG_W[3] = 18;        // -
             }
-            // 2. 后 500ms 显示该电机基准安装零点的毫米 (mm) 数值
+            // 2. 后 500ms 显示该电机基准安装零点的毫米 (mm) 数值 (接入中立视图模型)
             else {
                 uint8_t m_idx = dim2 % 4;
-                float mount_mm = 0.0f;
-                if (g_sys_context.counts_per_mm > 0.0f) {
-                    mount_mm = (float)app_data.min_mount_halls[m_idx] / g_sys_context.counts_per_mm;
-                }
-
-                int32_t val_mm = (int32_t)roundf(mount_mm);
-                if (val_mm < 0) val_mm = 0;
-                if (val_mm > 9999) val_mm = 9999;
+                int32_t val_mm = Sys_View_GetAxisMountMm(m_idx);
 
                 SEG_W[0] = (uint8_t)((val_mm / 1000) % 10);
                 SEG_W[1] = (uint8_t)((val_mm / 100) % 10);
@@ -225,16 +211,9 @@ void APP_ShowTask(void *pvParameters)
         // 模式三：主界面 & 实时监测层 (dim1 == 0)
         // ====================================================
         else {
-            // 1. 解算当前 dim2 所指示电机的绝对高度 (单位: mm)
+            // 1. 解算当前 dim2 所指示电机的绝对高度 (单位: mm, 接入中立视图模型)
             uint8_t m_idx = dim2 % 4;
-            float abs_mm  = 0.0f;
-            if (g_sys_context.counts_per_mm > 0.0f) {
-                abs_mm = (float)g_sys_context.g_motor_status[m_idx].current_abs_hall / g_sys_context.counts_per_mm;
-            }
-
-            int32_t val_mm = (int32_t)roundf(abs_mm);
-            if (val_mm < 0) val_mm = 0;
-            if (val_mm > 9999) val_mm = 9999;
+            int32_t val_mm = Sys_View_GetAxisTravelMm(m_idx);
 
             // 2. 填充 4 位数码管数值
             SEG_W[0] = (uint8_t)((val_mm / 1000) % 10);

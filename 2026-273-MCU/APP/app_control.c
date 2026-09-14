@@ -10,6 +10,7 @@
 #include "mid_Key.h"
 #include "app_Menu.h"
 #include "mid_brake.h"
+#include "mid_supervisor.h"
 
 // 实例化全局控制上下文
 Sys_Ctrl_Context_t g_sys_context;
@@ -282,6 +283,7 @@ void APP_Control_ResetSystemContext(void)
 void APP_Control_StartSingleTune(uint8_t m_idx)
 {
     if (g_sys_context.system_step != SYS_STEP_READY || m_idx >= 4) return;
+    if (!Sys_Mode_CanRunMotion()) return; // 权威门禁：调参或锁定态下禁止微调
 
     for (int i = 0; i < 4; i++) {
         g_sys_context.g_motor_status[i].last_motion_cmd  = CMD_STOP;
@@ -317,6 +319,7 @@ void APP_Control_StartSingleTune(uint8_t m_idx)
     xQueueSend(g_motor_ctrl_queue, &cmd_msg, pdMS_TO_TICKS(10));
 
     g_sys_context.system_step = SYS_STEP_SINGLE_TUNE;
+    Sys_Mode_Set(SYS_MODE_MOTION); // 同步系统模式为运动态
     Debug_Printf("[SYS] Enter SINGLE_TUNE: Motor=%d, Dir=%s, Step=%dmm, TargetCounts=%d, Speed=%dRPM (Half Speed)\r\n",
                  m_idx + 1, (g_sys_context.single_tune_dir == 0) ? "UP" : "DOWN",
                  app_data.single_tune_step_mm, g_sys_context.single_tune_target_counts, tune_rpm);
@@ -337,6 +340,34 @@ void APP_Control_CancelSingleTune(void)
         APP_Control_PrepareStopSettling((uint8_t)(1 << m_idx), SYS_STEP_TUNE_DONE);
         xQueueSend(g_motor_ctrl_queue, &stop_msg, pdMS_TO_TICKS(10));
     }
+}
+
+/**
+ * @brief 系统紧急停止 (Direct Action，直接动作切断输出并停机)
+ */
+void APP_Control_EmergencyStop(void)
+{
+    // 1. 清空命令队列，防止排队旧指令发出
+    xQueueReset(g_motor_ctrl_queue);
+
+    // 2. 立即下发全轴停机指令
+    Motor_Ctrl_Msg_t stop_msg = {CMD_STOP, 0x0F, 0};
+    xQueueSend(g_motor_ctrl_queue, &stop_msg, 0);
+
+    for (int i = 0; i < 4; i++) {
+        g_sys_context.g_motor_status[i].target_cmd   = CMD_STOP;
+        g_sys_context.g_motor_status[i].target_speed = 0;
+    }
+
+    // 3. 关闭指示灯，并切入停机归档
+    APP_Control_SetLightOff();
+    if (g_sys_context.system_step == SYS_STEP_TOTAL_RUNNING ||
+        g_sys_context.system_step == SYS_STEP_AUTO_ALIGN ||
+        g_sys_context.system_step == SYS_STEP_SINGLE_TUNE ||
+        g_sys_context.system_step == SYS_STEP_TOTAL_REBOUND) {
+        APP_Control_PrepareStopSettling(0x0F, SYS_STEP_TOTAL_DONE);
+    }
+    Debug_Printf("[SYS] Emergency Stop Executed! All Motors Stopped.\r\n");
 }
 
 /**
@@ -524,8 +555,19 @@ void APP_ControlTask(void *pvParameters)
     TickType_t xLastWakeTime = xTaskGetTickCount();
 
     while (1) {
-        // 非阻塞检查信号/事件
-        bool has_event = MID_Signal_GetEvent(&sig_msg, 0);
+        // 非阻塞检查信号/事件 (优先从 LEPA 单值覆盖邮箱获取，防积压；向下兼容旧队列)
+        bool has_event = false;
+        uint8_t mb_src = 0, mb_id = 0, mb_evt = 0;
+        if (Sys_Mailbox_GetMotionCmd(&mb_src, &mb_id, &mb_evt)) {
+            sig_msg.signal_id = (MID_Signal_ID)mb_id;
+            sig_msg.event     = (MID_Signal_EventType)mb_evt;
+            has_event         = true;
+        } else if (MID_Signal_GetEvent(&sig_msg, 0) == pdTRUE) {
+            mb_src            = SYS_MOTION_SRC_SIGNAL;
+            mb_id             = (uint8_t)sig_msg.signal_id;
+            mb_evt            = (uint8_t)sig_msg.event;
+            has_event         = true;
+        }
 
         switch (g_sys_context.system_step) {
             // === Boot 状态：等待硬件初始化完成并执行物理参数换算 ===
@@ -587,8 +629,19 @@ void APP_ControlTask(void *pvParameters)
                     break;
                 }
 
-                // 检查遥控信号触发下行 / 上行
-                if (has_event && sig_msg.event == MID_SIGNAL_EVT_TRIGGER) {
+                // 2. 检查面板按键直发单轴微调 (K1 ~ K4 动作键直接由控制任务在 READY 内自主闭环启动)
+                if (has_event && mb_src == SYS_MOTION_SRC_KEY) {
+                    if (mb_id <= MID_KEY_ID_K4 && mb_evt == MID_KEY_EVT_LEASS) {
+                        uint8_t m_idx = (uint8_t)(mb_id - MID_KEY_ID_K1);
+                        g_sys_context.single_tune_dir = Sys_View_GetTuneDir(); // 同步设定的微调方向
+                        APP_Control_StartSingleTune(m_idx);
+                        Debug_Printf("[SYS] Autonomously Starting Single Tune on Motor %d via K%d!\r\n", m_idx + 1, m_idx + 1);
+                        break;
+                    }
+                }
+
+                // 3. 检查遥控信号触发下行 / 上行
+                if (has_event && mb_src == SYS_MOTION_SRC_SIGNAL && sig_msg.event == MID_SIGNAL_EVT_TRIGGER) {
                     Motor_Ctrl_Msg_t speed_msg;
                     Motor_Ctrl_Msg_t cmd_msg;
                     bool action_valid = false;
@@ -603,6 +656,12 @@ void APP_ControlTask(void *pvParameters)
 
                         case MID_SIGNAL_REMOT_3:
                         case MID_SIGNAL_BUTON_DW: { // B 键 (REMOT_3) & 外接信号下行 (PC7)
+                            // 权威门禁检查：调参中或故障锁定下严禁启动运动
+                            if (!Sys_Mode_CanRunMotion()) {
+                                Debug_Printf("[SYS] Down Start Blocked by Supervisor Gate!\r\n");
+                                break;
+                            }
+
                             // 启动前安全检查：如果有任意轴已到达或低于底部零点 (travel_rel <= 0)，禁止启动下行！
                             bool limit_blocked = false;
                             for (int i = 0; i < 4; i++) {
@@ -651,11 +710,18 @@ void APP_ControlTask(void *pvParameters)
                             action_valid              = true;
                             g_sys_context.ramp_cnt    = 0; // 重置 1000ms 缓启动计数
                             g_sys_context.system_step = SYS_STEP_TOTAL_RUNNING;
+                            Sys_Mode_Set(SYS_MODE_MOTION); // 同步系统模式为运动态
                             break;
                         }
 
                         case MID_SIGNAL_REMOT_4:
                         case MID_SIGNAL_BUTON_UP: { // 遥控上行 & 外接信号上行 (PC8)
+                            // 权威门禁检查：调参中或故障锁定下严禁启动运动
+                            if (!Sys_Mode_CanRunMotion()) {
+                                Debug_Printf("[SYS] Up Start Blocked by Supervisor Gate!\r\n");
+                                break;
+                            }
+
                             // 启动前安全检查：如果有任意轴已到达或超过最大行程上限 (travel_rel >= max_travel_hall)，禁止启动上行！
                             bool limit_blocked = false;
                             for (int i = 0; i < 4; i++) {
@@ -705,6 +771,7 @@ void APP_ControlTask(void *pvParameters)
                             action_valid              = true;
                             g_sys_context.ramp_cnt    = 0; // 重置 1000ms 缓启动计数
                             g_sys_context.system_step = SYS_STEP_TOTAL_RUNNING;
+                            Sys_Mode_Set(SYS_MODE_MOTION); // 同步系统模式为运动态
                             break;
                         }
 
@@ -713,6 +780,7 @@ void APP_ControlTask(void *pvParameters)
                     }
 
                     if (action_valid) {
+                        Sys_Mailbox_ClearMotionCmd();
                         MID_SIGNAL_Msg dummy_msg;
                         while (MID_Signal_GetEvent(&dummy_msg, 0) == pdTRUE);
                     }
@@ -726,11 +794,11 @@ void APP_ControlTask(void *pvParameters)
                 uint32_t now_hall   = g_sys_context.g_motor_status[m_idx].hall_value;
                 uint32_t start_hall = g_sys_context.single_tune_start_hall;
 
-                // 0. 检查用户按键打断（如按 C 键停止）
-                if (has_event && sig_msg.event == MID_SIGNAL_EVT_TRIGGER) {
-                    if (sig_msg.signal_id == MID_SIGNAL_REMOT_2) {
+                // 0. 检查用户按键打断 (物理面板按键或遥控急停 A 键，均就地刹停取消微调)
+                if (has_event) {
+                    if (mb_src == SYS_MOTION_SRC_KEY || (mb_src == SYS_MOTION_SRC_SIGNAL && sig_msg.signal_id == MID_SIGNAL_REMOT_2)) {
                         APP_Control_CancelSingleTune();
-                        Debug_Printf("[SYS] Single Tune Interrupted by User Remot C Key!\r\n");
+                        Debug_Printf("[SYS] Single Tune Interrupted Autonomously by Input Event!\r\n");
                         break;
                     }
                 }
@@ -1316,6 +1384,7 @@ void APP_ControlTask(void *pvParameters)
                     if (has_comm_fault || g_sys_context.system_fault_code == FAULT_CODE_COMM) {
                         g_sys_context.system_fault_code = FAULT_CODE_COMM;
                         g_sys_context.system_step       = SYS_STEP_FAULT_STOP;
+                        Sys_Mode_Set(SYS_MODE_FAULT_LOCKED);
                         MID_Brake_Lock(); // 致命通信故障抱死自锁
                         Debug_Printf("[SYS] Stop Check: 485 Comm Fault Active! Entering SYS_STEP_FAULT_STOP Lockout (Err2).\r\n");
                     }
@@ -1323,6 +1392,7 @@ void APP_ControlTask(void *pvParameters)
                     else if (has_driver_fault || g_sys_context.system_fault_code == FAULT_CODE_DRIVER_ALARM) {
                         g_sys_context.system_fault_code = FAULT_CODE_DRIVER_ALARM;
                         g_sys_context.system_step       = SYS_STEP_FAULT_STOP;
+                        Sys_Mode_Set(SYS_MODE_FAULT_LOCKED);
                         MID_Brake_Lock(); // 驱动器报警抱死自锁
                         Debug_Printf("[SYS] Stop Check: Driver Alarm Active! Entering SYS_STEP_FAULT_STOP Lockout (Err6).\r\n");
                     }
@@ -1330,6 +1400,7 @@ void APP_ControlTask(void *pvParameters)
                     else if (g_sys_context.system_fault_code == FAULT_CODE_STALL) {
                         g_sys_context.system_fault_code = FAULT_CODE_STALL;
                         g_sys_context.system_step       = SYS_STEP_FAULT_STOP;
+                        Sys_Mode_Set(SYS_MODE_FAULT_LOCKED);
                         MID_Brake_Lock(); // 过流堵转抱死自锁
                         Debug_Printf("[SYS] Stop Check: OverCurrent Stall Active! Entering SYS_STEP_FAULT_STOP Lockout (Err1).\r\n");
                     }
@@ -1337,6 +1408,7 @@ void APP_ControlTask(void *pvParameters)
                     else if (g_sys_context.system_fault_code == FAULT_CODE_PINCH) {
                         g_sys_context.system_fault_code = FAULT_CODE_PINCH;
                         g_sys_context.system_step       = SYS_STEP_FAULT_STOP;
+                        Sys_Mode_Set(SYS_MODE_FAULT_LOCKED);
                         MID_Brake_Lock(); // 防夹反弹完成抱死自锁
                         Debug_Printf("[SYS] Stop Check: Downward Pinch Rebound Done! Entering SYS_STEP_FAULT_STOP Lockout (Err4).\r\n");
                     }
@@ -1344,6 +1416,7 @@ void APP_ControlTask(void *pvParameters)
                     else if (g_sys_context.system_fault_code == FAULT_CODE_SYNC) {
                         g_sys_context.system_fault_code = FAULT_CODE_SYNC;
                         g_sys_context.system_step       = SYS_STEP_FAULT_STOP;
+                        Sys_Mode_Set(SYS_MODE_FAULT_LOCKED);
                         MID_Brake_Lock(); // 同步严重超限抱死自锁
                         Debug_Printf("[SYS] Stop Check: Sync Diff Fault Active! Entering SYS_STEP_FAULT_STOP Lockout (Err3).\r\n");
                     }
@@ -1354,6 +1427,7 @@ void APP_ControlTask(void *pvParameters)
                             g_sys_context.g_motor_status[i].start_drive_hall = g_sys_context.g_motor_status[i].hall_value;
                         }
                         g_sys_context.system_step = SYS_STEP_AUTO_ALIGN;
+                        Sys_Mode_Set(SYS_MODE_AUTO_ALIGN);
                         MID_Brake_Release();           // 453 抱闸控制：启动自愈重平前通电松开抱闸
                         vTaskDelay(pdMS_TO_TICKS(80)); // 硬件脱开延时 80ms
                         Debug_Printf("[SYS] Stop Check: Table Sync Diff (Diff=%.1f > Limit=%d) with No Faults! Triggering AUTO_ALIGN Self-Healing...\r\n",
@@ -1363,6 +1437,7 @@ void APP_ControlTask(void *pvParameters)
                     else {
                         g_sys_context.system_fault_code = FAULT_CODE_NONE;
                         g_sys_context.system_step       = SYS_STEP_READY;
+                        Sys_Mode_Set(SYS_MODE_STANDBY);
                         Debug_Printf("[SYS] State -> READY (AbsHalls:[%d,%d,%d,%d], MaxDiff=%.1f)\r\n",
                                      g_sys_context.g_motor_status[0].current_abs_hall,
                                      g_sys_context.g_motor_status[1].current_abs_hall,

@@ -1,4 +1,5 @@
 #include "mid_Key.h"
+#include "mid_supervisor.h"
 
 static MID_KEY_HandleTypeDef mid_key[MID_KEY_COUNT];
 static QueueHandle_t mid_Key_queue; /* 按键事件队列句柄 */
@@ -31,6 +32,19 @@ static void MID_KEY_Init(MID_KEY_HandleTypeDef *mid_key, MID_Key_ID key_id)
 
 static void MID_Key_ReportSingle(MID_Key_ID id, MID_KeyEventType evt)
 {
+    // 1. 优先送入 LEPA 优先级管道进行栈直调拦截
+    Sys_Event_t sys_evt;
+    sys_evt.source     = SYS_EVT_SRC_KEY;
+    sys_evt.id         = (uint8_t)id;
+    sys_evt.event_type = (uint8_t)evt;
+    sys_evt.count      = 0;
+    sys_evt.param      = 0;
+
+    if (Sys_Event_Dispatch(&sys_evt) == EVENT_CONSUMED) {
+        return; // 被某一高优先级层拦截并处理，管道熔断，不流入旧队列
+    }
+
+    // 2. 兜底兼容流入旧队列
     MID_KEY_SingleKeyMsg msg;
     msg.key_id = id;
     msg.event = evt;

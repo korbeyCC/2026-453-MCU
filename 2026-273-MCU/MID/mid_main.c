@@ -11,4 +11,5 @@ void MID_Init(void)
     MID_Buzzer_Init();
     MID_Brake_Init();
     MID_Modbus_Init();
+    Sys_Supervisor_Init();
 }

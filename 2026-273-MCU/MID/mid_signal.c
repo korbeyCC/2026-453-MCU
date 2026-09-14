@@ -1,4 +1,5 @@
 #include "mid_signal.h"
+#include "mid_router.h"
 #include "task.h"
 
 static MID_SIGNAL_HandleTypeDef mid_signals[MID_SIGNAL_COUNT];
@@ -35,19 +36,21 @@ static bool MID_Signal_ReadPhysState(MID_Signal_ID id)
 {
     switch (id) {
         case MID_SIGNAL_REMOT_1:
-            return (HAL_GPIO_ReadPin(REMOT_1_GPIO_Port, REMOT_1_Pin) == GPIO_PIN_SET); // 高电平有效
-
-        case MID_SIGNAL_REMOT_2:
-            return (HAL_GPIO_ReadPin(REMOT_2_GPIO_Port, REMOT_2_Pin) == GPIO_PIN_SET); // 高电平有效
-
-        case MID_SIGNAL_REMOT_3:
-            return (HAL_GPIO_ReadPin(REMOT_3_GPIO_Port, REMOT_3_Pin) == GPIO_PIN_SET); // 高电平有效
-
-        case MID_SIGNAL_REMOT_4:
             return (HAL_GPIO_ReadPin(REMOT_4_GPIO_Port, REMOT_4_Pin) == GPIO_PIN_SET); // 高电平有效
 
+        case MID_SIGNAL_REMOT_2:
+            return (HAL_GPIO_ReadPin(REMOT_3_GPIO_Port, REMOT_3_Pin) == GPIO_PIN_SET); // 高电平有效
+
+        case MID_SIGNAL_REMOT_3:
+            return (HAL_GPIO_ReadPin(REMOT_2_GPIO_Port, REMOT_2_Pin) == GPIO_PIN_SET); // 高电平有效
+
+        case MID_SIGNAL_REMOT_4:
+            return (HAL_GPIO_ReadPin(REMOT_1_GPIO_Port, REMOT_1_Pin) == GPIO_PIN_SET); // 高电平有效
+
+            /*因为换了遥控器，把引脚号也换一下*/
+
         case MID_SIGNAL_REMOT_5:
-            return (HAL_GPIO_ReadPin(REMOT_5_GPIO_Port, REMOT_5_Pin) == GPIO_PIN_SET); // 高电平有效
+            return 0; // 屏蔽不需要的//(HAL_GPIO_ReadPin(REMOT_5_GPIO_Port, REMOT_5_Pin) == GPIO_PIN_SET); // 高电平有效
 
         case MID_SIGNAL_BUTON_DW:
             return (HAL_GPIO_ReadPin(BUTON_DW_GPIO_Port, BUTON_DW_Pin) == GPIO_PIN_RESET); // 光耦低电平有效
@@ -62,6 +65,19 @@ static bool MID_Signal_ReadPhysState(MID_Signal_ID id)
 
 static void MID_Signal_Report(MID_Signal_ID id, MID_Signal_EventType evt)
 {
+    // 1. 优先送入 LEPA 优先级管道进行栈直调拦截 (Level 0 急停、Level 1 消警、Level 2 菜单独占拦截)
+    Sys_Event_t sys_evt;
+    sys_evt.source     = SYS_EVT_SRC_SIGNAL;
+    sys_evt.id         = (uint8_t)id;
+    sys_evt.event_type = (uint8_t)evt;
+    sys_evt.count      = 0;
+    sys_evt.param      = 0;
+
+    if (Sys_Router_Dispatch(&sys_evt) == EVENT_CONSUMED) {
+        return; // 被高优先级拦截消费，终止下发至队列
+    }
+
+    // 2. 兜底兼容流入旧队列
     MID_SIGNAL_Msg msg;
     msg.signal_id = id;
     msg.event     = evt;

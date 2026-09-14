@@ -1,8 +1,8 @@
 #include "app_Menu.h"
 #include "mid_Key.h"
 #include "app_Data.h"
-#include "app_control.h"
 #include "mid_buzzer.h"
+#include "app_supervisor.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -163,6 +163,11 @@ void APP_MenuTask(void *pvParameters)
     MID_KEY_SingleKeyMsg msg;
     TickType_t pxPreviousWakeTime = xTaskGetTickCount();
 
+#if SYS_ROUTER_USE_FREERTOS
+    // 自注册任务句柄至路由器引擎，启用 Carrier B (Task Notification 极速唤醒)
+    Sys_Router_RegisterMenuTask(xTaskGetCurrentTaskHandle());
+#endif
+
     while (1) {
         // 50ms 递减提示动画倒计时
         if (prompt_ticks > 0) {
@@ -175,52 +180,70 @@ void APP_MenuTask(void *pvParameters)
             save_debounce_cnt--;
             if (save_debounce_cnt == 0) {
                 APP_Data_Storage(); // 0.3s 无新按键，及时固化存 Flash
-                APP_Control_UpdateParamsFromAppData();
+                Sys_Notify_ParamsUpdated();
                 Debug_Printf("[SYS] Stall Current Threshold Auto Saved to Flash (StallCurrent=%d, 0.01A).\r\n",
                              app_data.stall_current_threshold);
             }
         }
 #endif
 
-        // 检查全局唯一按键队列
+        // 载体 B：通过任务通知无损接收菜单按键 (0 队列 RAM 开销)
+        bool has_key = false;
+        uint8_t k_id = 0, k_evt = 0, k_cnt = 0;
+#if SYS_ROUTER_USE_FREERTOS
+        if (Sys_Router_WaitMenuKey(&k_id, &k_evt, &k_cnt, 0)) {
+            msg.key_id = (MID_Key_ID)k_id;
+            msg.event  = (MID_KeyEventType)k_evt;
+            has_key    = true;
+        } else
+#endif
         if (MID_Key_GetSingleEvent(&msg, 0) == pdTRUE) {
+            has_key = true;
+        }
+
+        if (has_key) {
             MID_Buzzer_TriggerBeep(40); // 453 按键有效触发提示音 40ms
 
-            // 如果系统正处于单轴微调动作中，按下任意按键均取消微调
-            if (g_sys_context.system_step == SYS_STEP_SINGLE_TUNE) {
-                if (msg.event == MID_KEY_EVT_LEASS || msg.event == MID_KEY_EVT_LONG || msg.event == MID_KEY_EVT_Long_REP) {
-                    APP_Control_CancelSingleTune();
-                    Debug_Printf("[SYS] Single Tune Interrupted by Key Press.\r\n");
-                }
-            }
-            // 如果系统正处于故障急停锁死状态，按下任意板载按键均尝试取消报警并恢复
-            else if (g_sys_context.system_step == SYS_STEP_FAULT_STOP) {
-                if (msg.event == MID_KEY_EVT_LEASS || msg.event == MID_KEY_EVT_LONG || msg.event == MID_KEY_EVT_Long_REP) {
-                    APP_Control_ClearFault();
-                }
-            }
             // ====================================================
-            // 维度长按切换：长按 K6 切换一维 dim1 (0 -> 1 -> 2 -> 0)
+            // 维度长按切换：长按 K6 (设置键) 切换一维 dim1 (0 -> 1 -> 2 -> 0)
             // ====================================================
-            else if (msg.key_id == MID_KEY_ID_K6 && msg.event == MID_KEY_EVT_LONG) {
+            if (msg.key_id == MID_KEY_ID_K6 && msg.event == MID_KEY_EVT_LONG) {
+                uint8_t next_dim1 = (dim1 + 1) % 3;
+
+                // 门禁检查：若试图进入设置模式 (dim1 == 1)，必须确保电机未处于运动或调平状态
+                if (next_dim1 == 1 && !Sys_Mode_CanEnterMenu()) {
+                    APP_Menu_SetPrompt("-Err-", 20); // 提示错误，拒绝在运动中调参
+                    Debug_Printf("[SYS] Enter Menu Blocked: Motor is Currently Running or Aligning!\r\n");
+                    continue;
+                }
+
                 // 如果离开设置模式，存盘 Flash
                 if (dim1 == 1) {
                     if (reset_factory_flag == 7) {
                         reset_factory_flag = 0;
-                        APP_Data_ResetDefault();          // (1, 0) 设为 7 触发恢复出厂设置
-                        APP_Control_ResetSystemContext(); // 全面重置系统上下文状态与 4 轴运行位置
+                        APP_Data_ResetDefault();     // (1, 0) 设为 7 触发恢复出厂设置
+                        Sys_Notify_FactoryReset();   // 全面重置系统上下文状态与 4 轴运行位置
                         Debug_Printf("[SYS] Factory Reset Executed via Menu (1, 0 = 7)!\r\n");
                     } else {
                         reset_factory_flag = 0;
                         APP_Data_Storage();
-                        APP_Control_UpdateParamsFromAppData();
+                        Sys_Notify_ParamsUpdated();
                         Debug_Printf("[SYS] Menu Level 1 Params Saved to Flash.\r\n");
                     }
+                    Sys_Mode_Set(SYS_MODE_STANDBY); // 退出设置模式，恢复待机态
                 }
 
-                dim1              = (dim1 + 1) % 3; // 维度一切换
-                dim2              = 0;              // 切入新维度时均从第 0 项 (0) 开始！
+                dim1              = next_dim1;
+                dim2              = 0; // 切入新维度时均从第 0 项 (0) 开始！
                 adjust_hold_ticks = 0;
+
+                if (dim1 == 1) {
+                    Sys_Mode_Set(SYS_MODE_MENU_CONFIG); // 切入设置模式，独占按键并安全封锁电机
+                } else if (dim1 == 2) {
+                    Sys_Mode_Set(SYS_MODE_DEBUG_CALIB); // 切入深度调试层
+                } else {
+                    Sys_Mode_Set(SYS_MODE_STANDBY);
+                }
 
                 char buf[10];
                 snprintf(buf, sizeof(buf), "-P%d-", dim1);
@@ -233,15 +256,16 @@ void APP_MenuTask(void *pvParameters)
             // 维度 0：主界面 & 实时监测层 (dim1 == 0)
             // ====================================================
             else if (dim1 == 0) {
-                // 1. 短按 K6：轮播切换 4 轴实时读数 (Motor 0 -> 1 -> 2 -> 3 -> 0)
-                if (msg.key_id == MID_KEY_ID_K6 && msg.event == MID_KEY_EVT_LEASS) {
+                // 1. 短按 K1 或 K6：轮播切换 4 轴实时读数 (Motor 0 -> 1 -> 2 -> 3 -> 0)
+                if ((msg.key_id == MID_KEY_ID_K1 || msg.key_id == MID_KEY_ID_K6) && msg.event == MID_KEY_EVT_LEASS) {
                     dim2 = (dim2 + 1) % 4;
                     Debug_Printf("[SYS] Display Switched to Motor %d Absolute Hall/Travel.\r\n", dim2);
                 }
                 // 2. 短按 K5：切换微调方向 (0:正转/上升, 1:反转/下降)，并闪烁提示 "-UP-" / "-dn-"
                 else if (msg.key_id == MID_KEY_ID_K5 && msg.event == MID_KEY_EVT_LEASS) {
-                    g_sys_context.single_tune_dir = (g_sys_context.single_tune_dir == 0) ? 1 : 0;
-                    if (g_sys_context.single_tune_dir == 0) {
+                    uint8_t new_dir = (Sys_View_GetTuneDir() == 0) ? 1 : 0;
+                    Sys_View_SetTuneDir(new_dir);
+                    if (new_dir == 0) {
                         APP_Menu_SetPrompt("-UP-", 20); // 闪烁显示 "-UP-" 1.0秒
                         Debug_Printf("[SYS] Single Tune Direction Switched to: FORWARD (UP)\r\n");
                     } else {
@@ -249,11 +273,7 @@ void APP_MenuTask(void *pvParameters)
                         Debug_Printf("[SYS] Single Tune Direction Switched to: REVERSE (DOWN)\r\n");
                     }
                 }
-                // 3. 在 SYS_STEP_READY 状态下，短按 K1 ~ K4：发起对应通道单轴微调
-                else if (msg.key_id <= MID_KEY_ID_K4 && msg.event == MID_KEY_EVT_LEASS) {
-                    uint8_t m_idx = (uint8_t)(msg.key_id - MID_KEY_ID_K1);
-                    APP_Control_StartSingleTune(m_idx);
-                }
+                // (注意：K1 ~ K4 微调动作键已在待机态直接由中枢路由给 APP_ControlTask 自治驱动，无需菜单介入)
             }
             // ====================================================
             // 维度 1：常规应用设置层 (dim1 == 1, dim2 为 0~8, 其中 (1,0) 为恢复出厂开关)
@@ -273,20 +293,22 @@ void APP_MenuTask(void *pvParameters)
                         // 最后一项 (9) 按 K6：检查 (1,0) 是否调至 7 (q0 == 7 触发恢复出厂)
                         if (reset_factory_flag == 7) {
                             reset_factory_flag = 0;
-                            APP_Data_ResetDefault();          // 恢复全部出厂默认参数并存盘 Flash
-                            APP_Control_ResetSystemContext(); // 全面重置系统上下文状态与 4 轴运行位置
+                            APP_Data_ResetDefault();     // 恢复全部出厂默认参数并存盘 Flash
+                            Sys_Notify_FactoryReset();   // 全面重置系统上下文状态与 4 轴运行位置
                             dim1              = 0;
                             dim2              = 0;
                             adjust_hold_ticks = 0;
+                            Sys_Mode_Set(SYS_MODE_STANDBY);
                             APP_Menu_SetPrompt("-rSt-", 30); // 闪烁显示 "-rSt-" (Reset) 1.5s
                             Debug_Printf("[SYS] Factory Reset Executed via Menu (1, 0 = 7)! Restored Default Factory Settings.\r\n");
                         } else {
                             reset_factory_flag = 0;
                             APP_Data_Storage();
-                            APP_Control_UpdateParamsFromAppData();
+                            Sys_Notify_ParamsUpdated();
                             dim1              = 0;
                             dim2              = 0;
                             adjust_hold_ticks = 0;
+                            Sys_Mode_Set(SYS_MODE_STANDBY);
                             APP_Menu_SetPrompt("-P0-", 20);
                             Debug_Printf("[SYS] Menu Setting Complete & Saved to Flash! Exit to dim1 = 0.\r\n");
                         }
@@ -308,13 +330,14 @@ void APP_MenuTask(void *pvParameters)
                         dim1               = 0;
                         dim2               = 0;
                         adjust_hold_ticks  = 0;
+                        Sys_Mode_Set(SYS_MODE_STANDBY);
                         APP_Menu_SetPrompt("-P0-", 20);
                         Debug_Printf("[SYS] Menu Setting Cancelled (No Save). Exit to dim1 = 0.\r\n");
                     }
                 }
                 // C. K1 (+) / K2 (-) 参数调节 (短按松手单步响应 + 长按快速连发)
                 else if ((msg.key_id == MID_KEY_ID_K1 || msg.key_id == MID_KEY_ID_K2) &&
-                         (msg.event == MID_KEY_EVT_LEASS || msg.event == MID_KEY_EVT_Long_REP)) {
+                         (msg.event == MID_KEY_EVT_LEASS || msg.event == MID_KEY_EVT_LONG || msg.event == MID_KEY_EVT_Long_REP)) {
                     APP_Menu_AdjustParam(msg.key_id == MID_KEY_ID_K1); // 通过 K1/K2 按键 ID 判断是增加还是减少
                 }
             }

@@ -11,7 +11,7 @@ long test_APP[7];
 static SemaphoreHandle_t xDebugMutex = NULL;
 
 /**
- * @brief  调试串口 5 格式化输出（线程安全互斥保护）
+ * @brief  调试串口 5 格式化输出（线程安全互斥保护，0 栈消耗）
  */
 void Debug_Printf(const char *format, ...)
 {
@@ -19,18 +19,24 @@ void Debug_Printf(const char *format, ...)
         xDebugMutex = xSemaphoreCreateMutex();
     }
 
-    char buffer[256];
+    static char buffer[256];
     va_list args;
-    va_start(args, format);
-    int len = vsnprintf(buffer, sizeof(buffer), format, args);
-    va_end(args);
-    if (len > 0) {
-        if (xDebugMutex != NULL && xTaskGetSchedulerState() == taskSCHEDULER_RUNNING) {
-            if (xSemaphoreTake(xDebugMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+
+    if (xDebugMutex != NULL && xTaskGetSchedulerState() == taskSCHEDULER_RUNNING) {
+        if (xSemaphoreTake(xDebugMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+            va_start(args, format);
+            int len = vsnprintf(buffer, sizeof(buffer), format, args);
+            va_end(args);
+            if (len > 0) {
                 HAL_UART_Transmit(&huart5, (uint8_t *)buffer, len, 50);
-                xSemaphoreGive(xDebugMutex);
             }
-        } else {
+            xSemaphoreGive(xDebugMutex);
+        }
+    } else {
+        va_start(args, format);
+        int len = vsnprintf(buffer, sizeof(buffer), format, args);
+        va_end(args);
+        if (len > 0) {
             HAL_UART_Transmit(&huart5, (uint8_t *)buffer, len, 50);
         }
     }
@@ -75,4 +81,11 @@ void APP_Init(void)
     test_APP[5] = xTaskCreate(APP_ControlTask, "APP_Control", 768, NULL, 2, NULL);
     // 创建485串口并行通信超时管理任务
     test_APP[6] = xTaskCreate(APP_CommTask, "APP_Comm", 256, NULL, 3, NULL);
+
+    for (int i = 0; i < 7; i++) {
+        if (test_APP[i] != pdPASS) {
+            Debug_Printf("[ERR] Task create failed! idx=%d, ret=%ld\r\n", i, test_APP[i]);
+            configASSERT(0);
+        }
+    }
 }

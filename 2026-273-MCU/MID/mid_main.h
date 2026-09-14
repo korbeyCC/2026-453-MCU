@@ -15,6 +15,7 @@
 #include "mid_run_led.h"
 #include "mid_buzzer.h"
 #include "mid_brake.h"
+#include "app_supervisor.h"
 
 void MID_Init(void);
 

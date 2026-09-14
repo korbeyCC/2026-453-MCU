@@ -6,7 +6,7 @@
 // ===================================================================
 // 系统级安防与故障判定宏配置
 // ===================================================================
-#define SAFETY_COMM_ERR_MAX_CNT 10 // 通信连续中断判定次数 (连续 10 帧/40ms 无回应触发保护)
+#define SAFETY_COMM_ERR_MAX_CNT 5  // 通信连续中断判定次数 (连续 10 帧/40ms 无回应触发保护)
 #define SAFETY_STALL_MAX_CNT    10 // 堵转过流判定持续次数 (20 帧 x 20ms = 400ms 持续过流触发堵转)
 
 // ===================================================================
@@ -23,9 +23,9 @@
 
 #define STOP_STABLE_CHECK_CNT        10 // 停机归档阶段连续静止确认次数 (10 帧 x 20ms = 200ms)
 
-#define AUTO_ALIGN_SPEED_RPM         300  // 四轴自主台面平行恢复基准转速 (RPM)
-#define AUTO_ALIGN_TARGET_DIFF_RATIO 0.3f // 对齐极差目标收敛比例 (收敛至 max_sync_diff_hall * 0.3 以内完成)
-#define AUTO_ALIGN_TIMEOUT_SEC       6    // 调平无进展看门狗超时时间 (秒)
+#define AUTO_ALIGN_SPEED_RPM         300                                  // 四轴自主台面平行恢复基准转速 (RPM)
+#define AUTO_ALIGN_TARGET_DIFF_RATIO 0.3f                                 // 对齐极差目标收敛比例 (收敛至 max_sync_diff_hall * 0.3 以内完成)
+#define AUTO_ALIGN_TIMEOUT_SEC       6                                    // 调平无进展看门狗超时时间 (秒)
 #define AUTO_ALIGN_TIMEOUT_TICKS     (AUTO_ALIGN_TIMEOUT_SEC * 1000 / 20) // 调平无进展看门狗总帧数 (6s * 1000 / 20ms = 300 帧)
 
 // 系统故障代码定义 (用于全系统状态监控与数码管 ErrX 报警显示)
@@ -126,8 +126,8 @@ typedef struct {
     int32_t single_tune_orig_abs_hall;  // 微调开始时的起点绝对霍尔高度
     uint32_t single_tune_target_counts; // 单轴微调目标霍尔步计数
     // 四柱同步一键微调状态字段
-    volatile bool is_total_tuning;        // 是否正在执行四柱同步微调标志
-    uint32_t total_tune_target_counts;    // 四柱微调目标霍尔步计数
+    volatile bool is_total_tuning;     // 是否正在执行四柱同步微调标志
+    uint32_t total_tune_target_counts; // 四柱微调目标霍尔步计数
 
     uint8_t rebound_cmd;            // 反弹运动指令 (CMD_FORWARD 或 CMD_REVERSE)
     uint32_t rebound_start_hall[4]; // 反弹开始时 4 轴原始霍尔读数

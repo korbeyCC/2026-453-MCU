@@ -10,7 +10,7 @@
 #include "mid_Key.h"
 #include "app_Menu.h"
 #include "mid_brake.h"
-#include "mid_supervisor.h"
+#include "app_supervisor.h"
 
 // 实例化全局控制上下文
 Sys_Ctrl_Context_t g_sys_context;

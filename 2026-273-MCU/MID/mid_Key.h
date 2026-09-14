@@ -41,8 +41,8 @@ typedef struct
 /* ========== 时间参数（单位：扫描周期）========== */
 #define MID_KEY_SCAN_PERIOD_MS  20 /* 按键扫描任务的周期，单位ms */
 #define MID_KEY_DEBOUNCE_TICKS  2  /* 消抖所需连续次数（2*20=40ms消抖） */
-#define MID_KEY_SHORT_MAX_TICKS 40 /* 短按允许的最大周期数（40*20=800ms） */
-#define MID_KEY_LONG_TICKS      50 /* 长按判定阈值（75*20=1500ms） */
+#define MID_KEY_LONG_TICKS      40 /* 长按判定阈值（40*20=800ms） */
+#define MID_KEY_REPEAT_TICKS    8  /* 连发间隔（8*20=160ms） */
 
 /* ========== 事件类型 ========== */
 typedef enum {

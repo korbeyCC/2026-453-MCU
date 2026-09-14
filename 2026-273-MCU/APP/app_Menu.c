@@ -2,7 +2,7 @@
 #include "mid_Key.h"
 #include "app_Data.h"
 #include "mid_buzzer.h"
-#include "mid_supervisor.h"
+#include "app_supervisor.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -163,9 +163,9 @@ void APP_MenuTask(void *pvParameters)
     MID_KEY_SingleKeyMsg msg;
     TickType_t pxPreviousWakeTime = xTaskGetTickCount();
 
-#if SYS_SUPERVISOR_USE_FREERTOS
-    // 自注册任务句柄至 LEPA 仲裁器，启用 Carrier B (Task Notification 极速唤醒)
-    Sys_Supervisor_RegisterMenuTask(xTaskGetCurrentTaskHandle());
+#if SYS_ROUTER_USE_FREERTOS
+    // 自注册任务句柄至路由器引擎，启用 Carrier B (Task Notification 极速唤醒)
+    Sys_Router_RegisterMenuTask(xTaskGetCurrentTaskHandle());
 #endif
 
     while (1) {
@@ -187,11 +187,11 @@ void APP_MenuTask(void *pvParameters)
         }
 #endif
 
-        // 双载体按键接收：优先接收 Task Notification (0 额外开销)，向下兼容按键队列
+        // 载体 B：通过任务通知无损接收菜单按键 (0 队列 RAM 开销)
         bool has_key = false;
         uint8_t k_id = 0, k_evt = 0, k_cnt = 0;
-#if SYS_SUPERVISOR_USE_FREERTOS
-        if (Sys_Supervisor_WaitMenuKey(&k_id, &k_evt, &k_cnt, 0)) {
+#if SYS_ROUTER_USE_FREERTOS
+        if (Sys_Router_WaitMenuKey(&k_id, &k_evt, &k_cnt, 0)) {
             msg.key_id = (MID_Key_ID)k_id;
             msg.event  = (MID_KeyEventType)k_evt;
             has_key    = true;
@@ -205,7 +205,7 @@ void APP_MenuTask(void *pvParameters)
             MID_Buzzer_TriggerBeep(40); // 453 按键有效触发提示音 40ms
 
             // ====================================================
-            // 维度长按切换：长按 K6 切换一维 dim1 (0 -> 1 -> 2 -> 0)
+            // 维度长按切换：长按 K6 (设置键) 切换一维 dim1 (0 -> 1 -> 2 -> 0)
             // ====================================================
             if (msg.key_id == MID_KEY_ID_K6 && msg.event == MID_KEY_EVT_LONG) {
                 uint8_t next_dim1 = (dim1 + 1) % 3;
@@ -337,7 +337,7 @@ void APP_MenuTask(void *pvParameters)
                 }
                 // C. K1 (+) / K2 (-) 参数调节 (短按松手单步响应 + 长按快速连发)
                 else if ((msg.key_id == MID_KEY_ID_K1 || msg.key_id == MID_KEY_ID_K2) &&
-                         (msg.event == MID_KEY_EVT_LEASS || msg.event == MID_KEY_EVT_Long_REP)) {
+                         (msg.event == MID_KEY_EVT_LEASS || msg.event == MID_KEY_EVT_LONG || msg.event == MID_KEY_EVT_Long_REP)) {
                     APP_Menu_AdjustParam(msg.key_id == MID_KEY_ID_K1); // 通过 K1/K2 按键 ID 判断是增加还是减少
                 }
             }

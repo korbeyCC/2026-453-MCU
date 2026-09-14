@@ -1,5 +1,5 @@
 #include "mid_Key.h"
-#include "mid_supervisor.h"
+#include "mid_router.h"
 
 static MID_KEY_HandleTypeDef mid_key[MID_KEY_COUNT];
 static QueueHandle_t mid_Key_queue; /* 按键事件队列句柄 */
@@ -40,7 +40,7 @@ static void MID_Key_ReportSingle(MID_Key_ID id, MID_KeyEventType evt)
     sys_evt.count      = 0;
     sys_evt.param      = 0;
 
-    if (Sys_Event_Dispatch(&sys_evt) == EVENT_CONSUMED) {
+    if (Sys_Router_Dispatch(&sys_evt) == EVENT_CONSUMED) {
         return; // 被某一高优先级层拦截并处理，管道熔断，不流入旧队列
     }
 
@@ -80,6 +80,7 @@ static void MID_Key_ScanSingleKey(MID_KEY_HandleTypeDef *mid_key, bool pressed, 
                 mid_key->press_start_tick = nowMs;
                 mid_key->long_reported = false;
                 mid_key->press_reported = false;
+                mid_key->debounce_cnt = 0;
             }
         }
         else
@@ -89,47 +90,54 @@ static void MID_Key_ScanSingleKey(MID_KEY_HandleTypeDef *mid_key, bool pressed, 
         break;
 
     case KEY_ST_PRESSED:
-        if (!pressed)
+        if (pressed)
         {
+            mid_key->debounce_cnt = 0; // 只要处于按下，清零释放消抖计数
             uint32_t duration = nowMs - mid_key->press_start_tick;
-            if (duration <= MID_KEY_SHORT_MAX_TICKS * MID_KEY_SCAN_PERIOD_MS)
+            
+            // 达到长按时间门槛 (800ms) 立即上报 LONG，并切入长按保持态
+            if (duration >= MID_KEY_LONG_TICKS * MID_KEY_SCAN_PERIOD_MS)
             {
-                MID_Key_ReportSingle(mid_key->ID, MID_KEY_EVT_LEASS);
+                mid_key->long_reported = true;
+                mid_key->state = KEY_ST_LONG_WAIT;
+                mid_key->press_start_tick = nowMs; // 为连发重置计时起点
+                mid_key->debounce_cnt = 0;
+                MID_Key_ReportSingle(mid_key->ID, MID_KEY_EVT_LONG);
             }
-            mid_key->state = KEY_ST_IDLE;
         }
         else
         {
-            uint32_t duration = nowMs - mid_key->press_start_tick;
-            if (duration > MID_KEY_SHORT_MAX_TICKS * MID_KEY_SCAN_PERIOD_MS)
+            // 释放滤波消抖：连续 2 次检测到释放才确认松开，杜绝触点抖动引起的误判
+            mid_key->debounce_cnt++;
+            if (mid_key->debounce_cnt >= MID_KEY_DEBOUNCE_TICKS)
             {
-                mid_key->state = KEY_ST_LONG_WAIT;
-            }
-
-            if (!mid_key->press_reported)
-            {
-                mid_key->press_reported = true;
-                MID_Key_ReportSingle(mid_key->ID, MID_KEY_EVT_PRESS);
+                mid_key->state = KEY_ST_IDLE;
+                if (!mid_key->long_reported)
+                {
+                    MID_Key_ReportSingle(mid_key->ID, MID_KEY_EVT_LEASS);
+                }
             }
         }
         break;
 
     case KEY_ST_LONG_WAIT:
-        if (!pressed)
+        if (pressed)
         {
-            mid_key->state = KEY_ST_IDLE;
+            mid_key->debounce_cnt = 0;
+            uint32_t duration = nowMs - mid_key->press_start_tick;
+            if (duration >= MID_KEY_REPEAT_TICKS * MID_KEY_SCAN_PERIOD_MS)
+            {
+                mid_key->press_start_tick = nowMs;
+                MID_Key_ReportSingle(mid_key->ID, MID_KEY_EVT_Long_REP);
+            }
         }
         else
         {
-            uint32_t duration = nowMs - mid_key->press_start_tick;
-            if (!mid_key->long_reported && duration >= MID_KEY_LONG_TICKS * MID_KEY_SCAN_PERIOD_MS)
+            // 释放滤波消抖
+            mid_key->debounce_cnt++;
+            if (mid_key->debounce_cnt >= MID_KEY_DEBOUNCE_TICKS)
             {
-                MID_Key_ReportSingle(mid_key->ID, MID_KEY_EVT_LONG);
-                mid_key->long_reported = true;
-            }
-            else if (mid_key->long_reported == true && duration >= MID_KEY_LONG_TICKS * MID_KEY_SCAN_PERIOD_MS)
-            {
-                MID_Key_ReportSingle(mid_key->ID, MID_KEY_EVT_Long_REP);
+                mid_key->state = KEY_ST_IDLE;
             }
         }
         break;

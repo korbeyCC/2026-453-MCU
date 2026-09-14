@@ -1,5 +1,5 @@
 #include "mid_signal.h"
-#include "mid_supervisor.h"
+#include "mid_router.h"
 #include "task.h"
 
 static MID_SIGNAL_HandleTypeDef mid_signals[MID_SIGNAL_COUNT];
@@ -71,7 +71,7 @@ static void MID_Signal_Report(MID_Signal_ID id, MID_Signal_EventType evt)
     sys_evt.count      = 0;
     sys_evt.param      = 0;
 
-    if (Sys_Event_Dispatch(&sys_evt) == EVENT_CONSUMED) {
+    if (Sys_Router_Dispatch(&sys_evt) == EVENT_CONSUMED) {
         return; // 被高优先级拦截消费，终止下发至队列
     }
 

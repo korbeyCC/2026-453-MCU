@@ -61,6 +61,7 @@ typedef enum {
     SYS_STEP_READY,    // 系统配置完成，就绪待命（等待输入）
 
     SYS_STEP_SINGLE_TUNE, // 单路立柱微调控制中
+    SYS_STEP_TOTAL_TUNE,  // 四柱一键同步微调控制中 (增量平行 PID + 逐轴定长截断)
     SYS_STEP_TUNE_DONE,   // 微调/停机结束 (Flash 归档与对齐校验)
     SYS_STEP_AUTO_ALIGN,  // 四轴自主台面平行恢复 (自愈重平控制中)
 
@@ -123,7 +124,10 @@ typedef struct {
     uint8_t single_tune_motor_idx;      // 当前微调的目标电机 (0~3)
     uint32_t single_tune_start_hall;    // 微调开始时的驱动器原始霍尔起点
     int32_t single_tune_orig_abs_hall;  // 微调开始时的起点绝对霍尔高度
-    uint32_t single_tune_target_counts; // 微调目标霍尔步计数
+    uint32_t single_tune_target_counts; // 单轴微调目标霍尔步计数
+    // 四柱同步一键微调状态字段
+    volatile bool is_total_tuning;        // 是否正在执行四柱同步微调标志
+    uint32_t total_tune_target_counts;    // 四柱微调目标霍尔步计数
 
     uint8_t rebound_cmd;            // 反弹运动指令 (CMD_FORWARD 或 CMD_REVERSE)
     uint32_t rebound_start_hall[4]; // 反弹开始时 4 轴原始霍尔读数
@@ -139,6 +143,7 @@ void APP_Control_ResetSystemContext(void);
 void APP_Control_UpdateStateAndStatistics(void);
 void APP_Control_StartSingleTune(uint8_t m_idx);
 void APP_Control_CancelSingleTune(void);
+void APP_Control_StartTotalTune(void);
 bool APP_Control_ClearFault(void);
 void APP_Control_EmergencyStop(void);
 void APP_ControlTask(void *pvParameters);

@@ -95,12 +95,23 @@ static Event_Result_t Filter_Level2_MenuFocus(const Sys_Event_t *p_evt)
         }
     }
 
-    // 2. 场景二：电机处于运动中 (单轴微调、四轴联动升降、防夹反弹、自调平)
+    // 2. 场景二：电机处于运动中 (单轴微调、四柱微调、四轴联动升降、防夹反弹、自调平)
     if (g_sys_context.system_step == SYS_STEP_SINGLE_TUNE ||
+        g_sys_context.system_step == SYS_STEP_TOTAL_TUNE ||
         g_sys_context.system_step == SYS_STEP_TOTAL_RUNNING ||
         g_sys_context.system_step == SYS_STEP_TOTAL_REBOUND ||
         g_sys_context.system_step == SYS_STEP_AUTO_ALIGN) {
         if (p_evt->source == SYS_EVT_SRC_KEY) {
+            // 运行中长按连发一律屏蔽，绝不能作为打断意图！
+            if (p_evt->event_type == MID_KEY_EVT_Long_REP) {
+                return EVENT_CONSUMED;
+            }
+
+            // 四柱微调正在执行期间，忽略触发源按键 K5 自身的所有事件（防止长按未松开时误打断）
+            if ((g_sys_context.system_step == SYS_STEP_TOTAL_TUNE || g_sys_context.is_total_tuning) && p_evt->id == MID_KEY_ID_K5) {
+                return EVENT_CONSUMED;
+            }
+
             // 第一个按键 (K1 或 K6) 短按：放行给菜单任务，用于运行时随时切换查看各电机高度！
             if ((p_evt->id == MID_KEY_ID_K1 || p_evt->id == MID_KEY_ID_K6) && p_evt->event_type == MID_KEY_EVT_LEASS) {
 #if SYS_ROUTER_USE_FREERTOS
@@ -109,8 +120,8 @@ static Event_Result_t Filter_Level2_MenuFocus(const Sys_Event_t *p_evt)
                 return EVENT_CONSUMED; // 放行给菜单消费，不打断电机运行
             }
 
-            // 其他物理面板按键或长按：作为打断意图直接送入控制任务邮箱
-            if (p_evt->event_type == MID_KEY_EVT_LEASS || p_evt->event_type == MID_KEY_EVT_LONG || p_evt->event_type == MID_KEY_EVT_Long_REP) {
+            // 其他物理面板按键短按或长按：作为打断意图直接送入控制任务邮箱
+            if (p_evt->event_type == MID_KEY_EVT_LEASS || p_evt->event_type == MID_KEY_EVT_LONG) {
                 Sys_Mailbox_PostMotionCmd(SYS_MOTION_SRC_KEY, p_evt->id, p_evt->event_type);
                 return EVENT_CONSUMED;
             }
@@ -133,7 +144,13 @@ static Event_Result_t Filter_Level2_MenuFocus(const Sys_Event_t *p_evt)
             }
         }
 
-        // B. K5 (方向切换), K6 (轮播/长按进菜单), 及调试层按键 -> 路由给菜单任务
+        // B. K5 长按 (MID_KEY_EVT_LONG) -> 四柱一键同步微调主令直接送控制任务邮箱！
+        if (p_evt->id == MID_KEY_ID_K5 && p_evt->event_type == MID_KEY_EVT_LONG && s_sys_mode == SYS_MODE_STANDBY) {
+            Sys_Mailbox_PostMotionCmd(SYS_MOTION_SRC_KEY, p_evt->id, p_evt->event_type);
+            return EVENT_CONSUMED;
+        }
+
+        // C. K5 短按 (方向切换), K6 (轮播/长按进菜单), 及调试层按键 -> 路由给菜单任务
 #if SYS_ROUTER_USE_FREERTOS
         Sys_Router_NotifyMenuKey(p_evt->id, p_evt->event_type, p_evt->count);
 #endif

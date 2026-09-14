@@ -36,19 +36,21 @@ static bool MID_Signal_ReadPhysState(MID_Signal_ID id)
 {
     switch (id) {
         case MID_SIGNAL_REMOT_1:
-            return (HAL_GPIO_ReadPin(REMOT_1_GPIO_Port, REMOT_1_Pin) == GPIO_PIN_SET); // 高电平有效
-
-        case MID_SIGNAL_REMOT_2:
-            return (HAL_GPIO_ReadPin(REMOT_2_GPIO_Port, REMOT_2_Pin) == GPIO_PIN_SET); // 高电平有效
-
-        case MID_SIGNAL_REMOT_3:
-            return (HAL_GPIO_ReadPin(REMOT_3_GPIO_Port, REMOT_3_Pin) == GPIO_PIN_SET); // 高电平有效
-
-        case MID_SIGNAL_REMOT_4:
             return (HAL_GPIO_ReadPin(REMOT_4_GPIO_Port, REMOT_4_Pin) == GPIO_PIN_SET); // 高电平有效
 
+        case MID_SIGNAL_REMOT_2:
+            return (HAL_GPIO_ReadPin(REMOT_3_GPIO_Port, REMOT_3_Pin) == GPIO_PIN_SET); // 高电平有效
+
+        case MID_SIGNAL_REMOT_3:
+            return (HAL_GPIO_ReadPin(REMOT_2_GPIO_Port, REMOT_2_Pin) == GPIO_PIN_SET); // 高电平有效
+
+        case MID_SIGNAL_REMOT_4:
+            return (HAL_GPIO_ReadPin(REMOT_1_GPIO_Port, REMOT_1_Pin) == GPIO_PIN_SET); // 高电平有效
+
+            /*因为换了遥控器，把引脚号也换一下*/
+
         case MID_SIGNAL_REMOT_5:
-            return (HAL_GPIO_ReadPin(REMOT_5_GPIO_Port, REMOT_5_Pin) == GPIO_PIN_SET); // 高电平有效
+            return 0; // 屏蔽不需要的//(HAL_GPIO_ReadPin(REMOT_5_GPIO_Port, REMOT_5_Pin) == GPIO_PIN_SET); // 高电平有效
 
         case MID_SIGNAL_BUTON_DW:
             return (HAL_GPIO_ReadPin(BUTON_DW_GPIO_Port, BUTON_DW_Pin) == GPIO_PIN_RESET); // 光耦低电平有效

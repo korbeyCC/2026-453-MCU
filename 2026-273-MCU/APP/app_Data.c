@@ -66,14 +66,21 @@ void APP_Data_Init(void)
 uint8_t App_Data_GetColumnMotorMask(void)
 {
     switch (app_data.column_mode) {
-        case 12: return 0x03; // 轴 1 + 轴 2 (0b0011)
-        case 13: return 0x05; // 轴 1 + 轴 3 (0b0101)
-        case 14: return 0x09; // 轴 1 + 轴 4 (0b1001)
-        case 23: return 0x06; // 轴 2 + 轴 3 (0b0110)
-        case 24: return 0x0A; // 轴 2 + 轴 4 (0b1010)
-        case 34: return 0x0C; // 轴 3 + 轴 4 (0b1100)
+        case 12:
+            return 0x03; // 轴 1 + 轴 2 (0b0011)
+        case 13:
+            return 0x05; // 轴 1 + 轴 3 (0b0101)
+        case 14:
+            return 0x09; // 轴 1 + 轴 4 (0b1001)
+        case 23:
+            return 0x06; // 轴 2 + 轴 3 (0b0110)
+        case 24:
+            return 0x0A; // 轴 2 + 轴 4 (0b1010)
+        case 34:
+            return 0x0C; // 轴 3 + 轴 4 (0b1100)
         case 0:
-        default: return 0x0F; // 4 柱全使能 (0b1111)
+        default:
+            return 0x0F; // 4 柱全使能 (0b1111)
     }
 }
 
@@ -85,7 +92,7 @@ void APP_Data_ResetDefault(void)
     app_data.max_travel_range_mm     = 2000; // 默认 2000 mm
     app_data.reduction_ratio         = 30;   // 默认减速比 30
     app_data.target_speed_mm_min     = 750;  // 默认 750 mm/min
-    app_data.stall_current_threshold = 700;  // 默认 7.00A (需低于驱动器堵转上限 STALL_CURRENT_THRESHOLD_MAX = 7.5A*120% = 9.00A = 900)
+    app_data.stall_current_threshold = 750;  // 默认 7.50A (需低于驱动器堵转上限 STALL_CURRENT_THRESHOLD_MAX = 7.5A*150% = 11.25A = 1125)
     app_data.max_sync_diff_mm        = 5;    // 默认 5 mm
     app_data.lead_mm                 = 8;    // 默认 8 mm
     app_data.hall_coef               = 30;   // 默认 30

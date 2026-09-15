@@ -3,6 +3,7 @@
 #include "app_Data.h"
 #include "mid_signal.h"
 #include "mid_Key.h"
+#include "mid_led.h"
 #include <math.h>
 #include <stdio.h>
 
@@ -34,6 +35,26 @@ static Event_Result_t Filter_Level0_Safety(const Sys_Event_t *p_evt)
     }
 
     return EVENT_PASS_THROUGH; // 无安全威胁，放行给下一层
+}
+
+/**
+ * @brief 【Level Aux】全局辅助外设控制拦截器 (遥控 D 键照明一键开关)
+ * @details 独立自治：不受菜单调参阻塞、不受故障闭锁影响、不与电机运控竞争邮箱，就地翻转并消费
+ */
+static Event_Result_t Filter_Global_AuxLight(const Sys_Event_t *p_evt)
+{
+    if (p_evt == NULL) return EVENT_PASS_THROUGH;
+
+    // 遥控器 D 键 (MID_SIGNAL_REMOT_1): 仅在按下瞬间 (TRIGGER) 触发翻转，过滤松手 (RELEASE) 与连发
+    if (p_evt->source == SYS_EVT_SRC_SIGNAL && p_evt->id == MID_SIGNAL_REMOT_1) {
+        if (p_evt->event_type == MID_SIGNAL_EVT_TRIGGER) {
+            MID_LED_ToggleAll();
+            Debug_Printf("[LEPA Aux] Remote D Key: Toggled strip lights globally.\r\n");
+        }
+        return EVENT_CONSUMED; // 就地消费，绝不污染运动邮箱与运控状态机
+    }
+
+    return EVENT_PASS_THROUGH;
 }
 
 /**
@@ -184,7 +205,8 @@ static Event_Result_t Filter_Level3_Motion(const Sys_Event_t *p_evt)
 
 // 静态责任链策略表
 static const Sys_Pipeline_Filter_t c_event_pipeline[] = {
-    Filter_Level0_Safety,     // Level 0: 急停与极限熔断
+    Filter_Level0_Safety,     // Level 0: 急停与极限熔断 (遥控 A 键)
+    Filter_Global_AuxLight,   // Level Aux: 全局辅助照明 (遥控 D 键独立自治)
     Filter_Level1_FaultClear, // Level 1: 故障与报警确认
     Filter_Level2_MenuFocus,  // Level 2: 菜单独占与动作/功能分流
     Filter_Level3_Motion      // Level 3: 遥控运动单值邮箱投递

@@ -31,7 +31,7 @@ void APP_Menu_SetPrompt(const char *str, uint16_t ticks_50ms)
     }
 }
 
-uint8_t reset_factory_flag = 0; // 0: 不恢复出厂设置, 1: 恢复出厂设置
+uint8_t reset_factory_flag        = 0; // 0: 不恢复出厂设置, 1: 恢复出厂设置
 static uint8_t s_edit_column_mode = 0; // 菜单第 10 项临时编辑模式值，离开保存时统一生效
 
 uint8_t APP_Menu_GetEditingColumnMode(void)
@@ -176,7 +176,7 @@ static void APP_Menu_AdjustParam(bool is_inc)
             }
 
             static const uint16_t s_modes[7] = {0, 12, 13, 14, 23, 24, 34};
-            int8_t cur_idx = 0;
+            int8_t cur_idx                   = 0;
             for (int i = 0; i < 7; i++) {
                 if (s_edit_column_mode == s_modes[i]) {
                     cur_idx = (int8_t)i;
@@ -249,12 +249,15 @@ void APP_MenuTask(void *pvParameters)
             has_key    = true;
         } else
 #endif
-        if (MID_Key_GetSingleEvent(&msg, 0) == pdTRUE) {
+            if (MID_Key_GetSingleEvent(&msg, 0) == pdTRUE) {
             has_key = true;
         }
 
         if (has_key) {
-            MID_Buzzer_TriggerBeep(40); // 453 按键有效触发提示音 40ms
+            // 连发事件 (MID_KEY_EVT_Long_REP) 时静音，避免长按调参时蜂鸣器持续吵闹
+            if (msg.event != MID_KEY_EVT_Long_REP) {
+                MID_Buzzer_TriggerBeep(40); // 453 按键有效触发提示音 40ms
+            }
 
             // ====================================================
             // 维度长按切换：长按 K6 (设置键) 切换一维 dim1 (0 -> 1 -> 2 -> 0)
@@ -273,13 +276,13 @@ void APP_MenuTask(void *pvParameters)
                 if (dim1 == 1) {
                     if (reset_factory_flag == 7) {
                         reset_factory_flag = 0;
-                        APP_Data_ResetDefault();     // (1, 0) 设为 7 触发恢复出厂设置
-                        Sys_Notify_FactoryReset();   // 全面重置系统上下文状态与 4 轴运行位置
+                        APP_Data_ResetDefault();   // (1, 0) 设为 7 触发恢复出厂设置
+                        Sys_Notify_FactoryReset(); // 全面重置系统上下文状态与 4 轴运行位置
                         Debug_Printf("[SYS] Factory Reset Executed via Menu (1, 0 = 7)!\r\n");
                     } else {
                         reset_factory_flag          = 0;
                         app_data.column_mode        = s_edit_column_mode; // 真正生效并固化
-                        app_data.column_mode_locked = 1; // 一旦保存设置，立即进入单向锁定态
+                        app_data.column_mode_locked = 1;                  // 一旦保存设置，立即进入单向锁定态
                         APP_Data_Storage();
                         Sys_Notify_ParamsUpdated();
                         Debug_Printf("[SYS] Menu Level 1 Params Saved to Flash (ColumnMode=%d, Locked=1).\r\n", app_data.column_mode);
@@ -293,7 +296,7 @@ void APP_MenuTask(void *pvParameters)
 
                 if (dim1 == 1) {
                     s_edit_column_mode = app_data.column_mode; // 进入设置菜单时同步初始化临时编辑模式值
-                    Sys_Mode_Set(SYS_MODE_MENU_CONFIG); // 切入设置模式，独占按键并安全封锁电机
+                    Sys_Mode_Set(SYS_MODE_MENU_CONFIG);        // 切入设置模式，独占按键并安全封锁电机
                 } else if (dim1 == 2) {
                     Sys_Mode_Set(SYS_MODE_DEBUG_CALIB); // 切入深度调试层
                 } else {
@@ -357,8 +360,8 @@ void APP_MenuTask(void *pvParameters)
                         // 最后一项 (10) 按 K6：检查 (1,0) 是否调至 7 (q0 == 7 触发恢复出厂)
                         if (reset_factory_flag == 7) {
                             reset_factory_flag = 0;
-                            APP_Data_ResetDefault();     // 恢复全部出厂默认参数并存盘 Flash (解除锁定)
-                            Sys_Notify_FactoryReset();   // 全面重置系统上下文状态与 4 轴运行位置
+                            APP_Data_ResetDefault();   // 恢复全部出厂默认参数并存盘 Flash (解除锁定)
+                            Sys_Notify_FactoryReset(); // 全面重置系统上下文状态与 4 轴运行位置
                             dim1              = 0;
                             dim2              = 0;
                             adjust_hold_ticks = 0;
@@ -368,7 +371,7 @@ void APP_MenuTask(void *pvParameters)
                         } else {
                             reset_factory_flag          = 0;
                             app_data.column_mode        = s_edit_column_mode; // 真正生效并固化
-                            app_data.column_mode_locked = 1; // 一旦保存设置，立即进入单向锁定态
+                            app_data.column_mode_locked = 1;                  // 一旦保存设置，立即进入单向锁定态
                             APP_Data_Storage();
                             Sys_Notify_ParamsUpdated();
                             dim1              = 0;

@@ -349,7 +349,7 @@ static void App_Comm_InitHardwareSequence(void)
     } init_steps[] = {
         {0x200E, 0x0001, "Write Enable", 0},
         {0x2000, 0x0007, "Fault Reset", 0x03},                                                  /* 正常回显或 86 03 都算过 */
-        {0x070C, (uint16_t)(DRIVER_INIT_STALL_CURRENT_PERCENT * 10), "Stall Current Limit", 0}, /* F07.12: 堵转限制电流 (相对额定电流百分比*10, 默认 1200 = 120.0%) */
+        {0x070C, (uint16_t)(DRIVER_INIT_STALL_CURRENT_PERCENT * 10), "Stall Current Limit", 0}, /* F07.12: 堵转限制电流 (相对额定电流百分比*10, 默认 1500 = 150.0%) */
         {0x0709, DRIVER_FAULT_AUTO_RESET_TIME, "Auto Reset Time", 0},                           /* F07.09: 故障自动复位间隔 5.0s (写入 50，防频繁冲击) */
         {0x070A, DRIVER_FAULT_AUTO_RESET_TIMES, "Auto Reset Times", 0},                         /* F07.10: 故障自动复位次数 (10次重试自愈) */
         {0x0804, DRIVER_485_TIMEOUT_TIME_VAL, "485 Timeout 0.2s", 0},                           /* F08.04: 485 通信超时故障时间 0.2s (写入 2，200ms 极速停机) */

@@ -180,19 +180,22 @@ static void App_Comm_WaitInitWrites(uint8_t pending_mask)
     }
 }
 
-static void App_Comm_WriteRegUntilAllOk(uint16_t reg, uint16_t val, const char *name, uint8_t accept_ex)
+static void App_Comm_WriteRegUntilAllOk(uint16_t reg, uint16_t val, const char *name, uint8_t accept_ex, uint8_t target_mask)
 {
     uint8_t ok_mask      = 0;
     uint16_t retry_round = 0;
 
-    Debug_Printf("[COMM] Init %s (0x%04X=0x%04X)\r\n", name, reg, val);
+    Debug_Printf("[COMM] Init %s (0x%04X=0x%04X, Mask=0x%02X)\r\n", name, reg, val, target_mask);
 
-    while (ok_mask != COMM_INIT_ALL_MASK) {
+    while (ok_mask != target_mask) {
         uint8_t pending_mask = ok_mask;
         s_init_done_mask     = ok_mask;
         s_init_ok_mask       = ok_mask;
 
         for (int i = 0; i < 4; i++) {
+            if (!(target_mask & (1u << i))) {
+                continue;
+            }
             if (ok_mask & (1u << i)) {
                 continue;
             }
@@ -208,11 +211,14 @@ static void App_Comm_WriteRegUntilAllOk(uint16_t reg, uint16_t val, const char *
         }
 
         App_Comm_WaitInitWrites(pending_mask);
-        ok_mask = s_init_ok_mask;
+        ok_mask = s_init_ok_mask & target_mask;
 
         if (accept_ex != 0) {
             for (int i = 0; i < 4; i++) {
                 uint8_t bit = (uint8_t)(1u << i);
+                if ((target_mask & bit) == 0) {
+                    continue;
+                }
                 if ((pending_mask & bit) == 0 || (ok_mask & bit) != 0) {
                     continue;
                 }
@@ -223,7 +229,7 @@ static void App_Comm_WriteRegUntilAllOk(uint16_t reg, uint16_t val, const char *
             }
         }
 
-        if (ok_mask != COMM_INIT_ALL_MASK) {
+        if (ok_mask != target_mask) {
             retry_round++;
             if ((retry_round % 20u) == 0u) {
                 Debug_Printf("[COMM] Init %s retry %u ok_mask=0x%02X\r\n", name, retry_round, ok_mask);
@@ -232,17 +238,20 @@ static void App_Comm_WriteRegUntilAllOk(uint16_t reg, uint16_t val, const char *
     }
 }
 
-static void App_Comm_SwitchBaudUntilAllOk(void)
+static void App_Comm_SwitchBaudUntilAllOk(uint8_t target_mask)
 {
     uint8_t ok_mask      = 0;
     uint16_t retry_round = 0;
 
-    Debug_Printf("[COMM] Executing 5-Cycle 19200 Enable-Switch-Read + 115200 Confirmation Handshake...\r\n");
+    Debug_Printf("[COMM] Executing 5-Cycle 19200 Enable-Switch-Read + 115200 Confirmation Handshake (Mask=0x%02X)...\r\n", target_mask);
 
-    while (ok_mask != COMM_INIT_ALL_MASK) {
+    while (ok_mask != target_mask) {
         retry_round++;
 
         for (int i = 0; i < 4; i++) {
+            if (!(target_mask & (1u << i))) {
+                continue;
+            }
             if (ok_mask & (1u << i)) {
                 continue;
             }
@@ -313,23 +322,25 @@ static void App_Comm_SwitchBaudUntilAllOk(void)
             }
         }
 
-        if (ok_mask != COMM_INIT_ALL_MASK) {
+        if (ok_mask != target_mask) {
             Debug_Printf("[COMM] Baudrate Handshake Round %u: ok_mask=0x%02X, retrying unconfirmed channels...\r\n", retry_round, ok_mask);
             vTaskDelay(pdMS_TO_TICKS(50));
         }
     }
 
-    Debug_Printf("[COMM] ALL 4 Motors Baudrate 115200 Handshake & Double-Confirmation SUCCESSFUL!\r\n");
+    Debug_Printf("[COMM] Active Motors Baudrate 115200 Handshake & Double-Confirmation SUCCESSFUL (Mask=0x%02X)!\r\n", target_mask);
 }
 
 // ========================== 485 并行 Modbus 硬件初始化序列 ==========================
 
 static void App_Comm_InitHardwareSequence(void)
 {
-    /* 波特率指令也无限重试，直到 4 路都收到 115200 应答 */
-    App_Comm_SwitchBaudUntilAllOk();
+    uint8_t comm_mask = App_Data_GetColumnMotorMask();
 
-    /* 后续每条配置都等 4 路成功后才进入下一条 */
+    /* 波特率指令也无限重试，直到使能路都收到 115200 应答 */
+    App_Comm_SwitchBaudUntilAllOk(comm_mask);
+
+    /* 后续每条配置都等使能路成功后才进入下一条 */
     struct {
         uint16_t reg;
         uint16_t val;
@@ -350,7 +361,7 @@ static void App_Comm_InitHardwareSequence(void)
 
     int num_steps = sizeof(init_steps) / sizeof(init_steps[0]);
     for (int step = 0; step < num_steps; step++) {
-        App_Comm_WriteRegUntilAllOk(init_steps[step].reg, init_steps[step].val, init_steps[step].name, init_steps[step].accept_ex);
+        App_Comm_WriteRegUntilAllOk(init_steps[step].reg, init_steps[step].val, init_steps[step].name, init_steps[step].accept_ex, comm_mask);
     }
 
     g_sys_context.is_hardware_ready = true;
@@ -417,7 +428,10 @@ void APP_CommTask(void *pvParameters)
                 }
             }
 
+            uint8_t comm_active_mask = App_Data_GetColumnMotorMask();
+
             for (int i = 0; i < 4; i++) {
+                if (!(comm_active_mask & (1 << i))) continue;
                 Modbus_Master_t *m = &modbus_masters[i];
                 if (m->state != MODBUS_STATE_IDLE) continue;
 

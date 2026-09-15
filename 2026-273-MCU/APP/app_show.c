@@ -149,36 +149,57 @@ void APP_ShowTask(void *pvParameters)
         else if (dim1 == 1) {
             SEG_Flag[0] = SEG_Flag[1] = SEG_Flag[2] = SEG_Flag[3] = 0;
 
-            // 1. 前 500ms（或未调值时交替前半段）显示项编号 `-qX-`
+            // 1. 前 500ms（或未调值时交替前半段）显示项编号 `-qX-` 或 `-q10`
             if (adjust_hold_ticks == 0 && flicker_cnt < 10) {
-                SEG_W[0] = 18;     // -
-                SEG_W[1] = 16;     // q
-                SEG_W[2] = dim2;   // 1 ~ 6
-                SEG_W[3] = 18;     // -
+                if (dim2 < 10) {
+                    SEG_W[0] = 18;     // -
+                    SEG_W[1] = 16;     // q
+                    SEG_W[2] = dim2;   // 0 ~ 9
+                    SEG_W[3] = 18;     // -
+                } else {
+                    SEG_W[0] = 18;     // -
+                    SEG_W[1] = 16;     // q
+                    SEG_W[2] = (uint8_t)(dim2 / 10); // 1
+                    SEG_W[3] = (uint8_t)(dim2 % 10); // 0
+                }
             }
             // 2. 后 500ms（或调值期间）显示当前项的具体参数数值
             else {
-                uint32_t param_val = 0;
-                switch (dim2) {
-                    case 0: param_val = reset_factory_flag; break; // (1, 0) 项显示恢复出厂开关
-                    case 1: param_val = app_data.max_travel_range_mm; break;
-                    case 2: param_val = app_data.target_speed_mm_min; break;
-                    case 3: param_val = app_data.motor_dir_invert; break;
-                    case 4: param_val = app_data.max_sync_diff_mm; break;
-                    case 5: param_val = app_data.stall_current_threshold; break;
-                    case 6: param_val = app_data.lead_mm; break;
-                    case 7: param_val = app_data.reduction_ratio; break;
-                    case 8: param_val = app_data.single_tune_step_mm; break;
-                    case 9: param_val = app_data.rebound_travel_mm; break;
-                    default: param_val = 0; break;
+                if (dim2 == 10) {
+                    // q10 柱体模式显示："-00-", "-12-", "-13-", "-14-", "-23-", "-24-", "-34-"
+                    uint16_t m = APP_Menu_GetEditingColumnMode();
+                    SEG_W[0]   = 18; // -
+                    if (m == 0) {
+                        SEG_W[1] = 0;
+                        SEG_W[2] = 0;
+                    } else {
+                        SEG_W[1] = (uint8_t)((m / 10) % 10);
+                        SEG_W[2] = (uint8_t)(m % 10);
+                    }
+                    SEG_W[3] = 18; // -
+                } else {
+                    uint32_t param_val = 0;
+                    switch (dim2) {
+                        case 0: param_val = reset_factory_flag; break; // (1, 0) 项显示恢复出厂开关
+                        case 1: param_val = app_data.max_travel_range_mm; break;
+                        case 2: param_val = app_data.target_speed_mm_min; break;
+                        case 3: param_val = app_data.motor_dir_invert; break;
+                        case 4: param_val = app_data.max_sync_diff_mm; break;
+                        case 5: param_val = app_data.stall_current_threshold; break;
+                        case 6: param_val = app_data.lead_mm; break;
+                        case 7: param_val = app_data.reduction_ratio; break;
+                        case 8: param_val = app_data.single_tune_step_mm; break;
+                        case 9: param_val = app_data.rebound_travel_mm; break;
+                        default: param_val = 0; break;
+                    }
+
+                    if (param_val > 9999) param_val = 9999;
+
+                    SEG_W[0] = (uint8_t)((param_val / 1000) % 10);
+                    SEG_W[1] = (uint8_t)((param_val / 100) % 10);
+                    SEG_W[2] = (uint8_t)((param_val / 10) % 10);
+                    SEG_W[3] = (uint8_t)(param_val % 10);
                 }
-
-                if (param_val > 9999) param_val = 9999;
-
-                SEG_W[0] = (uint8_t)((param_val / 1000) % 10);
-                SEG_W[1] = (uint8_t)((param_val / 100) % 10);
-                SEG_W[2] = (uint8_t)((param_val / 10) % 10);
-                SEG_W[3] = (uint8_t)(param_val % 10);
             }
         }
         // ====================================================
@@ -211,6 +232,17 @@ void APP_ShowTask(void *pvParameters)
         // 模式三：主界面 & 实时监测层 (dim1 == 0)
         // ====================================================
         else {
+            // 0. 防御：若当前 dim2 所指电机非使能电机，自动吸附至第一个有效电机
+            uint8_t mask = App_Data_GetColumnMotorMask();
+            if (!(mask & (1 << (dim2 % 4)))) {
+                for (int i = 0; i < 4; i++) {
+                    if (mask & (1 << i)) {
+                        dim2 = (uint8_t)i;
+                        break;
+                    }
+                }
+            }
+
             // 1. 解算当前 dim2 所指示电机的绝对高度 (单位: mm, 接入中立视图模型)
             uint8_t m_idx = dim2 % 4;
             int32_t val_mm = Sys_View_GetAxisTravelMm(m_idx);

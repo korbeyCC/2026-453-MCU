@@ -39,6 +39,17 @@ void APP_Data_Init(void)
         app_data.stall_current_threshold = STALL_CURRENT_THRESHOLD_MIN;
     }
 
+    // 柱体模式参数合法性防御 (仅允许 0, 12, 13, 14, 23, 24, 34)
+    if (app_data.column_mode != 0 && app_data.column_mode != 12 &&
+        app_data.column_mode != 13 && app_data.column_mode != 14 &&
+        app_data.column_mode != 23 && app_data.column_mode != 24 &&
+        app_data.column_mode != 34) {
+        app_data.column_mode = 0;
+    }
+    if (app_data.column_mode_locked > 1) {
+        app_data.column_mode_locked = 0;
+    }
+
     // 强制使能 PVD 检测及硬件 PLS 阈值配置 (PVD 检测阈值调低至 2.6V，防范负载及波动噪声)
     // 注：由于 CubeMX 已经自动生成了 NVIC (PVD_IRQn) 中断使能，此处仅需配置并使能 PVD 硬件外设本身即可
     PWR_PVDTypeDef getConfigPVD;
@@ -46,6 +57,24 @@ void APP_Data_Init(void)
     getConfigPVD.Mode     = PWR_PVD_MODE_IT_RISING; // 电压跌落至阈值以下触发中断
     HAL_PWR_ConfigPVD(&getConfigPVD);
     HAL_PWR_EnablePVD();
+}
+
+/**
+ * @brief 根据当前 column_mode 返回硬件有效电机掩码
+ * @return 8位掩码，第 0~3 位对应电机 1~4
+ */
+uint8_t App_Data_GetColumnMotorMask(void)
+{
+    switch (app_data.column_mode) {
+        case 12: return 0x03; // 轴 1 + 轴 2 (0b0011)
+        case 13: return 0x05; // 轴 1 + 轴 3 (0b0101)
+        case 14: return 0x09; // 轴 1 + 轴 4 (0b1001)
+        case 23: return 0x06; // 轴 2 + 轴 3 (0b0110)
+        case 24: return 0x0A; // 轴 2 + 轴 4 (0b1010)
+        case 34: return 0x0C; // 轴 3 + 轴 4 (0b1100)
+        case 0:
+        default: return 0x0F; // 4 柱全使能 (0b1111)
+    }
 }
 
 /**
@@ -63,6 +92,8 @@ void APP_Data_ResetDefault(void)
     app_data.motor_dir_invert        = 1;    // 默认 1 (反向丝杆，极性反转)
     app_data.single_tune_step_mm     = 1;    // 默认微调步进 1 mm
     app_data.rebound_travel_mm       = 1000; // 默认堵转反弹行程 1000 mm (1米)
+    app_data.column_mode             = 0;    // 默认四柱模式 (00)
+    app_data.column_mode_locked      = 0;    // 默认未锁定 (出厂态自由任选)
 
     float c_per_mm              = (float)(app_data.reduction_ratio * app_data.hall_coef) / (float)app_data.lead_mm;
     int32_t default_mount_halls = (int32_t)(1000.0f * c_per_mm + 0.5f);

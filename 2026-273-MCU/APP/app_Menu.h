@@ -18,5 +18,6 @@ extern uint16_t prompt_ticks; // 提示文本保持显示倒计时 (单位: 50ms
 
 void APP_Menu_SetPrompt(const char *str, uint16_t ticks_50ms);
 void APP_MenuTask(void *pvParameters);
+uint8_t APP_Menu_GetEditingColumnMode(void);
 
 #endif // __APP_MENU_H

@@ -72,8 +72,9 @@ static Event_Result_t Filter_Level2_MenuFocus(const Sys_Event_t *p_evt)
 {
     if (p_evt == NULL) return EVENT_PASS_THROUGH;
 
-    // 1. 场景一：调参菜单态 (SYS_MODE_MENU_CONFIG)
-    if (Sys_Mode_IsMenuActive()) {
+    // 1. 场景一：调参菜单态 (SYS_MODE_MENU_CONFIG 或 dim1 != 0)
+    extern uint8_t dim1;
+    if (Sys_Mode_IsMenuActive() || dim1 != 0) {
         if (p_evt->source == SYS_EVT_SRC_KEY) {
             // 连发事件保护：菜单中只有 K1(+) 和 K2(-) 允许连发调参；
             // 屏蔽 K3~K6 的长按连发 (Long_REP)，防止冲刷覆盖 K6 切换维度的 LONG 事件！
@@ -223,7 +224,8 @@ System_Mode_t Sys_Mode_Get(void)
 
 bool Sys_Mode_CanRunMotion(void)
 {
-    if (s_sys_mode == SYS_MODE_MENU_CONFIG || s_sys_mode == SYS_MODE_FAULT_LOCKED) {
+    extern uint8_t dim1;
+    if (s_sys_mode == SYS_MODE_MENU_CONFIG || s_sys_mode == SYS_MODE_FAULT_LOCKED || dim1 != 0) {
         return false;
     }
     if (g_sys_context.system_step == SYS_STEP_FAULT_STOP) {
@@ -245,7 +247,8 @@ bool Sys_Mode_CanEnterMenu(void)
 
 bool Sys_Mode_IsMenuActive(void)
 {
-    return (s_sys_mode == SYS_MODE_MENU_CONFIG);
+    extern uint8_t dim1;
+    return (s_sys_mode == SYS_MODE_MENU_CONFIG || dim1 == 1);
 }
 
 bool Sys_Mode_IsFaultLocked(void)

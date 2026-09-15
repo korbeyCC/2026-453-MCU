@@ -3,6 +3,7 @@
 #include "app_Data.h"
 #include "mid_buzzer.h"
 #include "app_supervisor.h"
+#include "app_control.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -31,6 +32,12 @@ void APP_Menu_SetPrompt(const char *str, uint16_t ticks_50ms)
 }
 
 uint8_t reset_factory_flag = 0; // 0: 不恢复出厂设置, 1: 恢复出厂设置
+static uint8_t s_edit_column_mode = 0; // 菜单第 10 项临时编辑模式值，离开保存时统一生效
+
+uint8_t APP_Menu_GetEditingColumnMode(void)
+{
+    return s_edit_column_mode;
+}
 
 /**
  * @brief 常规应用设置层 (dim1 == 1) 参数加减调节通用辅助函数
@@ -153,6 +160,51 @@ static void APP_Menu_AdjustParam(bool is_inc)
             }
             break;
 
+        case 10: { // Set_W = 10: column_mode (0: 四柱 "00", 12, 13, 14, 23, 24, 34)
+            // 1. 已锁定且为四柱模式：只能看，不能调！
+            if (app_data.column_mode_locked == 1 && app_data.column_mode == 0) {
+                s_edit_column_mode = 0;
+                break;
+            }
+
+            // 2. 模式切换安全门禁：必须所有柱子都低于或等于安装起点 (即处于底部机械零位) 才允许切换！
+            if (!APP_Control_IsAllColumnsAtBottom()) {
+                APP_Menu_SetPrompt("-Err-", 20); // 闪烁显示 "-Err-" 1.0秒
+                MID_Buzzer_TriggerBeep(100);     // 蜂鸣器长鸣 100ms 提示操作被拒
+                Debug_Printf("[SYS] Column Mode Switch Denied! All columns must be at bottom origin (current_abs <= min_mount).\r\n");
+                break;
+            }
+
+            static const uint16_t s_modes[7] = {0, 12, 13, 14, 23, 24, 34};
+            int8_t cur_idx = 0;
+            for (int i = 0; i < 7; i++) {
+                if (s_edit_column_mode == s_modes[i]) {
+                    cur_idx = (int8_t)i;
+                    break;
+                }
+            }
+
+            if (app_data.column_mode_locked == 0) {
+                // 未锁定态 (出厂默认或重置出厂后)：允许在 00 与 6 种双柱模式之间任意自由切换
+                if (is_inc) {
+                    cur_idx = (cur_idx + 1) % 7;
+                } else {
+                    cur_idx = (cur_idx + 6) % 7;
+                }
+                s_edit_column_mode = s_modes[cur_idx];
+            } else {
+                // 已锁定态：允许在 6 种双柱组合之间切换，但绝不能切换回 00！
+                if (cur_idx < 1) cur_idx = 1;
+                if (is_inc) {
+                    cur_idx = 1 + ((cur_idx - 1 + 1) % 6);
+                } else {
+                    cur_idx = 1 + ((cur_idx - 1 + 5) % 6);
+                }
+                s_edit_column_mode = s_modes[cur_idx];
+            }
+            break;
+        }
+
         default:
             break;
     }
@@ -225,10 +277,12 @@ void APP_MenuTask(void *pvParameters)
                         Sys_Notify_FactoryReset();   // 全面重置系统上下文状态与 4 轴运行位置
                         Debug_Printf("[SYS] Factory Reset Executed via Menu (1, 0 = 7)!\r\n");
                     } else {
-                        reset_factory_flag = 0;
+                        reset_factory_flag          = 0;
+                        app_data.column_mode        = s_edit_column_mode; // 真正生效并固化
+                        app_data.column_mode_locked = 1; // 一旦保存设置，立即进入单向锁定态
                         APP_Data_Storage();
                         Sys_Notify_ParamsUpdated();
-                        Debug_Printf("[SYS] Menu Level 1 Params Saved to Flash.\r\n");
+                        Debug_Printf("[SYS] Menu Level 1 Params Saved to Flash (ColumnMode=%d, Locked=1).\r\n", app_data.column_mode);
                     }
                     Sys_Mode_Set(SYS_MODE_STANDBY); // 退出设置模式，恢复待机态
                 }
@@ -238,6 +292,7 @@ void APP_MenuTask(void *pvParameters)
                 adjust_hold_ticks = 0;
 
                 if (dim1 == 1) {
+                    s_edit_column_mode = app_data.column_mode; // 进入设置菜单时同步初始化临时编辑模式值
                     Sys_Mode_Set(SYS_MODE_MENU_CONFIG); // 切入设置模式，独占按键并安全封锁电机
                 } else if (dim1 == 2) {
                     Sys_Mode_Set(SYS_MODE_DEBUG_CALIB); // 切入深度调试层
@@ -256,9 +311,18 @@ void APP_MenuTask(void *pvParameters)
             // 维度 0：主界面 & 实时监测层 (dim1 == 0)
             // ====================================================
             else if (dim1 == 0) {
-                // 1. 短按 K1 或 K6：轮播切换 4 轴实时读数 (Motor 0 -> 1 -> 2 -> 3 -> 0)
+                // 1. 短按 K1 或 K6：轮播切换当前模式下的有效使能轴实时读数
                 if ((msg.key_id == MID_KEY_ID_K1 || msg.key_id == MID_KEY_ID_K6) && msg.event == MID_KEY_EVT_LEASS) {
-                    dim2 = (dim2 + 1) % 4;
+                    uint8_t mask     = App_Data_GetColumnMotorMask();
+                    uint8_t next_idx = dim2;
+                    for (int step = 1; step <= 4; step++) {
+                        uint8_t candidate = (dim2 + step) % 4;
+                        if (mask & (1 << candidate)) {
+                            next_idx = candidate;
+                            break;
+                        }
+                    }
+                    dim2 = next_idx;
                     Debug_Printf("[SYS] Display Switched to Motor %d Absolute Hall/Travel.\r\n", dim2);
                 }
                 // 2. 短按 K5：切换微调方向 (0:正转/上升, 1:反转/下降)，并闪烁提示 "-UP-" / "-dn-"
@@ -276,12 +340,12 @@ void APP_MenuTask(void *pvParameters)
                 // (注意：K1 ~ K4 微调动作键已在待机态直接由中枢路由给 APP_ControlTask 自治驱动，无需菜单介入)
             }
             // ====================================================
-            // 维度 1：常规应用设置层 (dim1 == 1, dim2 为 0~8, 其中 (1,0) 为恢复出厂开关)
+            // 维度 1：常规应用设置层 (dim1 == 1, dim2 为 0~10, 其中 (1,0) 为恢复出厂开关)
             // ====================================================
             else if (dim1 == 1) {
-                // A. 短按 K6：前进到下一项 (dim2++)。在最后一项 (dim2 == 9) 按 K6 时保存 Flash 并退出至 dim1 = 0
+                // A. 短按 K6：前进到下一项 (dim2++)。在最后一项 (dim2 == 10) 按 K6 时保存 Flash 并退出至 dim1 = 0
                 if (msg.key_id == MID_KEY_ID_K6 && msg.event == MID_KEY_EVT_LEASS) {
-                    if (dim2 < 9) {
+                    if (dim2 < 10) {
                         dim2++;
                         adjust_hold_ticks = 0;
 
@@ -290,10 +354,10 @@ void APP_MenuTask(void *pvParameters)
                         APP_Menu_SetPrompt(buf, 20); // 切换项目显示 "-q0-", "-q1-"... 1.0s
                         Debug_Printf("[SYS] Setting Next Item: dim2 = %d\r\n", dim2);
                     } else {
-                        // 最后一项 (9) 按 K6：检查 (1,0) 是否调至 7 (q0 == 7 触发恢复出厂)
+                        // 最后一项 (10) 按 K6：检查 (1,0) 是否调至 7 (q0 == 7 触发恢复出厂)
                         if (reset_factory_flag == 7) {
                             reset_factory_flag = 0;
-                            APP_Data_ResetDefault();     // 恢复全部出厂默认参数并存盘 Flash
+                            APP_Data_ResetDefault();     // 恢复全部出厂默认参数并存盘 Flash (解除锁定)
                             Sys_Notify_FactoryReset();   // 全面重置系统上下文状态与 4 轴运行位置
                             dim1              = 0;
                             dim2              = 0;
@@ -302,7 +366,9 @@ void APP_MenuTask(void *pvParameters)
                             APP_Menu_SetPrompt("-rSt-", 30); // 闪烁显示 "-rSt-" (Reset) 1.5s
                             Debug_Printf("[SYS] Factory Reset Executed via Menu (1, 0 = 7)! Restored Default Factory Settings.\r\n");
                         } else {
-                            reset_factory_flag = 0;
+                            reset_factory_flag          = 0;
+                            app_data.column_mode        = s_edit_column_mode; // 真正生效并固化
+                            app_data.column_mode_locked = 1; // 一旦保存设置，立即进入单向锁定态
                             APP_Data_Storage();
                             Sys_Notify_ParamsUpdated();
                             dim1              = 0;
@@ -310,7 +376,7 @@ void APP_MenuTask(void *pvParameters)
                             adjust_hold_ticks = 0;
                             Sys_Mode_Set(SYS_MODE_STANDBY);
                             APP_Menu_SetPrompt("-P0-", 20);
-                            Debug_Printf("[SYS] Menu Setting Complete & Saved to Flash! Exit to dim1 = 0.\r\n");
+                            Debug_Printf("[SYS] Menu Setting Complete & Saved to Flash (ColumnMode=%d, Locked=1)! Exit to dim1 = 0.\r\n", app_data.column_mode);
                         }
                     }
                 }
@@ -327,6 +393,7 @@ void APP_MenuTask(void *pvParameters)
                     } else {
                         // 第一项 (1,0) 按 K5：不保存退出
                         reset_factory_flag = 0;
+                        s_edit_column_mode = app_data.column_mode; // 放弃编辑，恢复原值
                         dim1               = 0;
                         dim2               = 0;
                         adjust_hold_ticks  = 0;

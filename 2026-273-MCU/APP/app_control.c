@@ -245,6 +245,36 @@ void APP_Control_UpdateParamsFromAppData(void)
     }
 }
 
+/**
+ * @brief 检查所有 4 根立柱是否均低于或等于安装起点 (即 current_abs_hall <= min_mount_halls + 容差)
+ * @return true: 全部立柱均处于底部起点; false: 至少有一根立柱高于起点
+ */
+bool APP_Control_IsAllColumnsAtBottom(void)
+{
+    // 允许 1.0mm 内的机械自锁齿隙与回弹微小容差 (保底 10 counts)
+    int32_t tolerance_counts = (int32_t)roundf(1.0f * g_sys_context.counts_per_mm);
+    if (tolerance_counts < 10) tolerance_counts = 10;
+
+    for (int i = 0; i < 4; i++) {
+        if (g_sys_context.g_motor_status[i].current_abs_hall > (app_data.min_mount_halls[i] + tolerance_counts)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/**
+ * @brief 动作启动前强制锁死当前柱体模式 (动则强锁防呆门禁)
+ */
+void APP_Control_EnsureColumnModeLocked(void)
+{
+    if (app_data.column_mode_locked == 0) {
+        app_data.column_mode_locked = 1;
+        APP_Data_Storage();
+        Debug_Printf("[SYS] Motion Triggered: Column Mode %d Force-Locked to Flash!\r\n", app_data.column_mode);
+    }
+}
+
 // ===================================================================
 // 逐轴独立停稳检测与停机管理状态
 // ===================================================================
@@ -320,6 +350,9 @@ void APP_Control_StartSingleTune(uint8_t m_idx)
     if (!Sys_Mode_CanRunMotion() || dim1 != 0) return; // 权威门禁：调参或锁定态下禁止微调
     uint8_t active_mask = App_Data_GetColumnMotorMask();
     if (!(active_mask & (1 << m_idx))) return; // 门禁：当前模式未启用的轴直接忽视
+
+    // 动则强锁：发生任何位移控制动作前强制锁死当前柱体模式，防范未锁定态空中变动拓扑
+    APP_Control_EnsureColumnModeLocked();
 
     for (int i = 0; i < 4; i++) {
         g_sys_context.g_motor_status[i].last_motion_cmd  = CMD_STOP;
@@ -404,6 +437,9 @@ void APP_Control_StartTotalTune(void)
             }
         }
     }
+
+    // 动则强锁：发生任何位移控制动作前强制锁死当前柱体模式，防范未锁定态空中变动拓扑
+    APP_Control_EnsureColumnModeLocked();
 
     uint32_t step_mm       = (app_data.single_tune_step_mm > 0) ? app_data.single_tune_step_mm : 1;
     uint32_t target_counts = (uint32_t)roundf((float)step_mm * g_sys_context.counts_per_mm);
@@ -841,6 +877,9 @@ void APP_ControlTask(void *pvParameters)
                             }
                             if (limit_blocked) break;
 
+                            // 动则强锁：发生任何位移控制动作前强制锁死当前柱体模式，防范未锁定态空中变动拓扑
+                            APP_Control_EnsureColumnModeLocked();
+
                             g_sys_context.is_single_tuning  = false;
                             g_sys_context.is_total_tuning   = false;
                             g_sys_context.active_motor_mask = active_mask;
@@ -903,6 +942,9 @@ void APP_ControlTask(void *pvParameters)
                                 }
                             }
                             if (limit_blocked) break;
+
+                            // 动则强锁：发生任何位移控制动作前强制锁死当前柱体模式，防范未锁定态空中变动拓扑
+                            APP_Control_EnsureColumnModeLocked();
 
                             g_sys_context.is_single_tuning  = false;
                             g_sys_context.is_total_tuning   = false;

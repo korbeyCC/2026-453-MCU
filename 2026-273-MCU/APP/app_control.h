@@ -147,5 +147,7 @@ void APP_Control_StartTotalTune(void);
 bool APP_Control_ClearFault(void);
 void APP_Control_EmergencyStop(void);
 void APP_ControlTask(void *pvParameters);
+bool APP_Control_IsAllColumnsAtBottom(void);
+void APP_Control_EnsureColumnModeLocked(void);
 
 #endif // __APP_CONTROL_H

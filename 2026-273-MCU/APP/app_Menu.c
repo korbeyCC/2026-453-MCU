@@ -3,6 +3,7 @@
 #include "app_Data.h"
 #include "mid_buzzer.h"
 #include "app_supervisor.h"
+#include "app_control.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -160,6 +161,20 @@ static void APP_Menu_AdjustParam(bool is_inc)
             break;
 
         case 10: { // Set_W = 10: column_mode (0: 四柱 "00", 12, 13, 14, 23, 24, 34)
+            // 1. 已锁定且为四柱模式：只能看，不能调！
+            if (app_data.column_mode_locked == 1 && app_data.column_mode == 0) {
+                s_edit_column_mode = 0;
+                break;
+            }
+
+            // 2. 模式切换安全门禁：必须所有柱子都低于或等于安装起点 (即处于底部机械零位) 才允许切换！
+            if (!APP_Control_IsAllColumnsAtBottom()) {
+                APP_Menu_SetPrompt("-Err-", 20); // 闪烁显示 "-Err-" 1.0秒
+                MID_Buzzer_TriggerBeep(100);     // 蜂鸣器长鸣 100ms 提示操作被拒
+                Debug_Printf("[SYS] Column Mode Switch Denied! All columns must be at bottom origin (current_abs <= min_mount).\r\n");
+                break;
+            }
+
             static const uint16_t s_modes[7] = {0, 12, 13, 14, 23, 24, 34};
             int8_t cur_idx = 0;
             for (int i = 0; i < 7; i++) {
@@ -178,20 +193,14 @@ static void APP_Menu_AdjustParam(bool is_inc)
                 }
                 s_edit_column_mode = s_modes[cur_idx];
             } else {
-                // 已锁定态：
-                if (app_data.column_mode == 0) {
-                    // 已选定为四柱模式：只能看，不能调！
-                    s_edit_column_mode = 0;
+                // 已锁定态：允许在 6 种双柱组合之间切换，但绝不能切换回 00！
+                if (cur_idx < 1) cur_idx = 1;
+                if (is_inc) {
+                    cur_idx = 1 + ((cur_idx - 1 + 1) % 6);
                 } else {
-                    // 已选定为双柱模式：允许在 6 种双柱组合之间切换，但绝不能切换回 00！
-                    if (cur_idx < 1) cur_idx = 1;
-                    if (is_inc) {
-                        cur_idx = 1 + ((cur_idx - 1 + 1) % 6);
-                    } else {
-                        cur_idx = 1 + ((cur_idx - 1 + 5) % 6);
-                    }
-                    s_edit_column_mode = s_modes[cur_idx];
+                    cur_idx = 1 + ((cur_idx - 1 + 5) % 6);
                 }
+                s_edit_column_mode = s_modes[cur_idx];
             }
             break;
         }

@@ -348,12 +348,12 @@ static void App_Comm_InitHardwareSequence(void)
         uint8_t accept_ex;
     } init_steps[] = {
         {0x200E, 0x0001, "Write Enable", 0},
-        {0x2000, 0x0007, "Fault Reset", 0x03},                                                  /* 正常回显或 86 03 都算过 */
-        {0x070C, (uint16_t)(DRIVER_INIT_STALL_CURRENT_PERCENT * 10), "Stall Current Limit", 0}, /* F07.12: 堵转限制电流 (相对额定电流百分比*10, 默认 1500 = 150.0%) */
-        {0x0709, DRIVER_FAULT_AUTO_RESET_TIME, "Auto Reset Time", 0},                           /* F07.09: 故障自动复位间隔 5.0s (写入 50，防频繁冲击) */
-        {0x070A, DRIVER_FAULT_AUTO_RESET_TIMES, "Auto Reset Times", 0},                         /* F07.10: 故障自动复位次数 (10次重试自愈) */
-        {0x0804, DRIVER_485_TIMEOUT_TIME_VAL, "485 Timeout 0.2s", 0},                           /* F08.04: 485 通信超时故障时间 0.2s (写入 2，200ms 极速停机) */
-        {0x0805, DRIVER_485_TIMEOUT_ACTION, "Stop on Comm Loss", 0},                            /* F08.05: 485 传输错误处理 (0: 报警并自由停机) */
+        {0x2000, 0x0007, "Fault Reset", 0x03},                                                /* 正常回显或 86 03 都算过 */
+        {0x070C, (uint16_t)(app_data.driver_stall_percent * 10), "Stall Current Limit", 0}, /* F07.12: 堵转限制电流 (相对额定电流百分比*10, 默认 1500 = 150.0%) */
+        {0x0709, DRIVER_FAULT_AUTO_RESET_TIME, "Auto Reset Time", 0},                         /* F07.09: 故障自动复位间隔 5.0s (写入 50，防频繁冲击) */
+        {0x070A, DRIVER_FAULT_AUTO_RESET_TIMES, "Auto Reset Times", 0},                       /* F07.10: 故障自动复位次数 (10次重试自愈) */
+        {0x0804, DRIVER_485_TIMEOUT_TIME_VAL, "485 Timeout 0.2s", 0},                         /* F08.04: 485 通信超时故障时间 0.2s (写入 2，200ms 极速停机) */
+        {0x0805, DRIVER_485_TIMEOUT_ACTION, "Stop on Comm Loss", 0},                          /* F08.05: 485 传输错误处理 (0: 报警并自由停机) */
         {0x2006, 0x0002, "Run Mode", 0},
         {0x2007, 0x0003, "Speed Mode", 0},
         {0x2001, 300, "Set Speed 300", 0},
@@ -365,6 +365,18 @@ static void App_Comm_InitHardwareSequence(void)
     }
 
     g_sys_context.is_hardware_ready = true;
+}
+
+// 动态下发驱动器堵转限流百分比更新指令 (向 active_mask 电机写入 0x070C)
+void App_Comm_UpdateDriverStallLimit(void)
+{
+    Motor_Ctrl_Msg_t msg;
+    msg.cmd_type   = CMD_SET_STALL_LIMIT;
+    msg.motor_mask = App_Data_GetColumnMotorMask();
+    msg.speed_rpm  = (int16_t)(app_data.driver_stall_percent * 10);
+    if (g_motor_ctrl_queue != NULL) {
+        xQueueSend(g_motor_ctrl_queue, &msg, pdMS_TO_TICKS(10));
+    }
 }
 
 // ========================== 485 并行 Modbus 轮询与调度任务 ==========================
@@ -403,6 +415,9 @@ void APP_CommTask(void *pvParameters)
 
     static bool has_pending_fault_reset[4] = {false, false, false, false};
 
+    static uint16_t pending_stall_limit[4];
+    static bool has_pending_stall_limit[4] = {false, false, false, false};
+
     while (1) {
         // 1. 1ms 无延迟实时推进 Modbus 接收解析与状态机释放 (ACK 收到后最快 1ms 解锁 IDLE)
         MID_Modbus_Process_1ms();
@@ -411,13 +426,16 @@ void APP_CommTask(void *pvParameters)
         if (++timer_4ms_cnt >= 4) {
             timer_4ms_cnt = 0;
 
-            // 消费控制队列命令并分别归类至转速槽 (0x2001)、复位槽 (0x2000=0x0007) 与命令槽 (0x2000)
+            // 消费控制队列命令并分别归类至转速槽 (0x2001)、限流槽 (0x070C)、复位槽 (0x2000=0x0007) 与命令槽 (0x2000)
             while (xQueueReceive(g_motor_ctrl_queue, &ctrl_msg, 0) == pdTRUE) {
                 for (int i = 0; i < 4; i++) {
                     if (ctrl_msg.motor_mask & (1 << i)) {
                         if (ctrl_msg.cmd_type == CMD_SET_SPEED) {
                             pending_speed[i]     = ctrl_msg.speed_rpm;
                             has_pending_speed[i] = true;
+                        } else if (ctrl_msg.cmd_type == CMD_SET_STALL_LIMIT) {
+                            pending_stall_limit[i]     = (uint16_t)ctrl_msg.speed_rpm;
+                            has_pending_stall_limit[i] = true;
                         } else if (ctrl_msg.cmd_type == CMD_FAULT_RESET) {
                             has_pending_fault_reset[i] = true;
                         } else {
@@ -439,6 +457,12 @@ void APP_CommTask(void *pvParameters)
                 if (has_pending_fault_reset[i]) {
                     if (MID_Modbus_WriteSingleReg(m, 0x2000, 0x0007, Motor_Cmd_Callbacks[i])) {
                         has_pending_fault_reset[i] = false;
+                    }
+                }
+                // Tier 0.5: 下发待更新的驱动器堵转限流百分比 (写 0x070C)
+                else if (has_pending_stall_limit[i]) {
+                    if (MID_Modbus_WriteSingleReg(m, 0x070C, pending_stall_limit[i], NULL)) {
+                        has_pending_stall_limit[i] = false;
                     }
                 }
                 // Tier 1: 优先下发待更新的转速设置指令 (写 0x2001)

@@ -55,6 +55,16 @@ void APP_Data_Init(void)
         app_data.show_current_mode = 0;
     }
 
+    // 驱动器堵转限流百分比防御 (50% ~ 250%，默认 150%)
+    if (app_data.driver_stall_percent < 50 || app_data.driver_stall_percent > 250) {
+        app_data.driver_stall_percent = 150;
+    }
+
+    // 堵转判定防抖时间防御 (100ms ~ 2000ms，默认 600ms)
+    if (app_data.stall_detect_time_ms < 100 || app_data.stall_detect_time_ms > 2000) {
+        app_data.stall_detect_time_ms = 600;
+    }
+
     // 强制使能 PVD 检测及硬件 PLS 阈值配置 (PVD 检测阈值调低至 2.6V，防范负载及波动噪声)
     // 注：由于 CubeMX 已经自动生成了 NVIC (PVD_IRQn) 中断使能，此处仅需配置并使能 PVD 硬件外设本身即可
     PWR_PVDTypeDef getConfigPVD;
@@ -107,6 +117,8 @@ void APP_Data_ResetDefault(void)
     app_data.column_mode             = 0;    // 默认四柱模式 (00)
     app_data.column_mode_locked      = 0;    // 默认未锁定 (出厂态自由任选)
     app_data.show_current_mode       = 0;    // 默认显示位置 (0)
+    app_data.driver_stall_percent    = 150;  // 默认驱动器堵转限流 150% (F07.12 = 1500)
+    app_data.stall_detect_time_ms    = 600;  // 默认堵转判定防抖时间 600ms (30 帧)
 
     float c_per_mm              = (float)(app_data.reduction_ratio * app_data.hall_coef) / (float)app_data.lead_mm;
     int32_t default_mount_halls = (int32_t)(1000.0f * c_per_mm + 0.5f);

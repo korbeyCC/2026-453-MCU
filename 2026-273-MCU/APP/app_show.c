@@ -195,6 +195,15 @@ void APP_ShowTask(void *pvParameters)
                         SEG_W[2] = (uint8_t)(m % 10);
                     }
                     SEG_W[3] = 18; // -
+                } else if (dim2 == 13) {
+                    // q13 堵转判定防抖时间显示：以 0.1s 为单位带小数点，如 600ms 显示 "  0.6", 1200ms 显示 "  1.2"
+                    uint16_t val_01s = app_data.stall_detect_time_ms / 100;
+                    if (val_01s > 99) val_01s = 99;
+                    SEG_W[0] = 19; // 空白
+                    SEG_W[1] = 19; // 空白
+                    SEG_W[2] = (uint8_t)((val_01s / 10) % 10);
+                    SEG_W[3] = (uint8_t)(val_01s % 10);
+                    SEG_Flag[2] = 1; // 小数点点亮在第二位(从0开始算第2位，即第3个数码管)
                 } else {
                     uint32_t param_val = 0;
                     switch (dim2) {
@@ -209,15 +218,24 @@ void APP_ShowTask(void *pvParameters)
                         case 8: param_val = app_data.single_tune_step_mm; break;
                         case 9: param_val = app_data.rebound_travel_mm; break;
                         case 11: param_val = app_data.show_current_mode; break;
+                        case 12: param_val = app_data.driver_stall_percent; break;
                         default: param_val = 0; break;
                     }
 
                     if (param_val > 9999) param_val = 9999;
 
-                    SEG_W[0] = (uint8_t)((param_val / 1000) % 10);
-                    SEG_W[1] = (uint8_t)((param_val / 100) % 10);
-                    SEG_W[2] = (uint8_t)((param_val / 10) % 10);
-                    SEG_W[3] = (uint8_t)(param_val % 10);
+                    if (dim2 == 12) {
+                        // q12 显示驱动器百分比：消除千位前导零，如 150 显示为 " 150"
+                        SEG_W[0] = (param_val >= 1000) ? (uint8_t)((param_val / 1000) % 10) : 19;
+                        SEG_W[1] = (uint8_t)((param_val / 100) % 10);
+                        SEG_W[2] = (uint8_t)((param_val / 10) % 10);
+                        SEG_W[3] = (uint8_t)(param_val % 10);
+                    } else {
+                        SEG_W[0] = (uint8_t)((param_val / 1000) % 10);
+                        SEG_W[1] = (uint8_t)((param_val / 100) % 10);
+                        SEG_W[2] = (uint8_t)((param_val / 10) % 10);
+                        SEG_W[3] = (uint8_t)(param_val % 10);
+                    }
                 }
             }
         }

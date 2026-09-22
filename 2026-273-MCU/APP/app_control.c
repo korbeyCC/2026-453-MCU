@@ -242,6 +242,9 @@ void APP_Control_UpdateParamsFromAppData(void)
             g_sys_context.g_motor_status[i].stall_cnt          = 0;
         }
     }
+
+    // 同步将最新堵转限流百分比更新至驱动器寄存器 (0x070C)
+    App_Comm_UpdateDriverStallLimit();
 }
 
 /**

@@ -312,6 +312,12 @@ int32_t Sys_View_GetAxisMountMm(uint8_t axis_idx)
     return val_mm;
 }
 
+uint16_t Sys_View_GetAxisCurrentDeciA(uint8_t axis_idx)
+{
+    if (axis_idx >= 4) return 0;
+    return g_sys_context.g_motor_status[axis_idx].current_deciA;
+}
+
 uint8_t Sys_View_GetFaultCode(void)
 {
     return g_sys_context.system_fault_code;

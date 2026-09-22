@@ -91,17 +91,35 @@ void APP_ShowTask(void *pvParameters)
         // ====================================================
         if (Sys_View_IsRebounding()) {
             if (flicker_cnt < 10) {
-                // 前 500ms 显示当前立柱实时高度 (mm)
                 uint8_t m_idx = dim2 % 4;
-                int32_t val_mm = Sys_View_GetAxisTravelMm(m_idx);
 
-                SEG_W[0] = (uint8_t)((val_mm / 1000) % 10);
-                SEG_W[1] = (uint8_t)((val_mm / 100) % 10);
-                SEG_W[2] = (uint8_t)((val_mm / 10) % 10);
-                SEG_W[3] = (uint8_t)(val_mm % 10);
+                if (app_data.show_current_mode == 1) {
+                    static const uint8_t s_motor_chars[4] = {10, 11, 12, 13};
+                    SEG_W[0] = s_motor_chars[m_idx];
 
-                SEG_Flag[0] = SEG_Flag[1] = SEG_Flag[2] = SEG_Flag[3] = 0;
-                SEG_Flag[m_idx] = 1; // 点亮当前电机小数点
+                    uint16_t cur_deciA = Sys_View_GetAxisCurrentDeciA(m_idx);
+                    uint32_t val_0_1A  = (uint32_t)((cur_deciA + 5) / 10);
+                    if (val_0_1A > 999) val_0_1A = 999;
+
+                    uint8_t tens = (uint8_t)((val_0_1A / 100) % 10);
+                    SEG_W[1]     = (val_0_1A >= 100) ? tens : 19;
+                    SEG_W[2]     = (uint8_t)((val_0_1A / 10) % 10);
+                    SEG_W[3]     = (uint8_t)(val_0_1A % 10);
+
+                    SEG_Flag[0] = SEG_Flag[1] = SEG_Flag[3] = 0;
+                    SEG_Flag[2] = 1;
+                } else {
+                    // 前 500ms 显示当前立柱实时高度 (mm)
+                    int32_t val_mm = Sys_View_GetAxisTravelMm(m_idx);
+
+                    SEG_W[0] = (uint8_t)((val_mm / 1000) % 10);
+                    SEG_W[1] = (uint8_t)((val_mm / 100) % 10);
+                    SEG_W[2] = (uint8_t)((val_mm / 10) % 10);
+                    SEG_W[3] = (uint8_t)(val_mm % 10);
+
+                    SEG_Flag[0] = SEG_Flag[1] = SEG_Flag[2] = SEG_Flag[3] = 0;
+                    SEG_Flag[m_idx] = 1; // 点亮当前电机小数点
+                }
             } else {
                 // 后 500ms 显示故障代码 (如 Err4)
                 SEG_Flag[0] = SEG_Flag[1] = SEG_Flag[2] = SEG_Flag[3] = 0;
@@ -190,6 +208,7 @@ void APP_ShowTask(void *pvParameters)
                         case 7: param_val = app_data.reduction_ratio; break;
                         case 8: param_val = app_data.single_tune_step_mm; break;
                         case 9: param_val = app_data.rebound_travel_mm; break;
+                        case 11: param_val = app_data.show_current_mode; break;
                         default: param_val = 0; break;
                     }
 
@@ -243,19 +262,40 @@ void APP_ShowTask(void *pvParameters)
                 }
             }
 
-            // 1. 解算当前 dim2 所指示电机的绝对高度 (单位: mm, 接入中立视图模型)
             uint8_t m_idx = dim2 % 4;
-            int32_t val_mm = Sys_View_GetAxisTravelMm(m_idx);
 
-            // 2. 填充 4 位数码管数值
-            SEG_W[0] = (uint8_t)((val_mm / 1000) % 10);
-            SEG_W[1] = (uint8_t)((val_mm / 100) % 10);
-            SEG_W[2] = (uint8_t)((val_mm / 10) % 10);
-            SEG_W[3] = (uint8_t)(val_mm % 10);
+            if (app_data.show_current_mode == 1) {
+                // 实时电流显示模式：第一位代表电机 (10: 'A', 11: 'b', 12: 'C', 13: 'd')，后三位放数字单位 0.1A
+                static const uint8_t s_motor_chars[4] = {10, 11, 12, 13};
+                SEG_W[0] = s_motor_chars[m_idx];
 
-            // 3. 小数点指示电机编号 (Motor 0 -> 1 点亮, Motor 1 -> 2 点亮, Motor 2 -> 3 点亮, Motor 3 -> 4 点亮)
-            SEG_Flag[0] = SEG_Flag[1] = SEG_Flag[2] = SEG_Flag[3] = 0;
-            SEG_Flag[m_idx] = 1;
+                // 驱动器反馈电流单位为 0.01A，四舍五入到 0.1A
+                uint16_t cur_deciA = Sys_View_GetAxisCurrentDeciA(m_idx);
+                uint32_t val_0_1A  = (uint32_t)((cur_deciA + 5) / 10);
+                if (val_0_1A > 999) val_0_1A = 999;
+
+                uint8_t tens = (uint8_t)((val_0_1A / 100) % 10);
+                SEG_W[1]     = (val_0_1A >= 100) ? tens : 19; // 小于 10.0A 时十位消隐为空格 (19)，如 "A 7.5"
+                SEG_W[2]     = (uint8_t)((val_0_1A / 10) % 10); // 个位
+                SEG_W[3]     = (uint8_t)(val_0_1A % 10);        // 十分位
+
+                // 小数点点亮在个位后面 (倒数第2位数码管 SEG_Flag[2])，组合为 A11.1 或 A 7.5
+                SEG_Flag[0] = SEG_Flag[1] = SEG_Flag[3] = 0;
+                SEG_Flag[2] = 1;
+            } else {
+                // 1. 解算当前 dim2 所指示电机的绝对高度 (单位: mm, 接入中立视图模型)
+                int32_t val_mm = Sys_View_GetAxisTravelMm(m_idx);
+
+                // 2. 填充 4 位数码管数值
+                SEG_W[0] = (uint8_t)((val_mm / 1000) % 10);
+                SEG_W[1] = (uint8_t)((val_mm / 100) % 10);
+                SEG_W[2] = (uint8_t)((val_mm / 10) % 10);
+                SEG_W[3] = (uint8_t)(val_mm % 10);
+
+                // 3. 小数点指示电机编号 (Motor 0 -> 1 点亮, Motor 1 -> 2 点亮, Motor 2 -> 3 点亮, Motor 3 -> 4 点亮)
+                SEG_Flag[0] = SEG_Flag[1] = SEG_Flag[2] = SEG_Flag[3] = 0;
+                SEG_Flag[m_idx] = 1;
+            }
         }
 
         // 3. 调用中间层驱动转换段码并写入 TM1650 芯片

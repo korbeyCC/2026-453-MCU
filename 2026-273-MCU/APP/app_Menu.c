@@ -205,6 +205,20 @@ static void APP_Menu_AdjustParam(bool is_inc)
             break;
         }
 
+        case 11: // Set_W = 11: show_current_mode (0: 显示位置, 1: 实时显示当前电机电流)
+            if (is_inc) {
+                if (app_data.show_current_mode < 1)
+                    app_data.show_current_mode++;
+                else
+                    app_data.show_current_mode = 1;
+            } else {
+                if (app_data.show_current_mode > 0)
+                    app_data.show_current_mode--;
+                else
+                    app_data.show_current_mode = 0;
+            }
+            break;
+
         default:
             break;
     }
@@ -343,12 +357,12 @@ void APP_MenuTask(void *pvParameters)
                 // (注意：K1 ~ K4 微调动作键已在待机态直接由中枢路由给 APP_ControlTask 自治驱动，无需菜单介入)
             }
             // ====================================================
-            // 维度 1：常规应用设置层 (dim1 == 1, dim2 为 0~10, 其中 (1,0) 为恢复出厂开关)
+            // 维度 1：常规应用设置层 (dim1 == 1, dim2 为 0~11, 其中 (1,0) 为恢复出厂开关)
             // ====================================================
             else if (dim1 == 1) {
-                // A. 短按 K6：前进到下一项 (dim2++)。在最后一项 (dim2 == 10) 按 K6 时保存 Flash 并退出至 dim1 = 0
+                // A. 短按 K6：前进到下一项 (dim2++)。在最后一项 (dim2 == 11) 按 K6 时保存 Flash 并退出至 dim1 = 0
                 if (msg.key_id == MID_KEY_ID_K6 && msg.event == MID_KEY_EVT_LEASS) {
-                    if (dim2 < 10) {
+                    if (dim2 < 11) {
                         dim2++;
                         adjust_hold_ticks = 0;
 
@@ -357,7 +371,7 @@ void APP_MenuTask(void *pvParameters)
                         APP_Menu_SetPrompt(buf, 20); // 切换项目显示 "-q0-", "-q1-"... 1.0s
                         Debug_Printf("[SYS] Setting Next Item: dim2 = %d\r\n", dim2);
                     } else {
-                        // 最后一项 (10) 按 K6：检查 (1,0) 是否调至 7 (q0 == 7 触发恢复出厂)
+                        // 最后一项 (11) 按 K6：检查 (1,0) 是否调至 7 (q0 == 7 触发恢复出厂)
                         if (reset_factory_flag == 7) {
                             reset_factory_flag = 0;
                             APP_Data_ResetDefault();   // 恢复全部出厂默认参数并存盘 Flash (解除锁定)

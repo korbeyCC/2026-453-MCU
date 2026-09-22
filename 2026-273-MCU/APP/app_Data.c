@@ -50,6 +50,11 @@ void APP_Data_Init(void)
         app_data.column_mode_locked = 0;
     }
 
+    // 实时电流显示参数合法性防御 (0: 显示位置, 1: 显示电流)
+    if (app_data.show_current_mode > 1) {
+        app_data.show_current_mode = 0;
+    }
+
     // 强制使能 PVD 检测及硬件 PLS 阈值配置 (PVD 检测阈值调低至 2.6V，防范负载及波动噪声)
     // 注：由于 CubeMX 已经自动生成了 NVIC (PVD_IRQn) 中断使能，此处仅需配置并使能 PVD 硬件外设本身即可
     PWR_PVDTypeDef getConfigPVD;
@@ -101,6 +106,7 @@ void APP_Data_ResetDefault(void)
     app_data.rebound_travel_mm       = 1000; // 默认堵转反弹行程 1000 mm (1米)
     app_data.column_mode             = 0;    // 默认四柱模式 (00)
     app_data.column_mode_locked      = 0;    // 默认未锁定 (出厂态自由任选)
+    app_data.show_current_mode       = 0;    // 默认显示位置 (0)
 
     float c_per_mm              = (float)(app_data.reduction_ratio * app_data.hall_coef) / (float)app_data.lead_mm;
     int32_t default_mount_halls = (int32_t)(1000.0f * c_per_mm + 0.5f);

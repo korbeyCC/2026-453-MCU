@@ -32,7 +32,7 @@ typedef struct
     uint16_t rebound_travel_mm;       // 堵转反弹行程 (单位: mm，默认 1000mm = 1米) - 对应 P1 菜单 q9
     uint16_t column_mode;             // 柱体模式: 0: 4柱(00), 12, 13, 14, 23, 24, 34 - 对应 P1 菜单 q10
     uint16_t column_mode_locked;      // 柱体模式单向锁定状态: 0: 未锁定 (出厂态自由任选), 1: 已锁定 (不可切回00)
-    uint16_t reserved[1];             // 预留空间对齐 32 字节
+    uint16_t show_current_mode;       // 实时电流显示开关: 0: 显示位置, 1: 实时显示当前电机电流 - 对应 P1 菜单 q11
 } APP_DATA_HandleTypeDef;
 
 extern APP_DATA_HandleTypeDef app_data;

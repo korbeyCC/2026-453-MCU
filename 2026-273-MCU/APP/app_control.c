@@ -71,6 +71,21 @@ static void APP_Control_DebugPrint(void)
  * @brief  三重系统级安防防护检查（通信中断、同步差超限、过流堵转）
  * @return true: 触发故障急停; false: 系统安全
  */
+/**
+ * @brief 冻结并保存故障发生瞬间各轴现场电流 (用于停机后报警溯源分析)
+ */
+static void APP_Control_FreezeFaultCurrent(void)
+{
+    for (int i = 0; i < 4; i++) {
+        g_sys_context.fault_frozen_current[i] = g_sys_context.g_motor_status[i].current_deciA;
+    }
+    Debug_Printf("[SYS] Fault Current Frozen: M1=%.2fA, M2=%.2fA, M3=%.2fA, M4=%.2fA\r\n",
+                 (float)g_sys_context.fault_frozen_current[0] / 100.0f,
+                 (float)g_sys_context.fault_frozen_current[1] / 100.0f,
+                 (float)g_sys_context.fault_frozen_current[2] / 100.0f,
+                 (float)g_sys_context.fault_frozen_current[3] / 100.0f);
+}
+
 static bool APP_Control_CheckSafety(void)
 {
     uint8_t active_mask = App_Data_GetColumnMotorMask();
@@ -80,6 +95,7 @@ static bool APP_Control_CheckSafety(void)
         if (!(active_mask & (1 << i))) continue;
         if (g_sys_context.g_motor_status[i].comm_error >= SAFETY_COMM_ERR_MAX_CNT) {
             g_sys_context.system_fault_code = FAULT_CODE_COMM;
+            APP_Control_FreezeFaultCurrent();
             Debug_Printf("[ERR] Safety Fault: Motor %d Comm Loss! (CommErr=%d)\r\n",
                          i + 1, g_sys_context.g_motor_status[i].comm_error);
             return true;
@@ -89,6 +105,7 @@ static bool APP_Control_CheckSafety(void)
     // 2. 轴间真实绝对高度差超限检查 (常规长行程联动运行安防)
     if (g_sys_context.max_travel_diff > (float)g_sys_context.max_sync_diff_hall) {
         g_sys_context.system_fault_code = FAULT_CODE_SYNC;
+        APP_Control_FreezeFaultCurrent();
         Debug_Printf("[ERR] Safety Fault: Sync Travel Diff Exceeded! (Diff=%.1f > Limit=%d)\r\n",
                      g_sys_context.max_travel_diff, g_sys_context.max_sync_diff_hall);
         Debug_Printf("[SYS] TravelRel: TR0=%.0f, TR1=%.0f, TR2=%.0f, TR3=%.0f | AbsHalls: H0=%d, H1=%d, H2=%d, H3=%d\r\n",
@@ -107,6 +124,7 @@ static bool APP_Control_CheckSafety(void)
             g_sys_context.g_motor_status[i].stall_cnt++;
             if (g_sys_context.g_motor_status[i].stall_cnt >= SAFETY_STALL_MAX_CNT) {
                 g_sys_context.system_fault_code = FAULT_CODE_STALL;
+                APP_Control_FreezeFaultCurrent();
                 Debug_Printf("[ERR] Safety Fault: Motor %d OverCurrent Stall! (Curr=%.2fA > Limit=%.2fA)\r\n",
                              i + 1, (float)g_sys_context.g_motor_status[i].current_deciA / 100.0f,
                              (float)app_data.stall_current_threshold / 100.0f);
@@ -299,6 +317,9 @@ static void APP_Control_PrepareStopSettling(uint8_t motor_mask, Motor_ctl_Step_t
     // 453 抱闸控制：若是致命故障急停状态，立即锁定抱闸自锁
     if (next_step == SYS_STEP_FAULT_STOP) {
         MID_Brake_Lock();
+        APP_Control_FreezeFaultCurrent();
+    } else if (g_sys_context.system_fault_code != FAULT_CODE_NONE) {
+        APP_Control_FreezeFaultCurrent();
     }
 
     for (int i = 0; i < 4; i++) {
@@ -319,6 +340,10 @@ void APP_Control_ResetSystemContext(void)
 {
     // 1. 重新更新物理系数与目标 RPM
     APP_Control_UpdateParamsFromAppData();
+
+    for (int i = 0; i < 4; i++) {
+        g_sys_context.fault_frozen_current[i] = 0;
+    }
 
     // 2. 刷新 4 轴运行内存中的绝对位置为 Flash 恢复后的初始安装位置
     for (int i = 0; i < 4; i++) {

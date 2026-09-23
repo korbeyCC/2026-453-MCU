@@ -79,6 +79,7 @@ bool Sys_Mode_IsFaultLocked(void);
 int32_t Sys_View_GetAxisTravelMm(uint8_t axis_idx);
 int32_t Sys_View_GetAxisMountMm(uint8_t axis_idx);
 uint16_t Sys_View_GetAxisCurrentDeciA(uint8_t axis_idx);
+uint16_t Sys_View_GetFaultCurrentDeciA(uint8_t axis_idx);
 uint8_t Sys_View_GetFaultCode(void);
 bool Sys_View_IsRebounding(void);
 Sys_Indicator_State_t Sys_View_GetIndicatorState(void);

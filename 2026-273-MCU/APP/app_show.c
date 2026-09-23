@@ -25,6 +25,68 @@ static uint8_t CharToSegIndex(char c)
     return 19; // 空白
 }
 
+/**
+ * @brief 渲染单项监测数据 (支持 4 轴位置 / 实时电流 或 8 项位置+现场冻结电流)
+ * @param item_idx 0~3: 电机 1~4 位置 (mm); 4~7: 电机 1~4 电流 (现场/冻结电流)
+ */
+static void Show_RenderItemData(uint8_t item_idx, uint8_t *SEG_W, uint8_t *SEG_Flag)
+{
+    uint8_t mask      = App_Data_GetColumnMotorMask();
+    uint8_t max_items = (app_data.show_current_mode == 2) ? 8 : 4;
+    item_idx          = item_idx % max_items;
+
+    uint8_t m_idx = (item_idx < 4) ? item_idx : (item_idx - 4);
+    if (!(mask & (1 << m_idx))) {
+        for (int i = 0; i < 4; i++) {
+            if (mask & (1 << i)) {
+                m_idx    = (uint8_t)i;
+                item_idx = (item_idx < 4) ? m_idx : (m_idx + 4);
+                break;
+            }
+        }
+    }
+
+    bool show_curr = (app_data.show_current_mode == 1) ||
+                     (app_data.show_current_mode == 2 && item_idx >= 4);
+
+    if (show_curr) {
+        static const uint8_t s_motor_chars[4] = {10, 11, 12, 13}; // 'A', 'b', 'c', 'd'
+        SEG_W[0] = s_motor_chars[m_idx];
+
+        // 优先获取现场冻结保存的电流；若未发生故障则取实时电流
+        uint16_t cur_deciA = 0;
+        if (Sys_Mode_IsFaultLocked() || Sys_View_GetFaultCode() != 0) {
+            cur_deciA = Sys_View_GetFaultCurrentDeciA(m_idx);
+            if (cur_deciA == 0) {
+                cur_deciA = Sys_View_GetAxisCurrentDeciA(m_idx);
+            }
+        } else {
+            cur_deciA = Sys_View_GetAxisCurrentDeciA(m_idx);
+        }
+
+        uint32_t val_0_1A = (uint32_t)((cur_deciA + 5) / 10);
+        if (val_0_1A > 999) val_0_1A = 999;
+
+        uint8_t tens = (uint8_t)((val_0_1A / 100) % 10);
+        SEG_W[1]     = (val_0_1A >= 100) ? tens : 19;
+        SEG_W[2]     = (uint8_t)((val_0_1A / 10) % 10);
+        SEG_W[3]     = (uint8_t)(val_0_1A % 10);
+
+        SEG_Flag[0] = SEG_Flag[1] = SEG_Flag[3] = 0;
+        SEG_Flag[2] = 1;
+    } else {
+        int32_t val_mm = Sys_View_GetAxisTravelMm(m_idx);
+
+        SEG_W[0] = (uint8_t)((val_mm / 1000) % 10);
+        SEG_W[1] = (uint8_t)((val_mm / 100) % 10);
+        SEG_W[2] = (uint8_t)((val_mm / 10) % 10);
+        SEG_W[3] = (uint8_t)(val_mm % 10);
+
+        SEG_Flag[0] = SEG_Flag[1] = SEG_Flag[2] = SEG_Flag[3] = 0;
+        SEG_Flag[m_idx] = 1;
+    }
+}
+
 void APP_ShowTask(void *pvParameters)
 {
     TickType_t pxPreviousWakeTime = xTaskGetTickCount();
@@ -90,36 +152,8 @@ void APP_ShowTask(void *pvParameters)
         // 最高优先级 1：反弹阶段交替显示 (500ms 实时位置 <-> 500ms 错误码)
         // ====================================================
         if (Sys_View_IsRebounding()) {
-            if (flicker_cnt < 10) {
-                uint8_t m_idx = dim2 % 4;
-
-                if (app_data.show_current_mode == 1) {
-                    static const uint8_t s_motor_chars[4] = {10, 11, 12, 13};
-                    SEG_W[0] = s_motor_chars[m_idx];
-
-                    uint16_t cur_deciA = Sys_View_GetAxisCurrentDeciA(m_idx);
-                    uint32_t val_0_1A  = (uint32_t)((cur_deciA + 5) / 10);
-                    if (val_0_1A > 999) val_0_1A = 999;
-
-                    uint8_t tens = (uint8_t)((val_0_1A / 100) % 10);
-                    SEG_W[1]     = (val_0_1A >= 100) ? tens : 19;
-                    SEG_W[2]     = (uint8_t)((val_0_1A / 10) % 10);
-                    SEG_W[3]     = (uint8_t)(val_0_1A % 10);
-
-                    SEG_Flag[0] = SEG_Flag[1] = SEG_Flag[3] = 0;
-                    SEG_Flag[2] = 1;
-                } else {
-                    // 前 500ms 显示当前立柱实时高度 (mm)
-                    int32_t val_mm = Sys_View_GetAxisTravelMm(m_idx);
-
-                    SEG_W[0] = (uint8_t)((val_mm / 1000) % 10);
-                    SEG_W[1] = (uint8_t)((val_mm / 100) % 10);
-                    SEG_W[2] = (uint8_t)((val_mm / 10) % 10);
-                    SEG_W[3] = (uint8_t)(val_mm % 10);
-
-                    SEG_Flag[0] = SEG_Flag[1] = SEG_Flag[2] = SEG_Flag[3] = 0;
-                    SEG_Flag[m_idx] = 1; // 点亮当前电机小数点
-                }
+            if (adjust_hold_ticks > 0 || flicker_cnt < 10) {
+                Show_RenderItemData(dim2, SEG_W, SEG_Flag);
             } else {
                 // 后 500ms 显示故障代码 (如 Err4)
                 SEG_Flag[0] = SEG_Flag[1] = SEG_Flag[2] = SEG_Flag[3] = 0;
@@ -134,17 +168,23 @@ void APP_ShowTask(void *pvParameters)
             }
         }
         // ====================================================
-        // 优先级 2：故障急停报警显示 (显示 ErrX, 如 Err1:堵转, Err2:通信中断, Err3:同步差超限, Err4:防夹反弹)
+        // 优先级 2：故障急停报警显示 (在调值/查看期间常显数据，平时与 ErrX 交替显示)
         // ====================================================
         else if (fault_code != 0 || Sys_Mode_IsFaultLocked()) {
-            SEG_Flag[0] = SEG_Flag[1] = SEG_Flag[2] = SEG_Flag[3] = 0;
-            SEG_W[0] = 14; // E
-            SEG_W[1] = 28; // r
-            SEG_W[2] = 28; // r
-            if (fault_code >= 1 && fault_code <= 9) {
-                SEG_W[3] = fault_code;
+            if (adjust_hold_ticks > 0 || flicker_cnt >= 10) {
+                // 用户按键浏览期间(adjust_hold_ticks > 0)常显当前项；平时后半周期显示当前项
+                Show_RenderItemData(dim2, SEG_W, SEG_Flag);
             } else {
-                SEG_W[3] = 18; // -
+                // 前半周期显示故障代码 (如 Err1, Err3 等)
+                SEG_Flag[0] = SEG_Flag[1] = SEG_Flag[2] = SEG_Flag[3] = 0;
+                SEG_W[0] = 14; // E
+                SEG_W[1] = 28; // r
+                SEG_W[2] = 28; // r
+                if (fault_code >= 1 && fault_code <= 9) {
+                    SEG_W[3] = fault_code;
+                } else {
+                    SEG_W[3] = 18; // -
+                }
             }
         }
         // ====================================================
@@ -269,51 +309,7 @@ void APP_ShowTask(void *pvParameters)
         // 模式三：主界面 & 实时监测层 (dim1 == 0)
         // ====================================================
         else {
-            // 0. 防御：若当前 dim2 所指电机非使能电机，自动吸附至第一个有效电机
-            uint8_t mask = App_Data_GetColumnMotorMask();
-            if (!(mask & (1 << (dim2 % 4)))) {
-                for (int i = 0; i < 4; i++) {
-                    if (mask & (1 << i)) {
-                        dim2 = (uint8_t)i;
-                        break;
-                    }
-                }
-            }
-
-            uint8_t m_idx = dim2 % 4;
-
-            if (app_data.show_current_mode == 1) {
-                // 实时电流显示模式：第一位代表电机 (10: 'A', 11: 'b', 12: 'C', 13: 'd')，后三位放数字单位 0.1A
-                static const uint8_t s_motor_chars[4] = {10, 11, 12, 13};
-                SEG_W[0] = s_motor_chars[m_idx];
-
-                // 驱动器反馈电流单位为 0.01A，四舍五入到 0.1A
-                uint16_t cur_deciA = Sys_View_GetAxisCurrentDeciA(m_idx);
-                uint32_t val_0_1A  = (uint32_t)((cur_deciA + 5) / 10);
-                if (val_0_1A > 999) val_0_1A = 999;
-
-                uint8_t tens = (uint8_t)((val_0_1A / 100) % 10);
-                SEG_W[1]     = (val_0_1A >= 100) ? tens : 19; // 小于 10.0A 时十位消隐为空格 (19)，如 "A 7.5"
-                SEG_W[2]     = (uint8_t)((val_0_1A / 10) % 10); // 个位
-                SEG_W[3]     = (uint8_t)(val_0_1A % 10);        // 十分位
-
-                // 小数点点亮在个位后面 (倒数第2位数码管 SEG_Flag[2])，组合为 A11.1 或 A 7.5
-                SEG_Flag[0] = SEG_Flag[1] = SEG_Flag[3] = 0;
-                SEG_Flag[2] = 1;
-            } else {
-                // 1. 解算当前 dim2 所指示电机的绝对高度 (单位: mm, 接入中立视图模型)
-                int32_t val_mm = Sys_View_GetAxisTravelMm(m_idx);
-
-                // 2. 填充 4 位数码管数值
-                SEG_W[0] = (uint8_t)((val_mm / 1000) % 10);
-                SEG_W[1] = (uint8_t)((val_mm / 100) % 10);
-                SEG_W[2] = (uint8_t)((val_mm / 10) % 10);
-                SEG_W[3] = (uint8_t)(val_mm % 10);
-
-                // 3. 小数点指示电机编号 (Motor 0 -> 1 点亮, Motor 1 -> 2 点亮, Motor 2 -> 3 点亮, Motor 3 -> 4 点亮)
-                SEG_Flag[0] = SEG_Flag[1] = SEG_Flag[2] = SEG_Flag[3] = 0;
-                SEG_Flag[m_idx] = 1;
-            }
+            Show_RenderItemData(dim2, SEG_W, SEG_Flag);
         }
 
         // 3. 调用中间层驱动转换段码并写入 TM1650 芯片

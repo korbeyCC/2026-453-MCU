@@ -50,8 +50,8 @@ void APP_Data_Init(void)
         app_data.column_mode_locked = 0;
     }
 
-    // 实时电流显示参数合法性防御 (0: 显示位置, 1: 显示电流)
-    if (app_data.show_current_mode > 1) {
+    // 显示模式参数合法性防御 (0: 仅显示位置, 1: 仅显示实时电流, 2: 8项综合监测模式)
+    if (app_data.show_current_mode > 2) {
         app_data.show_current_mode = 0;
     }
 

@@ -66,17 +66,38 @@ static Event_Result_t Filter_Level1_FaultClear(const Sys_Event_t *p_evt)
     if (p_evt == NULL) return EVENT_PASS_THROUGH;
 
     if (Sys_Mode_IsFaultLocked()) {
-        // 如果是触发类或长按类事件，尝试执行故障清除
-        if (p_evt->event_type == MID_KEY_EVT_LEASS || p_evt->event_type == MID_SIGNAL_EVT_TRIGGER ||
-            p_evt->event_type == MID_KEY_EVT_LONG || p_evt->event_type == MID_SIGNAL_EVT_LONG) {
-            if (APP_Control_ClearFault()) {
-                Debug_Printf("[LEPA Level 1] Fault Cleared via Input Event (Consumed)!\r\n");
-            } else {
-                Debug_Printf("[LEPA Level 1] Waiting for Driver Recovery before Clear (Consumed)!\r\n");
-            }
-            return EVENT_CONSUMED; // 故障态下按键被消警捕获，绝不下传
+        // 1. 报警锁死状态下，短按 K1 或 K6 绝不消警！放行给菜单任务用于循环切换查看 8 项 (4轴位置与4轴现场电流)！
+        if (p_evt->source == SYS_EVT_SRC_KEY && (p_evt->id == MID_KEY_ID_K1 || p_evt->id == MID_KEY_ID_K6) &&
+            p_evt->event_type == MID_KEY_EVT_LEASS) {
+#if SYS_ROUTER_USE_FREERTOS
+            Sys_Router_NotifyMenuKey(p_evt->id, p_evt->event_type, p_evt->count);
+#endif
+            return EVENT_CONSUMED;
         }
-        return EVENT_CONSUMED; // 故障态下其余事件直接静默吞掉
+
+        // 2. 明确消警事件：仅当板载长按 K5 (复位键) 或长按 K6，或者遥控器触发信号时，才允许执行消警！
+        bool is_clear_cmd = false;
+        if (p_evt->source == SYS_EVT_SRC_KEY) {
+            if ((p_evt->id == MID_KEY_ID_K5 || p_evt->id == MID_KEY_ID_K6) && p_evt->event_type == MID_KEY_EVT_LONG) {
+                is_clear_cmd = true;
+            }
+        } else if (p_evt->source == SYS_EVT_SRC_SIGNAL) {
+            if (p_evt->event_type == MID_SIGNAL_EVT_TRIGGER || p_evt->event_type == MID_SIGNAL_EVT_LONG) {
+                is_clear_cmd = true; // 遥控任意按键复位 (特别是遥控 A 键)
+            }
+        }
+
+        if (is_clear_cmd) {
+            if (APP_Control_ClearFault()) {
+                Debug_Printf("[LEPA Level 1] Fault Cleared via Confirmed Reset Event!\r\n");
+            } else {
+                Debug_Printf("[LEPA Level 1] Waiting for Driver Recovery before Clear!\r\n");
+            }
+            return EVENT_CONSUMED;
+        }
+
+        // 3. 其余按键在故障态下静默消费，绝不误消警
+        return EVENT_CONSUMED;
     }
 
     return EVENT_PASS_THROUGH;
@@ -316,6 +337,12 @@ uint16_t Sys_View_GetAxisCurrentDeciA(uint8_t axis_idx)
 {
     if (axis_idx >= 4) return 0;
     return g_sys_context.g_motor_status[axis_idx].current_deciA;
+}
+
+uint16_t Sys_View_GetFaultCurrentDeciA(uint8_t axis_idx)
+{
+    if (axis_idx >= 4) return 0;
+    return g_sys_context.fault_frozen_current[axis_idx];
 }
 
 uint8_t Sys_View_GetFaultCode(void)

@@ -132,6 +132,8 @@ typedef struct {
     uint8_t rebound_cmd;            // 反弹运动指令 (CMD_FORWARD 或 CMD_REVERSE)
     uint32_t rebound_start_hall[4]; // 反弹开始时 4 轴原始霍尔读数
     uint32_t rebound_target_counts; // 反弹目标霍尔增量计数 (30mm * counts_per_mm)
+
+    uint16_t fault_frozen_current[4]; // 故障/报警发生瞬间冻结保存的现场电流 (单位: 0.01A)
 } Sys_Ctrl_Context_t;
 
 // 全局外部变量声明

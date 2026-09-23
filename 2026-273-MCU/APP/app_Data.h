@@ -32,7 +32,7 @@ typedef struct
     uint16_t rebound_travel_mm;       // 堵转反弹行程 (单位: mm，默认 1000mm = 1米) - 对应 P1 菜单 q9
     uint16_t column_mode;             // 柱体模式: 0: 4柱(00), 12, 13, 14, 23, 24, 34 - 对应 P1 菜单 q10
     uint16_t column_mode_locked;      // 柱体模式单向锁定状态: 0: 未锁定 (出厂态自由任选), 1: 已锁定 (不可切回00)
-    uint16_t show_current_mode;       // 实时电流显示开关: 0: 显示位置, 1: 实时显示当前电机电流 - 对应 P1 菜单 q11
+    uint16_t show_current_mode;       // 显示模式: 0: 仅位置, 1: 仅实时电流, 2: 8项综合监测(4位置+4现场电流) - 对应 P1 菜单 q11
     uint16_t driver_stall_percent;    // 驱动器堵转限流百分比 (50 ~ 250%, 默认 150%) - 对应 P1 菜单 q12
     uint16_t stall_detect_time_ms;    // 堵转判定防抖时间 (单位: ms, 100 ~ 2000ms, 默认 600ms) - 对应 P1 菜单 q13
     uint16_t reserved;                // 预留对齐 64 字节

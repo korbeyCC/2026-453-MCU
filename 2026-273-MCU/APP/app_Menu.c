@@ -205,12 +205,12 @@ static void APP_Menu_AdjustParam(bool is_inc)
             break;
         }
 
-        case 11: // Set_W = 11: show_current_mode (0: 显示位置, 1: 实时显示当前电机电流)
+        case 11: // Set_W = 11: show_current_mode (0: 显示位置, 1: 实时显示当前电机电流, 2: 8项综合监测模式)
             if (is_inc) {
-                if (app_data.show_current_mode < 1)
+                if (app_data.show_current_mode < 2)
                     app_data.show_current_mode++;
                 else
-                    app_data.show_current_mode = 1;
+                    app_data.show_current_mode = 2;
             } else {
                 if (app_data.show_current_mode > 0)
                     app_data.show_current_mode--;
@@ -356,22 +356,30 @@ void APP_MenuTask(void *pvParameters)
             // 维度 0：主界面 & 实时监测层 (dim1 == 0)
             // ====================================================
             else if (dim1 == 0) {
-                // 1. 短按 K1 或 K6：轮播切换当前模式下的有效使能轴实时读数
+                // 1. 短按 K1 或 K6：轮播切换当前模式下的有效使能轴读数 (支持 4 轴位置/实时电流 或 8 项位置+现场电流)
                 if ((msg.key_id == MID_KEY_ID_K1 || msg.key_id == MID_KEY_ID_K6) && msg.event == MID_KEY_EVT_LEASS) {
-                    uint8_t mask     = App_Data_GetColumnMotorMask();
-                    uint8_t next_idx = dim2;
-                    for (int step = 1; step <= 4; step++) {
-                        uint8_t candidate = (dim2 + step) % 4;
-                        if (mask & (1 << candidate)) {
-                            next_idx = candidate;
+                    uint8_t max_items = (app_data.show_current_mode == 2) ? 8 : 4;
+                    uint8_t mask      = App_Data_GetColumnMotorMask();
+                    uint8_t next_idx  = dim2;
+                    int dir           = (msg.key_id == MID_KEY_ID_K6) ? 1 : -1;
+
+                    for (int step = 1; step <= max_items; step++) {
+                        int candidate = ((int)dim2 + dir * step) % (int)max_items;
+                        if (candidate < 0) candidate += max_items;
+                        uint8_t m_idx = (candidate < 4) ? (uint8_t)candidate : (uint8_t)(candidate - 4);
+                        if (mask & (1 << m_idx)) {
+                            next_idx = (uint8_t)candidate;
                             break;
                         }
                     }
-                    dim2 = next_idx;
-                    Debug_Printf("[SYS] Display Switched to Motor %d Absolute Hall/Travel.\r\n", dim2);
+                    dim2              = next_idx;
+                    adjust_hold_ticks = 40; // 切换后保持数值常显 2.0s (故障态下不立即被 Err 覆盖)
+                    Debug_Printf("[SYS] Display Switched to Item %d (Motor %d, %s).\r\n",
+                                 dim2, (dim2 < 4) ? dim2 : (dim2 - 4),
+                                 (dim2 < 4) ? "Position" : "Fault/Frozen Current");
                 }
-                // 2. 短按 K5：切换微调方向 (0:正转/上升, 1:反转/下降)，并闪烁提示 "-UP-" / "-dn-"
-                else if (msg.key_id == MID_KEY_ID_K5 && msg.event == MID_KEY_EVT_LEASS) {
+                // 2. 短按 K5：仅在非报警锁死状态下切换微调方向 (0:正转/上升, 1:反转/下降)，并闪烁提示 "-UP-" / "-dn-"
+                else if (msg.key_id == MID_KEY_ID_K5 && msg.event == MID_KEY_EVT_LEASS && !Sys_Mode_IsFaultLocked()) {
                     uint8_t new_dir = (Sys_View_GetTuneDir() == 0) ? 1 : 0;
                     Sys_View_SetTuneDir(new_dir);
                     if (new_dir == 0) {

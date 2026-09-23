@@ -79,11 +79,6 @@ static void APP_Control_FreezeFaultCurrent(void)
     for (int i = 0; i < 4; i++) {
         g_sys_context.fault_frozen_current[i] = g_sys_context.g_motor_status[i].current_deciA;
     }
-    Debug_Printf("[SYS] Fault Current Frozen: M1=%.2fA, M2=%.2fA, M3=%.2fA, M4=%.2fA\r\n",
-                 (float)g_sys_context.fault_frozen_current[0] / 100.0f,
-                 (float)g_sys_context.fault_frozen_current[1] / 100.0f,
-                 (float)g_sys_context.fault_frozen_current[2] / 100.0f,
-                 (float)g_sys_context.fault_frozen_current[3] / 100.0f);
 }
 
 static bool APP_Control_CheckSafety(void)
@@ -96,8 +91,6 @@ static bool APP_Control_CheckSafety(void)
         if (g_sys_context.g_motor_status[i].comm_error >= SAFETY_COMM_ERR_MAX_CNT) {
             g_sys_context.system_fault_code = FAULT_CODE_COMM;
             APP_Control_FreezeFaultCurrent();
-            Debug_Printf("[ERR] Safety Fault: Motor %d Comm Loss! (CommErr=%d)\r\n",
-                         i + 1, g_sys_context.g_motor_status[i].comm_error);
             return true;
         }
     }
@@ -106,14 +99,6 @@ static bool APP_Control_CheckSafety(void)
     if (g_sys_context.max_travel_diff > (float)g_sys_context.max_sync_diff_hall) {
         g_sys_context.system_fault_code = FAULT_CODE_SYNC;
         APP_Control_FreezeFaultCurrent();
-        Debug_Printf("[ERR] Safety Fault: Sync Travel Diff Exceeded! (Diff=%.1f > Limit=%d)\r\n",
-                     g_sys_context.max_travel_diff, g_sys_context.max_sync_diff_hall);
-        Debug_Printf("[SYS] TravelRel: TR0=%.0f, TR1=%.0f, TR2=%.0f, TR3=%.0f | AbsHalls: H0=%d, H1=%d, H2=%d, H3=%d\r\n",
-                     g_sys_context.travel_rel[0], g_sys_context.travel_rel[1], g_sys_context.travel_rel[2], g_sys_context.travel_rel[3],
-                     g_sys_context.g_motor_status[0].current_abs_hall,
-                     g_sys_context.g_motor_status[1].current_abs_hall,
-                     g_sys_context.g_motor_status[2].current_abs_hall,
-                     g_sys_context.g_motor_status[3].current_abs_hall);
         return true;
     }
 
@@ -125,14 +110,6 @@ static bool APP_Control_CheckSafety(void)
             if (g_sys_context.g_motor_status[i].stall_cnt >= SAFETY_STALL_MAX_CNT) {
                 g_sys_context.system_fault_code = FAULT_CODE_STALL;
                 APP_Control_FreezeFaultCurrent();
-                Debug_Printf("[ERR] Safety Fault: Motor %d OverCurrent Stall! (Curr=%.2fA > Limit=%.2fA)\r\n",
-                             i + 1, (float)g_sys_context.g_motor_status[i].current_deciA / 100.0f,
-                             (float)app_data.stall_current_threshold / 100.0f);
-                Debug_Printf("[SYS] Loaded Flash Abs Halls: H0=%d, H1=%d, H2=%d, H3=%d \r\n",
-                             g_sys_context.g_motor_status[0].current_abs_hall,
-                             g_sys_context.g_motor_status[1].current_abs_hall,
-                             g_sys_context.g_motor_status[2].current_abs_hall,
-                             g_sys_context.g_motor_status[3].current_abs_hall);
                 return true;
             }
         } else {
@@ -291,7 +268,6 @@ void APP_Control_EnsureColumnModeLocked(void)
     if (app_data.column_mode_locked == 0) {
         app_data.column_mode_locked = 1;
         APP_Data_Storage();
-        Debug_Printf("[SYS] Motion Triggered: Column Mode %d Force-Locked to Flash!\r\n", app_data.column_mode);
     }
 }
 
@@ -413,9 +389,6 @@ void APP_Control_StartSingleTune(uint8_t m_idx)
 
     g_sys_context.system_step = SYS_STEP_SINGLE_TUNE;
     Sys_Mode_Set(SYS_MODE_MOTION); // 同步系统模式为运动态
-    Debug_Printf("[SYS] Enter SINGLE_TUNE: Motor=%d, Dir=%s, Step=%dmm, TargetCounts=%d, Speed=%dRPM (Half Speed)\r\n",
-                 m_idx + 1, (g_sys_context.single_tune_dir == 0) ? "UP" : "DOWN",
-                 app_data.single_tune_step_mm, g_sys_context.single_tune_target_counts, tune_rpm);
 }
 
 /**

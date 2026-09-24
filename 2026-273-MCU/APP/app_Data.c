@@ -123,18 +123,18 @@ void APP_Data_ResetDefault(void)
     app_data.max_travel_range_mm     = 1000; // 默认 2000 mm
     app_data.reduction_ratio         = 30;   // 默认减速比 30
     app_data.target_speed_mm_min     = 800;  // 默认 750 mm/min
-    app_data.stall_current_threshold = 800; // 默认 7.50A (需低于驱动器堵转上限 STALL_CURRENT_THRESHOLD_MAX = 7.5A*150% = 11.25A = 1125)
+    app_data.stall_current_threshold = 800;  // 默认 7.50A (需低于驱动器堵转上限 STALL_CURRENT_THRESHOLD_MAX = 7.5A*150% = 11.25A = 1125)
     app_data.max_sync_diff_mm        = 20;   // 默认 5 mm
     app_data.lead_mm                 = 8;    // 默认 8 mm
     app_data.hall_coef               = 30;   // 默认 30
     app_data.motor_dir_invert        = 1;    // 默认 1 (反向丝杆，极性反转)
-    app_data.single_tune_step_mm     = 2;   // 默认微调步进 1 mm
+    app_data.single_tune_step_mm     = 2;    // 默认微调步进 1 mm
     app_data.rebound_travel_mm       = 500;  // 默认堵转反弹行程 1000 mm (1米)
     app_data.column_mode             = 0;    // 默认四柱模式 (00)
     app_data.column_mode_locked      = 0;    // 默认未锁定 (出厂态自由任选)
     app_data.show_current_mode       = 2;    // 默认显示位置 (0)
     app_data.driver_stall_percent    = 150;  // 默认驱动器堵转限流 150% (F07.12 = 1500)
-    app_data.stall_detect_time_ms    = 1000;  // 默认堵转判定防抖时间 600ms (30 帧)
+    app_data.stall_detect_time_ms    = 1000; // 默认堵转判定防抖时间 600ms (30 帧)
 
     float c_per_mm              = (float)(app_data.reduction_ratio * app_data.hall_coef) / (float)app_data.lead_mm;
     int32_t default_mount_halls = (int32_t)(1000.0f * c_per_mm + 0.5f);

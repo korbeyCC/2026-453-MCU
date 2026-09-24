@@ -110,6 +110,33 @@ void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size)
     }
 }
 
+// ========================== 485 硬件通信错误中断强回调函数 ==========================
+/**
+ * @brief  重写 HAL 库串口通信错误中断回调 (ORE/NE/FE/PE 硬件错误自愈复位)
+ * @note   在电机大电流强 EMI 干扰下自动清除硬件错误标志并重置 DMA，杜绝串口假死锁死
+ */
+void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
+{
+    if (huart == NULL) return;
+
+    __HAL_UART_CLEAR_OREFLAG(huart);
+    __HAL_UART_CLEAR_NEFLAG(huart);
+    __HAL_UART_CLEAR_FEFLAG(huart);
+    __HAL_UART_CLEAR_PEFLAG(huart);
+    huart->ErrorCode = HAL_UART_ERROR_NONE;
+
+    for (int i = 0; i < 4; i++) {
+        if (huart == modbus_masters[i].huart) {
+            HAL_UART_DMAStop(huart);
+            modbus_masters[i].state       = MODBUS_STATE_IDLE;
+            modbus_masters[i].rx_complete = 0;
+            modbus_masters[i].rx_count    = 0;
+            HAL_UARTEx_ReceiveToIdle_DMA(huart, modbus_masters[i].rx_buf, sizeof(modbus_masters[i].rx_buf));
+            break;
+        }
+    }
+}
+
 // ========================== 内部：解析响应报文 ==========================
 static bool parse_response(Modbus_Master_t *master, uint16_t *destBuf, uint16_t expectedCount)
 {
@@ -144,6 +171,11 @@ static void send_read_cmd(Modbus_Master_t *master, uint16_t startAddr, uint16_t 
 
     // 发送前重置 DMA 状态并清空完成标志，彻底杜绝 HAL_BUSY 锁死及脏数据拼接
     HAL_UART_DMAStop(master->huart);
+    __HAL_UART_CLEAR_OREFLAG(master->huart);
+    __HAL_UART_CLEAR_NEFLAG(master->huart);
+    __HAL_UART_CLEAR_FEFLAG(master->huart);
+    __HAL_UART_CLEAR_PEFLAG(master->huart);
+    master->huart->ErrorCode = HAL_UART_ERROR_NONE;
     master->rx_count    = 0;
     master->rx_complete = 0;
     master->timeout_cnt = 0;
@@ -188,6 +220,11 @@ static void send_write_single_cmd(Modbus_Master_t *master, uint16_t regAddr, uin
     uint16_t crc;
 
     HAL_UART_DMAStop(master->huart);
+    __HAL_UART_CLEAR_OREFLAG(master->huart);
+    __HAL_UART_CLEAR_NEFLAG(master->huart);
+    __HAL_UART_CLEAR_FEFLAG(master->huart);
+    __HAL_UART_CLEAR_PEFLAG(master->huart);
+    master->huart->ErrorCode = HAL_UART_ERROR_NONE;
     master->rx_count    = 0;
     master->rx_complete = 0;
     master->timeout_cnt = 0;
@@ -221,6 +258,11 @@ static void send_write_multiple_cmd(Modbus_Master_t *master, uint16_t startAddr,
     uint16_t tx_len;
 
     HAL_UART_DMAStop(master->huart);
+    __HAL_UART_CLEAR_OREFLAG(master->huart);
+    __HAL_UART_CLEAR_NEFLAG(master->huart);
+    __HAL_UART_CLEAR_FEFLAG(master->huart);
+    __HAL_UART_CLEAR_PEFLAG(master->huart);
+    master->huart->ErrorCode = HAL_UART_ERROR_NONE;
     master->rx_count    = 0;
     master->rx_complete = 0;
     master->timeout_cnt = 0;
@@ -501,3 +543,5 @@ void MID_Modbus_SetBaudRate(uint32_t baudrate)
         MID_Modbus_SetMasterBaudRate(&modbus_masters[i], baudrate);
     }
 }
+
+

@@ -632,8 +632,14 @@ void APP_Control_UpdateStateAndStatistics(void)
             g_sys_context.g_motor_status[i].last_motion_cmd = CMD_REVERSE;
             signed_delta                                    = -(int32_t)abs_pulse; // 下降：绝对高度减少
         } else {
-            // CMD_STOP 停机/静止阶段：使用带符号的物理脉冲差 (raw_diff) 并结合丝杆极性映射为高度方向
-            signed_delta = (app_data.motor_dir_invert == 0) ? raw_diff : -raw_diff;
+            // CMD_STOP 停机/刹车滑行阶段：继承停机前的运动方向，避免方向突变导致高度颠倒
+            if (g_sys_context.g_motor_status[i].last_motion_cmd == CMD_FORWARD) {
+                signed_delta = (int32_t)abs_pulse;
+            } else if (g_sys_context.g_motor_status[i].last_motion_cmd == CMD_REVERSE) {
+                signed_delta = -(int32_t)abs_pulse;
+            } else {
+                signed_delta = 0;
+            }
         }
 
         // 3. 求解当前绝对高度 (起点高度 + 方向增量)
@@ -840,6 +846,21 @@ void APP_ControlTask(void *pvParameters)
                             }
                             if (limit_blocked) break;
 
+                            // 启动前极差检查：若当前四柱存在严重不同步超差，先触发自动重平调齐，调平后再由用户启动
+                            if (g_sys_context.max_travel_diff > (float)g_sys_context.max_sync_diff_hall) {
+                                APP_Control_EnsureColumnModeLocked();
+                                for (int i = 0; i < 4; i++) {
+                                    g_sys_context.g_motor_status[i].base_abs_hall    = g_sys_context.g_motor_status[i].current_abs_hall;
+                                    g_sys_context.g_motor_status[i].start_drive_hall = g_sys_context.g_motor_status[i].hall_value;
+                                }
+                                g_sys_context.active_motor_mask = active_mask;
+                                g_sys_context.system_step       = SYS_STEP_AUTO_ALIGN;
+                                Sys_Mode_Set(SYS_MODE_AUTO_ALIGN);
+                                MID_Brake_Release();           // 启动自愈重平前通电松开抱闸
+                                vTaskDelay(pdMS_TO_TICKS(80)); // 硬件脱开延时 80ms
+                                break;
+                            }
+
                             // 动则强锁：发生任何位移控制动作前强制锁死当前柱体模式，防范未锁定态空中变动拓扑
                             APP_Control_EnsureColumnModeLocked();
 
@@ -904,6 +925,21 @@ void APP_ControlTask(void *pvParameters)
                                 }
                             }
                             if (limit_blocked) break;
+
+                            // 启动前极差检查：若当前四柱存在严重不同步超差，先触发自动重平调齐，调平后再由用户启动
+                            if (g_sys_context.max_travel_diff > (float)g_sys_context.max_sync_diff_hall) {
+                                APP_Control_EnsureColumnModeLocked();
+                                for (int i = 0; i < 4; i++) {
+                                    g_sys_context.g_motor_status[i].base_abs_hall    = g_sys_context.g_motor_status[i].current_abs_hall;
+                                    g_sys_context.g_motor_status[i].start_drive_hall = g_sys_context.g_motor_status[i].hall_value;
+                                }
+                                g_sys_context.active_motor_mask = active_mask;
+                                g_sys_context.system_step       = SYS_STEP_AUTO_ALIGN;
+                                Sys_Mode_Set(SYS_MODE_AUTO_ALIGN);
+                                MID_Brake_Release();           // 启动自愈重平前通电松开抱闸
+                                vTaskDelay(pdMS_TO_TICKS(80)); // 硬件脱开延时 80ms
+                                break;
+                            }
 
                             // 动则强锁：发生任何位移控制动作前强制锁死当前柱体模式，防范未锁定态空中变动拓扑
                             APP_Control_EnsureColumnModeLocked();
@@ -1708,8 +1744,9 @@ void APP_ControlTask(void *pvParameters)
                         continue;
                     }
 
-                    // 检查霍尔值是否与上一次采样相同
-                    if (g_sys_context.g_motor_status[i].hall_value == s_last_check_halls[i]) {
+                    // 检查霍尔值是否与上一次采样相同 (且必须保证通信正常，杜绝丢包时把旧值误判为物理停稳)
+                    if (g_sys_context.g_motor_status[i].comm_error == 0 &&
+                        g_sys_context.g_motor_status[i].hall_value == s_last_check_halls[i]) {
                         if (!s_axis_is_settled[i]) {
                             s_axis_stable_cnt[i]++;
                             if (s_axis_stable_cnt[i] >= STOP_STABLE_CHECK_CNT) {
@@ -1755,7 +1792,7 @@ void APP_ControlTask(void *pvParameters)
                             }
                         }
                     } else {
-                        // 霍尔值仍在变动（尚未停稳），更新历史并清零该轴稳定计数
+                        // 霍尔值仍在变动或通信中断（尚未停稳），更新历史并清零该轴稳定计数
                         s_last_check_halls[i] = g_sys_context.g_motor_status[i].hall_value;
                         s_axis_stable_cnt[i]  = 0;
                         s_axis_is_settled[i]  = false;
@@ -1858,21 +1895,7 @@ void APP_ControlTask(void *pvParameters)
                         MID_Brake_Lock(); // 同步严重超限抱死自锁
                         Debug_Printf("[SYS] Stop Check: Sync Diff Fault Active! Entering SYS_STEP_FAULT_STOP Lockout (Err3).\r\n");
                     }
-                    // E. 无任何致命故障，仅台面极差超标 -> 触发自主重平自愈
-                    else if (g_sys_context.max_travel_diff > (float)g_sys_context.max_sync_diff_hall) {
-                        for (int i = 0; i < 4; i++) {
-                            g_sys_context.g_motor_status[i].base_abs_hall    = g_sys_context.g_motor_status[i].current_abs_hall;
-                            g_sys_context.g_motor_status[i].start_drive_hall = g_sys_context.g_motor_status[i].hall_value;
-                        }
-                        g_sys_context.active_motor_mask = active_mask;
-                        g_sys_context.system_step       = SYS_STEP_AUTO_ALIGN;
-                        Sys_Mode_Set(SYS_MODE_AUTO_ALIGN);
-                        MID_Brake_Release();           // 453 抱闸控制：启动自愈重平前通电松开抱闸
-                        vTaskDelay(pdMS_TO_TICKS(80)); // 硬件脱开延时 80ms
-                        Debug_Printf("[SYS] Stop Check: Table Sync Diff (Diff=%.1f > Limit=%d) with No Faults! Triggering AUTO_ALIGN Self-Healing...\r\n",
-                                     g_sys_context.max_travel_diff, g_sys_context.max_sync_diff_hall);
-                    }
-                    // F. 无任何故障且台面平整 -> 正常就绪待命
+                    // E. 无任何致命故障 -> 统一进入 READY 保持抱闸自锁，待下次动作启动前按需调平
                     else {
                         g_sys_context.system_fault_code = FAULT_CODE_NONE;
                         g_sys_context.system_step       = SYS_STEP_READY;
@@ -2102,6 +2125,9 @@ void APP_ControlTask(void *pvParameters)
                     s_auto_reset_timer = 0;
                     s_driver_recovered = false;
                 }
+
+                // 实时解算 4 轴绝对高度与统计极差 (配合 app_Comm 对 0x3013 的低频轮询，保证锁机下高度与屏幕同步刷新)
+                APP_Control_UpdateStateAndStatistics();
 
                 // 1. 检查使能轴 485 通信状态
                 bool comm_ok = true;

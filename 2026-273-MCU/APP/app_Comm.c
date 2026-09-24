@@ -491,12 +491,21 @@ void APP_CommTask(void *pvParameters)
                 // Tier 3 & Tier 4: 无高优先级控制指令时，根据系统运行状态执行针对性轮询与采样
                 else {
                     if (g_sys_context.system_step == SYS_STEP_FAULT_STOP) {
-                        // 【故障停机阶段】：主动连续查询 4 轴驱动器状态字与故障代码 (0x2100, 3 regs: 0x2100, 0x2101, 0x2102)
-                        // 每 48ms (12 帧 x 4ms) 轮询一次，既维持 485 链路活跃心跳，又极速感知驱动器红灯消除与自愈状态
+                        // 【故障停机阶段】：交替查询 4 轴驱动器状态字 (0x2100) 与 霍尔绝对位置 (0x3013)
+                        // 每 48ms (12 帧 x 4ms) 轮询一次，既维持 485 链路活跃心跳，又极速感知驱动器红灯消除与静止物理高度
                         fault_poll_cnt[i]++;
                         if (fault_poll_cnt[i] >= 12) {
-                            if (MID_Modbus_ReadRegs(m, 0x2100, 3, Motor_ReadDriverStatus_Callbacks[i])) {
-                                fault_poll_cnt[i] = 0;
+                            static uint8_t s_fault_poll_alt[4] = {0};
+                            if (s_fault_poll_alt[i] == 0) {
+                                if (MID_Modbus_ReadRegs(m, 0x2100, 3, Motor_ReadDriverStatus_Callbacks[i])) {
+                                    fault_poll_cnt[i]   = 0;
+                                    s_fault_poll_alt[i] = 1;
+                                }
+                            } else {
+                                if (MID_Modbus_ReadRegs(m, 0x3013, 2, Motor_ReadHall_Callbacks[i])) {
+                                    fault_poll_cnt[i]   = 0;
+                                    s_fault_poll_alt[i] = 0;
+                                }
                             }
                         }
                     } else if (g_sys_context.system_step == SYS_STEP_READY) {

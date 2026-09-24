@@ -161,13 +161,33 @@ static void APP_Control_RunPID(int16_t base_speed)
     float calc_target_v[4];
     float max_v = -1e9f;
 
-    // 2. 算出使能通道的理论 PID 调速结果 (直接引用全局上下文 g_sys_context 中无条件解算的绝对伸出高度)
+    // 2. 做法 A：目标高度向落后轴倾斜（偏好落后轴，实现非对称柔和调平）
+    // 计算偏好落后轴的目标基准线 target_travel:
+    // PID_LAG_BIAS_FACTOR: 0.0f 完全对齐落后轴(落后轴0加速，靠超前轴降速等待); 1.0f 对称平均值
+    float target_travel = g_sys_context.avg_travel;
+    uint8_t motion_dir  = CMD_STOP;
+    for (int i = 0; i < 4; i++) {
+        if (active_mask & (1 << i)) {
+            motion_dir = g_sys_context.g_motor_status[i].target_cmd;
+            break;
+        }
+    }
+
+    if (motion_dir == CMD_FORWARD) {
+        // 上升工况：伸出行程最小 (min_travel) 为落后轴，目标线向下靠拢最低轴
+        target_travel = g_sys_context.min_travel + PID_LAG_BIAS_FACTOR * (g_sys_context.avg_travel - g_sys_context.min_travel);
+    } else if (motion_dir == CMD_REVERSE) {
+        // 下降工况：伸出行程最大 (max_travel) 为落后轴 (下得慢)，目标线向上靠拢最高轴
+        target_travel = g_sys_context.max_travel - PID_LAG_BIAS_FACTOR * (g_sys_context.max_travel - g_sys_context.avg_travel);
+    }
+
+    // 3. 算出使能通道的理论 PID 调速结果
     for (int i = 0; i < 4; i++) {
         if (!(active_mask & (1 << i))) {
             calc_target_v[i] = 0.0f;
             continue;
         }
-        APP_PID_SetTarget(&motor_pids[i], g_sys_context.avg_travel);
+        APP_PID_SetTarget(&motor_pids[i], target_travel);
         float delta_v = APP_PID_Calc(&motor_pids[i], g_sys_context.travel_rel[i]);
 
         if (g_sys_context.g_motor_status[i].target_cmd == CMD_FORWARD) {
@@ -642,10 +662,15 @@ void APP_Control_UpdateStateAndStatistics(void)
         g_sys_context.avg_delta_h /= (float)active_count;
         g_sys_context.max_dh_diff = max_dh - min_dh; // 本次单次运动位移增量极差
 
-        g_sys_context.avg_travel /= (float)active_count;
+        g_sys_context.avg_travel      = g_sys_context.avg_travel / (float)active_count;
+        g_sys_context.min_travel      = min_tr;
+        g_sys_context.max_travel      = max_tr;
         g_sys_context.max_travel_diff = max_tr - min_tr; // 调平伸出行程极差 (伸出差)
     } else {
         g_sys_context.max_dh_diff     = 0.0f;
+        g_sys_context.avg_travel      = 0.0f;
+        g_sys_context.min_travel      = 0.0f;
+        g_sys_context.max_travel      = 0.0f;
         g_sys_context.max_travel_diff = 0.0f;
     }
 }

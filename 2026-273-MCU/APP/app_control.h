@@ -39,7 +39,7 @@
 // ===================================================================
 // 动态 PID 纠偏与基础初始化宏配置
 // ===================================================================
-#define PID_DEFAULT_KP          0.60f   // 默认比例增益 Kp
+#define PID_DEFAULT_KP          0.35f   // 默认比例增益 Kp (由 0.60f 保守调降至 0.35f，平滑调速冲击)
 #define PID_DEFAULT_KI          0.001f  // 默认积分增益 Ki
 #define PID_DEFAULT_KD          0.0f    // 默认微分增益 Kd
 #define PID_DEFAULT_DEADZONE    0.0f    // 默认控制死区 (counts)
@@ -47,13 +47,19 @@
 #define PID_DEFAULT_OUT_MIN     -100.0f // 默认输出下限 (RPM)
 #define PID_DEFAULT_IOUT_MAX    30.0f   // 默认积分限幅 (RPM)
 
-#define PID_DIFF_LOW_THRESHOLD  50.0f  // PID 动态限幅低偏差门限 (counts, 约 0.44mm)
-#define PID_DIFF_HIGH_THRESHOLD 300.0f // PID 动态限幅高偏差门限 (counts, 约 2.66mm)
+#define PID_DIFF_LOW_THRESHOLD  50.0f   // PID 动态限幅低偏差门限 (counts, 约 0.44mm)
+#define PID_DIFF_HIGH_THRESHOLD 400.0f  // PID 动态限幅高偏差门限 (counts, 约 3.55mm, 适度放大避免过早进入大限幅)
 
-#define PID_OUT_MAX_LOW         100.0f // 小偏差时 PID 最高调节转速 (RPM)
-#define PID_OUT_MAX_HIGH        600.0f // 大偏差时 PID 极速拉平转速 (RPM)
-#define PID_IOUT_MAX_LOW        30.0f  // 小偏差时 PID 积分限幅 (RPM)
-#define PID_IOUT_MAX_HIGH       150.0f // 大偏差时 PID 积分限幅 (RPM)
+#define PID_OUT_MAX_LOW         80.0f   // 小偏差时 PID 最高调节转速 (RPM, 由 100.0f 保守微调为 80.0f)
+#define PID_OUT_MAX_HIGH        250.0f  // 大偏差时 PID 极速拉平转速 (RPM, 由 600.0f 降至 250.0f，杜绝多柱拉扯暴冲)
+#define PID_IOUT_MAX_LOW        20.0f   // 小偏差时 PID 积分限幅 (RPM)
+#define PID_IOUT_MAX_HIGH       60.0f   // 大偏差时 PID 积分限幅 (RPM, 由 150.0f 下调，防积分过度饱和)
+
+// 做法 A：重载非对称落后轴偏好权重因子 (Lag-biased Target Factor)
+// 0.0f: 目标完全对齐落后轴 (落后轴 0 加速，完全靠超前轴降速等待)
+// 1.0f: 传统对称平均值 (目标对齐算术平均线，落后轴加速与超前轴降速对称)
+// 推荐值 0.30f: 偏好落后轴 70%，落后轴仅轻柔提速 30%，超前轴主动降速 70% 等待拉平
+#define PID_LAG_BIAS_FACTOR     0.30f
 
 /* 系统整体运行流程状态机 */
 typedef enum {
@@ -107,6 +113,8 @@ typedef struct {
     // 2. 基于调平零点 (min_mount_halls) 的绝对伸出高度及其统计量 (专用于 PID 绝对纠偏)
     float travel_rel[4];   // 4 轴当帧绝对伸出行程 (counts)
     float avg_travel;      // 4 轴当帧平均绝对伸出行程 (counts)
+    float min_travel;      // 4 轴当帧使能轴最小绝对伸出行程 (counts)
+    float max_travel;      // 4 轴当帧使能轴最大绝对伸出行程 (counts)
     float max_travel_diff; // 4 轴当帧最大绝对高度差 (max - min)
 
     // 自动物理换算参数与安防状态

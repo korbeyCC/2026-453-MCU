@@ -7,7 +7,7 @@
 #define ENABLE_STALL_CURRENT_AUTO_SAVE 0
 
 // 二维坐标菜单全局控制变量
-extern uint8_t dim1;               // 维度一：0-实时信息监测层 (dim2为电机索引 0~3), 1-常规应用设置层, 2-深层调试只读层
+extern uint8_t dim1;               // 维度一：0-实时信息监测层 (dim2为电机索引 0~3), 1-常规应用设置层, 2-深层调试只读层, 3-PID控制参数设置层
 extern uint8_t dim2;               // 维度二：具体项目编号 / 电机索引
 extern uint8_t reset_factory_flag; // 恢复出厂设置开关标记 (0: 否, 1: 恢复)
 extern uint16_t adjust_hold_ticks; // 调值不闪烁倒计时 (单位: 50ms 周期)

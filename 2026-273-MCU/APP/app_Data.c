@@ -65,6 +65,38 @@ void APP_Data_Init(void)
         app_data.stall_detect_time_ms = 600;
     }
 
+    // PID 控制参数防御与旧 Flash 兼容自愈 (0xFFFF 或 0 异常自愈至默认配置)
+    if (app_data.pid_kp_x100 == 0 || app_data.pid_kp_x100 > 999) {
+        app_data.pid_kp_x100 = 30; // 默认 0.30
+    }
+    if (app_data.pid_ki_x1000 > 500) {
+        app_data.pid_ki_x1000 = 1; // 默认 0.001
+    }
+    if (app_data.pid_kd_x100 > 999) {
+        app_data.pid_kd_x100 = 0; // 默认 0.00
+    }
+    if (app_data.pid_diff_low_thresh < 10 || app_data.pid_diff_low_thresh > 500) {
+        app_data.pid_diff_low_thresh = 50; // 默认 50 counts
+    }
+    if (app_data.pid_diff_high_thresh < 100 || app_data.pid_diff_high_thresh > 5000) {
+        app_data.pid_diff_high_thresh = 1900; // 默认 1900 counts
+    }
+    if (app_data.pid_out_max_low < 50 || app_data.pid_out_max_low > 1000) {
+        app_data.pid_out_max_low = 300; // 默认 300 RPM
+    }
+    if (app_data.pid_out_max_high < 100 || app_data.pid_out_max_high > 1500) {
+        app_data.pid_out_max_high = 700; // 默认 700 RPM
+    }
+    if (app_data.pid_iout_max_low > 200) {
+        app_data.pid_iout_max_low = 20; // 默认 20 RPM
+    }
+    if (app_data.pid_iout_max_high > 300) {
+        app_data.pid_iout_max_high = 40; // 默认 40 RPM
+    }
+    if (app_data.pid_lag_bias_factor_x100 > 100) {
+        app_data.pid_lag_bias_factor_x100 = 20; // 默认 0.20 (偏好落后轴 80%)
+    }
+
     // 强制使能 PVD 检测及硬件 PLS 阈值配置 (PVD 检测阈值调低至 2.6V，防范负载及波动噪声)
     // 注：由于 CubeMX 已经自动生成了 NVIC (PVD_IRQn) 中断使能，此处仅需配置并使能 PVD 硬件外设本身即可
     PWR_PVDTypeDef getConfigPVD;
@@ -135,6 +167,16 @@ void APP_Data_ResetDefault(void)
     app_data.show_current_mode       = 2;    // 默认显示位置 (0)
     app_data.driver_stall_percent    = 150;  // 默认驱动器堵转限流 150% (F07.12 = 1500)
     app_data.stall_detect_time_ms    = 1000; // 默认堵转判定防抖时间 600ms (30 帧)
+    app_data.pid_kp_x100             = 30;   // 默认 0.30
+    app_data.pid_ki_x1000            = 1;    // 默认 0.001
+    app_data.pid_kd_x100             = 0;    // 默认 0.00
+    app_data.pid_diff_low_thresh     = 50;   // 默认 50 counts
+    app_data.pid_diff_high_thresh    = 1900; // 默认 1900 counts
+    app_data.pid_out_max_low         = 300;  // 默认 300 RPM
+    app_data.pid_out_max_high        = 700;  // 默认 700 RPM
+    app_data.pid_iout_max_low        = 20;   // 默认 20 RPM
+    app_data.pid_iout_max_high       = 40;   // 默认 40 RPM
+    app_data.pid_lag_bias_factor_x100 = 20;  // 默认 0.20 (偏好落后轴 80%)
 
     float c_per_mm              = (float)(app_data.reduction_ratio * app_data.hall_coef) / (float)app_data.lead_mm;
     int32_t default_mount_halls = (int32_t)(1000.0f * c_per_mm + 0.5f);

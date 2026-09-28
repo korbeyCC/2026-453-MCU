@@ -65,8 +65,16 @@ static Event_Result_t Filter_Level1_FaultClear(const Sys_Event_t *p_evt)
 {
     if (p_evt == NULL) return EVENT_PASS_THROUGH;
 
+    // 1. 如果当前处于设置菜单态 (dim1 != 0 或 Sys_Mode_IsMenuActive())，
+    // 所有按键均放行给 Level 2 菜单独占层处理，绝不在故障层吞掉按键，允许故障期间正常在菜单内调参！
+    extern uint8_t dim1;
+    if (Sys_Mode_IsMenuActive() || dim1 != 0) {
+        return EVENT_PASS_THROUGH;
+    }
+
     if (Sys_Mode_IsFaultLocked()) {
-        // 1. 报警锁死状态下，短按 K1 或 K6 绝不消警！放行给菜单任务用于循环切换查看 8 项 (4轴位置与4轴现场电流)！
+        // 2. 报警锁死主界面状态下：
+        // A. 短按 K1 或 K6：放行给菜单任务用于循环切换查看 8 项 (4轴位置与4轴现场电流)！
         if (p_evt->source == SYS_EVT_SRC_KEY && (p_evt->id == MID_KEY_ID_K1 || p_evt->id == MID_KEY_ID_K6) &&
             p_evt->event_type == MID_KEY_EVT_LEASS) {
 #if SYS_ROUTER_USE_FREERTOS
@@ -75,10 +83,19 @@ static Event_Result_t Filter_Level1_FaultClear(const Sys_Event_t *p_evt)
             return EVENT_CONSUMED;
         }
 
-        // 2. 明确消警事件：仅当板载长按 K5 (复位键) 或长按 K6，或者遥控器触发信号时，才允许执行消警！
+        // B. 长按 K6：放行给菜单任务切入设置菜单 (-P1-)！绝不误消警！
+        if (p_evt->source == SYS_EVT_SRC_KEY && p_evt->id == MID_KEY_ID_K6 &&
+            p_evt->event_type == MID_KEY_EVT_LONG) {
+#if SYS_ROUTER_USE_FREERTOS
+            Sys_Router_NotifyMenuKey(p_evt->id, p_evt->event_type, p_evt->count);
+#endif
+            return EVENT_CONSUMED;
+        }
+
+        // C. 明确消警事件：仅当板载长按 K5 (复位键) 或遥控器触发信号时，才允许执行消警！
         bool is_clear_cmd = false;
         if (p_evt->source == SYS_EVT_SRC_KEY) {
-            if ((p_evt->id == MID_KEY_ID_K5 || p_evt->id == MID_KEY_ID_K6) && p_evt->event_type == MID_KEY_EVT_LONG) {
+            if (p_evt->id == MID_KEY_ID_K5 && p_evt->event_type == MID_KEY_EVT_LONG) {
                 is_clear_cmd = true;
             }
         } else if (p_evt->source == SYS_EVT_SRC_SIGNAL) {
@@ -89,6 +106,7 @@ static Event_Result_t Filter_Level1_FaultClear(const Sys_Event_t *p_evt)
 
         if (is_clear_cmd) {
             if (APP_Control_ClearFault()) {
+                Sys_Mode_Set(SYS_MODE_STANDBY);
                 Debug_Printf("[LEPA Level 1] Fault Cleared via Confirmed Reset Event!\r\n");
             } else {
                 Debug_Printf("[LEPA Level 1] Waiting for Driver Recovery before Clear!\r\n");
@@ -96,7 +114,7 @@ static Event_Result_t Filter_Level1_FaultClear(const Sys_Event_t *p_evt)
             return EVENT_CONSUMED;
         }
 
-        // 3. 其余按键在故障态下静默消费，绝不误消警
+        // D. 其余按键在故障态下静默消费，绝不误消警
         return EVENT_CONSUMED;
     }
 
@@ -291,7 +309,7 @@ bool Sys_Mode_CanEnterMenu(void)
 bool Sys_Mode_IsMenuActive(void)
 {
     extern uint8_t dim1;
-    return (s_sys_mode == SYS_MODE_MENU_CONFIG || dim1 == 1);
+    return (s_sys_mode == SYS_MODE_MENU_CONFIG || dim1 == 1 || dim1 == 3);
 }
 
 bool Sys_Mode_IsFaultLocked(void)

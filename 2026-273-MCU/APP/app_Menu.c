@@ -2,14 +2,15 @@
 #include "mid_Key.h"
 #include "app_Data.h"
 #include "mid_buzzer.h"
+#include "mid_FLASH.h"
 #include "app_supervisor.h"
 #include "app_control.h"
 #include <stdio.h>
 #include <string.h>
 
 // 二维坐标控制变量实例化
-uint8_t dim1               = 0; // 0: 实时信息层, 1: 常规设置层, 2: 深层调试纯只读层
-uint8_t dim2               = 0; // 维度二具体项 / 电机索引 (0~3)
+uint8_t dim1               = 0; // 0: 实时信息层, 1: 常规设置层, 2: 深层调试纯只读层, 3: PID控制参数设置层
+uint8_t dim2               = 0; // 维度二具体项 / 电机索引 (0~8)
 uint16_t adjust_hold_ticks = 0;
 
 // 数码管提示动画全局变量
@@ -37,6 +38,27 @@ static uint8_t s_edit_column_mode = 0; // 菜单第 10 项临时编辑模式值�
 uint8_t APP_Menu_GetEditingColumnMode(void)
 {
     return s_edit_column_mode;
+}
+
+/**
+ * @brief 退出设置菜单回到主运行界面 (dim1 = 0)
+ * @details 退出时根据系统底层是否仍存在未解除故障，严格自适应恢复为 SYS_MODE_FAULT_LOCKED 或 SYS_MODE_STANDBY
+ */
+static void APP_Menu_ExitToMain(const char *prompt_str_opt, uint8_t prompt_ticks_val)
+{
+    dim1              = 0;
+    dim2              = 0;
+    adjust_hold_ticks = 0;
+
+    if (prompt_str_opt != NULL && prompt_ticks_val > 0) {
+        APP_Menu_SetPrompt(prompt_str_opt, prompt_ticks_val);
+    }
+
+    if (Sys_View_GetFaultCode() != FAULT_CODE_NONE || Sys_Mode_IsFaultLocked()) {
+        Sys_Mode_Set(SYS_MODE_FAULT_LOCKED);
+    } else {
+        Sys_Mode_Set(SYS_MODE_STANDBY);
+    }
 }
 
 /**
@@ -252,6 +274,135 @@ static void APP_Menu_AdjustParam(bool is_inc)
     }
 }
 
+/**
+ * @brief 第三页 PID 控制参数设置层 (dim1 == 3) 参数加减调节通用辅助函数
+ */
+static void APP_Menu_AdjustParamP3(bool is_inc)
+{
+    adjust_hold_ticks = 30; // 调值期间 1.5s 保持数码管数字稳定不闪烁
+
+    switch (dim2) {
+        case 0: // Set_W = 0: pid_kp_x100 (0.01 ~ 9.99, 步进 0.01)
+            if (is_inc) {
+                if (app_data.pid_kp_x100 < 999) app_data.pid_kp_x100++;
+            } else {
+                if (app_data.pid_kp_x100 > 1) app_data.pid_kp_x100--;
+            }
+            break;
+
+        case 1: // Set_W = 1: pid_ki_x1000 (0.000 ~ 0.500, 步进 0.001)
+            if (is_inc) {
+                if (app_data.pid_ki_x1000 < 500) app_data.pid_ki_x1000++;
+            } else {
+                if (app_data.pid_ki_x1000 > 0) app_data.pid_ki_x1000--;
+            }
+            break;
+
+        case 2: // Set_W = 2: pid_kd_x100 (0.00 ~ 9.99, 步进 0.01)
+            if (is_inc) {
+                if (app_data.pid_kd_x100 < 999) app_data.pid_kd_x100++;
+            } else {
+                if (app_data.pid_kd_x100 > 0) app_data.pid_kd_x100--;
+            }
+            break;
+
+        case 3: // Set_W = 3: pid_diff_low_thresh (10 ~ 500 counts, 步进 10)
+            if (is_inc) {
+                if (app_data.pid_diff_low_thresh <= 490)
+                    app_data.pid_diff_low_thresh += 10;
+                else
+                    app_data.pid_diff_low_thresh = 500;
+            } else {
+                if (app_data.pid_diff_low_thresh >= 20)
+                    app_data.pid_diff_low_thresh -= 10;
+                else
+                    app_data.pid_diff_low_thresh = 10;
+            }
+            break;
+
+        case 4: // Set_W = 4: pid_diff_high_thresh (100 ~ 5000 counts, 步进 50)
+            if (is_inc) {
+                if (app_data.pid_diff_high_thresh <= 4950)
+                    app_data.pid_diff_high_thresh += 50;
+                else
+                    app_data.pid_diff_high_thresh = 5000;
+            } else {
+                if (app_data.pid_diff_high_thresh >= 150)
+                    app_data.pid_diff_high_thresh -= 50;
+                else
+                    app_data.pid_diff_high_thresh = 100;
+            }
+            break;
+
+        case 5: // Set_W = 5: pid_out_max_low (50 ~ 1000 RPM, 步进 10)
+            if (is_inc) {
+                if (app_data.pid_out_max_low <= 990)
+                    app_data.pid_out_max_low += 10;
+                else
+                    app_data.pid_out_max_low = 1000;
+            } else {
+                if (app_data.pid_out_max_low >= 60)
+                    app_data.pid_out_max_low -= 10;
+                else
+                    app_data.pid_out_max_low = 50;
+            }
+            break;
+
+        case 6: // Set_W = 6: pid_out_max_high (100 ~ 1500 RPM, 步进 20)
+            if (is_inc) {
+                if (app_data.pid_out_max_high <= 1480)
+                    app_data.pid_out_max_high += 20;
+                else
+                    app_data.pid_out_max_high = 1500;
+            } else {
+                if (app_data.pid_out_max_high >= 120)
+                    app_data.pid_out_max_high -= 20;
+                else
+                    app_data.pid_out_max_high = 100;
+            }
+            break;
+
+        case 7: // Set_W = 7: pid_iout_max_low (0 ~ 200 RPM, 步进 5)
+            if (is_inc) {
+                if (app_data.pid_iout_max_low <= 195)
+                    app_data.pid_iout_max_low += 5;
+                else
+                    app_data.pid_iout_max_low = 200;
+            } else {
+                if (app_data.pid_iout_max_low >= 5)
+                    app_data.pid_iout_max_low -= 5;
+                else
+                    app_data.pid_iout_max_low = 0;
+            }
+            break;
+
+        case 8: // Set_W = 8: pid_iout_max_high (0 ~ 300 RPM, 步进 5)
+            if (is_inc) {
+                if (app_data.pid_iout_max_high <= 295)
+                    app_data.pid_iout_max_high += 5;
+                else
+                    app_data.pid_iout_max_high = 300;
+            } else {
+                if (app_data.pid_iout_max_high >= 5)
+                    app_data.pid_iout_max_high -= 5;
+                else
+                    app_data.pid_iout_max_high = 0;
+            }
+            break;
+
+        case 9: // Set_W = 9: pid_lag_bias_factor_x100 (0.00 ~ 1.00, 步进 0.01)
+            if (is_inc) {
+                if (app_data.pid_lag_bias_factor_x100 < 100) app_data.pid_lag_bias_factor_x100++;
+            } else {
+                if (app_data.pid_lag_bias_factor_x100 > 0) app_data.pid_lag_bias_factor_x100--;
+            }
+            break;
+
+        default:
+            break;
+    }
+}
+
 void APP_MenuTask(void *pvParameters)
 {
     MID_KEY_SingleKeyMsg msg;
@@ -302,19 +453,19 @@ void APP_MenuTask(void *pvParameters)
             }
 
             // ====================================================
-            // 维度长按切换：长按 K6 (设置键) 切换一维 dim1 (0 -> 1 -> 2 -> 0)
+            // 维度长按切换：长按 K6 (设置键) 切换一维 dim1 (0 -> 1 -> 2 -> 3 -> 0)
             // ====================================================
             if (msg.key_id == MID_KEY_ID_K6 && msg.event == MID_KEY_EVT_LONG) {
-                uint8_t next_dim1 = (dim1 + 1) % 3;
+                uint8_t next_dim1 = (dim1 + 1) % 4;
 
-                // 门禁检查：若试图进入设置模式 (dim1 == 1)，必须确保电机未处于运动或调平状态
-                if (next_dim1 == 1 && !Sys_Mode_CanEnterMenu()) {
+                // 门禁检查：若试图进入设置模式 (dim1 == 1 或 dim1 == 3)，必须确保电机未处于运动或调平状态
+                if ((next_dim1 == 1 || next_dim1 == 3) && !Sys_Mode_CanEnterMenu()) {
                     APP_Menu_SetPrompt("-Err-", 20); // 提示错误，拒绝在运动中调参
                     Debug_Printf("[SYS] Enter Menu Blocked: Motor is Currently Running or Aligning!\r\n");
                     continue;
                 }
 
-                // 如果离开设置模式，存盘 Flash
+                // 如果离开常规设置模式 (dim1 == 1)，存盘 Flash
                 if (dim1 == 1) {
                     if (reset_factory_flag == 7) {
                         reset_factory_flag = 0;
@@ -329,7 +480,12 @@ void APP_MenuTask(void *pvParameters)
                         Sys_Notify_ParamsUpdated();
                         Debug_Printf("[SYS] Menu Level 1 Params Saved to Flash (ColumnMode=%d, Locked=1).\r\n", app_data.column_mode);
                     }
-                    Sys_Mode_Set(SYS_MODE_STANDBY); // 退出设置模式，恢复待机态
+                }
+                // 如果离开第三页 PID 设置模式 (dim1 == 3)，存盘 Flash 并刷新 PID 参数
+                else if (dim1 == 3) {
+                    APP_Data_Storage();
+                    Sys_Notify_ParamsUpdated();
+                    Debug_Printf("[SYS] Menu Level 3 (PID) Params Saved to Flash & Applied.\r\n");
                 }
 
                 dim1              = next_dim1;
@@ -341,16 +497,22 @@ void APP_MenuTask(void *pvParameters)
                     Sys_Mode_Set(SYS_MODE_MENU_CONFIG);        // 切入设置模式，独占按键并安全封锁电机
                 } else if (dim1 == 2) {
                     Sys_Mode_Set(SYS_MODE_DEBUG_CALIB); // 切入深度调试层
+                } else if (dim1 == 3) {
+                    Sys_Mode_Set(SYS_MODE_MENU_CONFIG); // 切入第三页 PID 设置模式，独占按键安全封锁电机
                 } else {
-                    Sys_Mode_Set(SYS_MODE_STANDBY);
+                    if (Sys_View_GetFaultCode() != FAULT_CODE_NONE || Sys_Mode_IsFaultLocked()) {
+                        Sys_Mode_Set(SYS_MODE_FAULT_LOCKED); // 存在未消除故障时严格恢复为故障锁死态
+                    } else {
+                        Sys_Mode_Set(SYS_MODE_STANDBY);
+                    }
                 }
 
                 char buf[10];
                 snprintf(buf, sizeof(buf), "-P%d-", dim1);
-                APP_Menu_SetPrompt(buf, 40); // 切换维度提示 "-P0-", "-P1-", "-P2-" (保持 2.0s)
+                APP_Menu_SetPrompt(buf, 40); // 切换维度提示 "-P0-", "-P1-", "-P2-", "-P3-" (保持 2.0s)
                 Debug_Printf("[SYS] Menu Switched to Dimension 1 = %d (%s)\r\n",
-                             dim1, (dim1 == 0) ? "REALTIME" : (dim1 == 1) ? "APP_SETTING"
-                                                                          : "DEBUG_READONLY");
+                             dim1, (dim1 == 0) ? "REALTIME" : (dim1 == 1) ? "APP_SETTING" :
+                                   (dim1 == 2) ? "DEBUG_READONLY" : "PID_SETTING");
             }
             // ====================================================
             // 维度 0：主界面 & 实时监测层 (dim1 == 0)
@@ -412,11 +574,7 @@ void APP_MenuTask(void *pvParameters)
                             reset_factory_flag = 0;
                             APP_Data_ResetDefault();   // 恢复全部出厂默认参数并存盘 Flash (解除锁定)
                             Sys_Notify_FactoryReset(); // 全面重置系统上下文状态与 4 轴运行位置
-                            dim1              = 0;
-                            dim2              = 0;
-                            adjust_hold_ticks = 0;
-                            Sys_Mode_Set(SYS_MODE_STANDBY);
-                            APP_Menu_SetPrompt("-rSt-", 30); // 闪烁显示 "-rSt-" (Reset) 1.5s
+                            APP_Menu_ExitToMain("-rSt-", 30); // 闪烁显示 "-rSt-" (Reset) 1.5s 并自适应切回系统模式
                             Debug_Printf("[SYS] Factory Reset Executed via Menu (1, 0 = 7)! Restored Default Factory Settings.\r\n");
                         } else {
                             reset_factory_flag          = 0;
@@ -424,11 +582,7 @@ void APP_MenuTask(void *pvParameters)
                             app_data.column_mode_locked = 1;                  // 一旦保存设置，立即进入单向锁定态
                             APP_Data_Storage();
                             Sys_Notify_ParamsUpdated();
-                            dim1              = 0;
-                            dim2              = 0;
-                            adjust_hold_ticks = 0;
-                            Sys_Mode_Set(SYS_MODE_STANDBY);
-                            APP_Menu_SetPrompt("-P0-", 20);
+                            APP_Menu_ExitToMain("-P0-", 20);
                             Debug_Printf("[SYS] Menu Setting Complete & Saved to Flash (ColumnMode=%d, Locked=1)! Exit to dim1 = 0.\r\n", app_data.column_mode);
                         }
                     }
@@ -447,11 +601,7 @@ void APP_MenuTask(void *pvParameters)
                         // 第一项 (1,0) 按 K5：不保存退出
                         reset_factory_flag = 0;
                         s_edit_column_mode = app_data.column_mode; // 放弃编辑，恢复原值
-                        dim1               = 0;
-                        dim2               = 0;
-                        adjust_hold_ticks  = 0;
-                        Sys_Mode_Set(SYS_MODE_STANDBY);
-                        APP_Menu_SetPrompt("-P0-", 20);
+                        APP_Menu_ExitToMain("-P0-", 20);
                         Debug_Printf("[SYS] Menu Setting Cancelled (No Save). Exit to dim1 = 0.\r\n");
                     }
                 }
@@ -470,9 +620,7 @@ void APP_MenuTask(void *pvParameters)
                     if (dim2 < 3) {
                         dim2++;
                     } else {
-                        dim1 = 0;
-                        dim2 = 0;
-                        APP_Menu_SetPrompt("-P0-", 20);
+                        APP_Menu_ExitToMain("-P0-", 20);
                         Debug_Printf("[SYS] Read-Only View Completed. Exit to dim1 = 0.\r\n");
                         continue;
                     }
@@ -490,15 +638,59 @@ void APP_MenuTask(void *pvParameters)
                         APP_Menu_SetPrompt(buf, 20);
                         Debug_Printf("[SYS] Debug Read-Only View Prev Item: dim2 = %d\r\n", dim2);
                     } else {
-                        dim1 = 0;
-                        dim2 = 0;
-                        APP_Menu_SetPrompt("-P0-", 20);
+                        APP_Menu_ExitToMain("-P0-", 20);
                         Debug_Printf("[SYS] Exit Debug Read-Only View to dim1 = 0.\r\n");
                     }
                 }
                 // C. K1 / K2 按键在 dim1 == 2 (只读层) 中完全忽略！防止误改深层零点或底层数据
                 else if (msg.key_id == MID_KEY_ID_K1 || msg.key_id == MID_KEY_ID_K2) {
                     Debug_Printf("[SYS] Read-Only Mode: K1/K2 Param Adjustment Ignored.\r\n");
+                }
+            }
+            // ====================================================
+            // 维度 3：第三页 PID 控制参数设置层 (dim1 == 3, dim2 为 0~9)
+            // ====================================================
+            else if (dim1 == 3) {
+                // A. 短按 K6：前进到下一项 (dim2++)。在最后一项 (dim2 == 9) 按 K6 时保存 Flash 并退出至 dim1 = 0
+                if (msg.key_id == MID_KEY_ID_K6 && msg.event == MID_KEY_EVT_LEASS) {
+                    if (dim2 < 9) {
+                        dim2++;
+                        adjust_hold_ticks = 0;
+
+                        char buf[10];
+                        snprintf(buf, sizeof(buf), "-q%d-", dim2);
+                        APP_Menu_SetPrompt(buf, 20); // 切换项目显示 "-q0-", "-q1-"... 1.0s
+                        Debug_Printf("[SYS] PID Setting Next Item: dim2 = %d\r\n", dim2);
+                    } else {
+                        // 最后一项 (9) 按 K6：保存 Flash，通知刷新并退出
+                        APP_Data_Storage();
+                        Sys_Notify_ParamsUpdated();
+                        APP_Menu_ExitToMain("-P0-", 20);
+                        Debug_Printf("[SYS] PID Menu Setting Complete & Saved to Flash! Exit to dim1 = 0.\r\n");
+                    }
+                }
+                // B. 短按 K5：后退到上一项 (dim2--)。在第一项 (dim2 == 0) 按 K5 时不保存直接退出至 dim1 = 0
+                else if (msg.key_id == MID_KEY_ID_K5 && msg.event == MID_KEY_EVT_LEASS) {
+                    if (dim2 > 0) {
+                        dim2--;
+                        adjust_hold_ticks = 0;
+
+                        char buf[10];
+                        snprintf(buf, sizeof(buf), "-q%d-", dim2);
+                        APP_Menu_SetPrompt(buf, 20);
+                        Debug_Printf("[SYS] PID Setting Prev Item: dim2 = %d\r\n", dim2);
+                    } else {
+                        // 第一项 (3,0) 按 K5：不保存退出，重新从 Flash 加载旧值恢复
+                        uint32_t addr = MID_FLASH_AddressTransition(0);
+                        MID_FLASH_ReadData(&addr, sizeof(APP_DATA_HandleTypeDef), (uint16_t *)&app_data);
+                        APP_Menu_ExitToMain("-P0-", 20);
+                        Debug_Printf("[SYS] PID Menu Setting Cancelled (No Save). Exit to dim1 = 0.\r\n");
+                    }
+                }
+                // C. K1 (+) / K2 (-) 参数调节 (短按松手单步响应 + 长按快速连发)
+                else if ((msg.key_id == MID_KEY_ID_K1 || msg.key_id == MID_KEY_ID_K2) &&
+                         (msg.event == MID_KEY_EVT_LEASS || msg.event == MID_KEY_EVT_LONG || msg.event == MID_KEY_EVT_Long_REP)) {
+                    APP_Menu_AdjustParamP3(msg.key_id == MID_KEY_ID_K1);
                 }
             }
         }

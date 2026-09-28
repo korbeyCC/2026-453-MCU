@@ -134,21 +134,28 @@ static void APP_Control_RunPID(int16_t base_speed)
     uint8_t active_mask = App_Data_GetColumnMotorMask();
 
     // 1. 根据共享上下文中的 4 轴绝对高度最大偏差动态确定 PID 限幅 (Dynamic Output Limits)
-    // 偏差 <= 50 counts (0.44mm): 100 RPM 低平稳限幅
-    // 偏差 50~300 counts (0.44~2.66mm): 线性平滑放大至 100~600 RPM
-    // 偏差 > 300 counts (> 2.66mm): 强力极速拉平模式 600 RPM
-    float dynamic_out_max  = PID_OUT_MAX_LOW;
-    float dynamic_iout_max = PID_IOUT_MAX_LOW;
-    if (g_sys_context.max_travel_diff > PID_DIFF_HIGH_THRESHOLD) {
-        dynamic_out_max  = PID_OUT_MAX_HIGH;
-        dynamic_iout_max = PID_IOUT_MAX_HIGH;
-    } else if (g_sys_context.max_travel_diff > PID_DIFF_LOW_THRESHOLD) {
-        float ratio      = (g_sys_context.max_travel_diff - PID_DIFF_LOW_THRESHOLD) / (PID_DIFF_HIGH_THRESHOLD - PID_DIFF_LOW_THRESHOLD);
-        dynamic_out_max  = PID_OUT_MAX_LOW + ratio * (PID_OUT_MAX_HIGH - PID_OUT_MAX_LOW);
-        dynamic_iout_max = PID_IOUT_MAX_LOW + ratio * (PID_IOUT_MAX_HIGH - PID_IOUT_MAX_LOW);
+    float diff_low_thresh  = (float)app_data.pid_diff_low_thresh;
+    float diff_high_thresh = (float)app_data.pid_diff_high_thresh;
+    if (diff_high_thresh <= diff_low_thresh) {
+        diff_high_thresh = diff_low_thresh + 10.0f;
+    }
+    float out_max_low   = (float)app_data.pid_out_max_low;
+    float out_max_high  = (float)app_data.pid_out_max_high;
+    float iout_max_low  = (float)app_data.pid_iout_max_low;
+    float iout_max_high = (float)app_data.pid_iout_max_high;
+
+    float dynamic_out_max  = out_max_low;
+    float dynamic_iout_max = iout_max_low;
+    if (g_sys_context.max_travel_diff > diff_high_thresh) {
+        dynamic_out_max  = out_max_high;
+        dynamic_iout_max = iout_max_high;
+    } else if (g_sys_context.max_travel_diff > diff_low_thresh) {
+        float ratio      = (g_sys_context.max_travel_diff - diff_low_thresh) / (diff_high_thresh - diff_low_thresh);
+        dynamic_out_max  = out_max_low + ratio * (out_max_high - out_max_low);
+        dynamic_iout_max = iout_max_low + ratio * (iout_max_high - iout_max_low);
     } else {
-        dynamic_out_max  = PID_OUT_MAX_LOW;
-        dynamic_iout_max = PID_IOUT_MAX_LOW;
+        dynamic_out_max  = out_max_low;
+        dynamic_iout_max = iout_max_low;
     }
 
     for (int i = 0; i < 4; i++) {
@@ -163,7 +170,8 @@ static void APP_Control_RunPID(int16_t base_speed)
 
     // 2. 做法 A：目标高度向落后轴倾斜（偏好落后轴，实现非对称柔和调平）
     // 计算偏好落后轴的目标基准线 target_travel:
-    // PID_LAG_BIAS_FACTOR: 0.0f 完全对齐落后轴(落后轴0加速，靠超前轴降速等待); 1.0f 对称平均值
+    // lag_bias: 0.0f 完全对齐落后轴(落后轴0加速，靠超前轴降速等待); 1.0f 对称平均值
+    float lag_bias      = (float)app_data.pid_lag_bias_factor_x100 / 100.0f;
     float target_travel = g_sys_context.avg_travel;
     uint8_t motion_dir  = CMD_STOP;
     for (int i = 0; i < 4; i++) {
@@ -175,10 +183,10 @@ static void APP_Control_RunPID(int16_t base_speed)
 
     if (motion_dir == CMD_FORWARD) {
         // 上升工况：伸出行程最小 (min_travel) 为落后轴，目标线向下靠拢最低轴
-        target_travel = g_sys_context.min_travel + PID_LAG_BIAS_FACTOR * (g_sys_context.avg_travel - g_sys_context.min_travel);
+        target_travel = g_sys_context.min_travel + lag_bias * (g_sys_context.avg_travel - g_sys_context.min_travel);
     } else if (motion_dir == CMD_REVERSE) {
         // 下降工况：伸出行程最大 (max_travel) 为落后轴 (下得慢)，目标线向上靠拢最高轴
-        target_travel = g_sys_context.max_travel - PID_LAG_BIAS_FACTOR * (g_sys_context.max_travel - g_sys_context.avg_travel);
+        target_travel = g_sys_context.max_travel - lag_bias * (g_sys_context.max_travel - g_sys_context.avg_travel);
     }
 
     // 3. 算出使能通道的理论 PID 调速结果
@@ -244,6 +252,16 @@ void APP_Control_UpdateParamsFromAppData(void)
     g_sys_context.calc_base_rpm      = (int16_t)((app_data.target_speed_mm_min * ratio) / lead);                 // 对应基础转速
     g_sys_context.max_sync_diff_hall = (int32_t)roundf(app_data.max_sync_diff_mm * g_sys_context.counts_per_mm); // 最大同步差
     g_sys_context.max_travel_hall    = (int32_t)roundf(app_data.max_travel_range_mm * g_sys_context.counts_per_mm);
+
+    // 同步刷新 4 轴 PID 控制增益 (Kp, Ki, Kd)
+    float cur_kp = (float)app_data.pid_kp_x100 / 100.0f;
+    float cur_ki = (float)app_data.pid_ki_x1000 / 1000.0f;
+    float cur_kd = (float)app_data.pid_kd_x100 / 100.0f;
+    for (int i = 0; i < 4; i++) {
+        motor_pids[i].Kp = cur_kp;
+        motor_pids[i].Ki = cur_ki;
+        motor_pids[i].Kd = cur_kd;
+    }
 
     // 同步刷新并清理未使能轴的历史状态，防止模式切换后未使能轴残留的错误计数触发待机报错
     uint8_t active_mask = App_Data_GetColumnMotorMask();
@@ -700,10 +718,13 @@ void APP_ControlTask(void *pvParameters)
     g_sys_context.base_speed        = 0;
     g_sys_context.system_fault_code = 0;
 
+    float init_kp = (float)app_data.pid_kp_x100 / 100.0f;
+    float init_ki = (float)app_data.pid_ki_x1000 / 1000.0f;
+    float init_kd = (float)app_data.pid_kd_x100 / 100.0f;
     for (int i = 0; i < 4; i++) {
         g_sys_context.g_motor_status[i].driver_status_word = 0;
         g_sys_context.g_motor_status[i].driver_fault_code  = 0;
-        APP_PID_Init(&motor_pids[i], PID_DEFAULT_KP, PID_DEFAULT_KI, PID_DEFAULT_KD,
+        APP_PID_Init(&motor_pids[i], init_kp, init_ki, init_kd,
                      PID_DEFAULT_DEADZONE, PID_DEFAULT_OUT_MAX, PID_DEFAULT_OUT_MIN, PID_DEFAULT_IOUT_MAX);
     }
 
@@ -1828,8 +1849,11 @@ void APP_ControlTask(void *pvParameters)
                     APP_Control_UpdateStateAndStatistics();
 
                     // 重置 4 轴 PID 控制器历史状态
+                    float cur_kp = (float)app_data.pid_kp_x100 / 100.0f;
+                    float cur_ki = (float)app_data.pid_ki_x1000 / 1000.0f;
+                    float cur_kd = (float)app_data.pid_kd_x100 / 100.0f;
                     for (int i = 0; i < 4; i++) {
-                        APP_PID_Init(&motor_pids[i], PID_DEFAULT_KP, PID_DEFAULT_KI, PID_DEFAULT_KD,
+                        APP_PID_Init(&motor_pids[i], cur_kp, cur_ki, cur_kd,
                                      PID_DEFAULT_DEADZONE, PID_DEFAULT_OUT_MAX, PID_DEFAULT_OUT_MIN, PID_DEFAULT_IOUT_MAX);
                     }
 

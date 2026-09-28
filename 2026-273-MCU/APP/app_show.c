@@ -149,48 +149,10 @@ void APP_ShowTask(void *pvParameters)
         uint8_t fault_code = Sys_View_GetFaultCode();
 
         // ====================================================
-        // 最高优先级 1：反弹阶段交替显示 (500ms 实时位置 <-> 500ms 错误码)
+        // 优先级 1：提示动画 (当 prompt_ticks > 0 时，显示如 "-P1-", "-q2-", "-UP-", "-dn-", "-rSt-")
+        // 提示动画具有最高前台视觉反馈优先级
         // ====================================================
-        if (Sys_View_IsRebounding()) {
-            if (adjust_hold_ticks > 0 || flicker_cnt < 10) {
-                Show_RenderItemData(dim2, SEG_W, SEG_Flag);
-            } else {
-                // 后 500ms 显示故障代码 (如 Err4)
-                SEG_Flag[0] = SEG_Flag[1] = SEG_Flag[2] = SEG_Flag[3] = 0;
-                SEG_W[0] = 14; // E
-                SEG_W[1] = 28; // r
-                SEG_W[2] = 28; // r
-                if (fault_code >= 1 && fault_code <= 9) {
-                    SEG_W[3] = fault_code;
-                } else {
-                    SEG_W[3] = 18; // -
-                }
-            }
-        }
-        // ====================================================
-        // 优先级 2：故障急停报警显示 (在调值/查看期间常显数据，平时与 ErrX 交替显示)
-        // ====================================================
-        else if (fault_code != 0 || Sys_Mode_IsFaultLocked()) {
-            if (adjust_hold_ticks > 0 || flicker_cnt >= 10) {
-                // 用户按键浏览期间(adjust_hold_ticks > 0)常显当前项；平时后半周期显示当前项
-                Show_RenderItemData(dim2, SEG_W, SEG_Flag);
-            } else {
-                // 前半周期显示故障代码 (如 Err1, Err3 等)
-                SEG_Flag[0] = SEG_Flag[1] = SEG_Flag[2] = SEG_Flag[3] = 0;
-                SEG_W[0] = 14; // E
-                SEG_W[1] = 28; // r
-                SEG_W[2] = 28; // r
-                if (fault_code >= 1 && fault_code <= 9) {
-                    SEG_W[3] = fault_code;
-                } else {
-                    SEG_W[3] = 18; // -
-                }
-            }
-        }
-        // ====================================================
-        // 优先级 2：提示动画 (当 prompt_ticks > 0 时，显示如 "-P1-", "-q2-", "-UP-", "-DW-")
-        // ====================================================
-        else if (prompt_ticks > 0) {
+        if (prompt_ticks > 0) {
             SEG_Flag[0] = SEG_Flag[1] = SEG_Flag[2] = SEG_Flag[3] = 0;
             size_t len = strlen(prompt_str);
             for (int i = 0; i < 4; i++) {
@@ -202,7 +164,8 @@ void APP_ShowTask(void *pvParameters)
             }
         }
         // ====================================================
-        // 模式一：常规应用设置层 (dim1 == 1)
+        // 优先级 2：菜单设置页与只读查看层 (dim1 == 1, 2, 3)
+        // 无论系统是否处于故障报警状态，只要进入菜单设置，均优先展示菜单项及数值
         // ====================================================
         else if (dim1 == 1) {
             SEG_Flag[0] = SEG_Flag[1] = SEG_Flag[2] = SEG_Flag[3] = 0;
@@ -306,10 +269,130 @@ void APP_ShowTask(void *pvParameters)
             }
         }
         // ====================================================
-        // 模式三：主界面 & 实时监测层 (dim1 == 0)
+        // 模式四：第三页 PID 控制参数设置层 (dim1 == 3, dim2 为 0~8)
+        // ====================================================
+        else if (dim1 == 3) {
+            SEG_Flag[0] = SEG_Flag[1] = SEG_Flag[2] = SEG_Flag[3] = 0;
+
+            // 1. 前 500ms（或未调值时交替前半段）显示项编号 `-qX-`
+            if (adjust_hold_ticks == 0 && flicker_cnt < 10) {
+                SEG_W[0] = 18;        // -
+                SEG_W[1] = 16;        // q
+                SEG_W[2] = dim2 % 10; // 0 ~ 8
+                SEG_W[3] = 18;        // -
+            }
+            // 2. 后 500ms（或调值期间）显示当前项的具体参数数值
+            else {
+                switch (dim2) {
+                    case 0: { // q0: Kp (pid_kp_x100: 如 30 -> " 0.30")
+                        uint16_t val = app_data.pid_kp_x100;
+                        SEG_W[0]     = (val >= 1000) ? (uint8_t)((val / 1000) % 10) : 19;
+                        SEG_W[1]     = (uint8_t)((val / 100) % 10);
+                        SEG_W[2]     = (uint8_t)((val / 10) % 10);
+                        SEG_W[3]     = (uint8_t)(val % 10);
+                        SEG_Flag[1]  = 1; // 点亮第二位小数点
+                        break;
+                    }
+
+                    case 1: { // q1: Ki (pid_ki_x1000: 如 1 -> "0.001")
+                        uint16_t val = app_data.pid_ki_x1000;
+                        SEG_W[0]     = (uint8_t)((val / 1000) % 10);
+                        SEG_W[1]     = (uint8_t)((val / 100) % 10);
+                        SEG_W[2]     = (uint8_t)((val / 10) % 10);
+                        SEG_W[3]     = (uint8_t)(val % 10);
+                        SEG_Flag[0]  = 1; // 点亮第一位小数点
+                        break;
+                    }
+
+                    case 2: { // q2: Kd (pid_kd_x100: 如 0 -> " 0.00")
+                        uint16_t val = app_data.pid_kd_x100;
+                        SEG_W[0]     = (val >= 1000) ? (uint8_t)((val / 1000) % 10) : 19;
+                        SEG_W[1]     = (uint8_t)((val / 100) % 10);
+                        SEG_W[2]     = (uint8_t)((val / 10) % 10);
+                        SEG_W[3]     = (uint8_t)(val % 10);
+                        SEG_Flag[1]  = 1; // 点亮第二位小数点
+                        break;
+                    }
+
+                    case 3:   // q3: pid_diff_low_thresh (如 50 -> "  50")
+                    case 4:   // q4: pid_diff_high_thresh (如 1900 -> "1900")
+                    case 5:   // q5: pid_out_max_low (如 300 -> " 300")
+                    case 6:   // q6: pid_out_max_high (如 700 -> " 700")
+                    case 7:   // q7: pid_iout_max_low (如 20 -> "  20")
+                    case 8: { // q8: pid_iout_max_high (如 40 -> "  40")
+                        uint16_t val = 0;
+                        if (dim2 == 3) val = app_data.pid_diff_low_thresh;
+                        else if (dim2 == 4) val = app_data.pid_diff_high_thresh;
+                        else if (dim2 == 5) val = app_data.pid_out_max_low;
+                        else if (dim2 == 6) val = app_data.pid_out_max_high;
+                        else if (dim2 == 7) val = app_data.pid_iout_max_low;
+                        else if (dim2 == 8) val = app_data.pid_iout_max_high;
+
+                        SEG_W[0] = (val >= 1000) ? (uint8_t)((val / 1000) % 10) : 19;
+                        SEG_W[1] = (val >= 100)  ? (uint8_t)((val / 100) % 10)  : 19;
+                        SEG_W[2] = (val >= 10)   ? (uint8_t)((val / 10) % 10)   : 19;
+                        SEG_W[3] = (uint8_t)(val % 10);
+                        break;
+                    }
+
+                    case 9: { // q9: pid_lag_bias_factor_x100 (如 20 -> " 0.20", 100 -> " 1.00")
+                        uint16_t val = app_data.pid_lag_bias_factor_x100;
+                        SEG_W[0]     = 19; // 空白
+                        SEG_W[1]     = (uint8_t)((val / 100) % 10);
+                        SEG_W[2]     = (uint8_t)((val / 10) % 10);
+                        SEG_W[3]     = (uint8_t)(val % 10);
+                        SEG_Flag[1]  = 1; // 点亮第二位小数点
+                        break;
+                    }
+
+                    default:
+                        break;
+                }
+            }
+        }
+        // ====================================================
+        // 优先级 3：主界面 & 实时监测层 (dim1 == 0)
         // ====================================================
         else {
-            Show_RenderItemData(dim2, SEG_W, SEG_Flag);
+            // 3.1 反弹阶段交替显示 (500ms 实时位置 <-> 500ms 错误码)
+            if (Sys_View_IsRebounding()) {
+                if (adjust_hold_ticks > 0 || flicker_cnt < 10) {
+                    Show_RenderItemData(dim2, SEG_W, SEG_Flag);
+                } else {
+                    // 后 500ms 显示故障代码 (如 Err4)
+                    SEG_Flag[0] = SEG_Flag[1] = SEG_Flag[2] = SEG_Flag[3] = 0;
+                    SEG_W[0] = 14; // E
+                    SEG_W[1] = 28; // r
+                    SEG_W[2] = 28; // r
+                    if (fault_code >= 1 && fault_code <= 9) {
+                        SEG_W[3] = fault_code;
+                    } else {
+                        SEG_W[3] = 18; // -
+                    }
+                }
+            }
+            // 3.2 故障急停报警显示 (在调值/按键浏览期间常显数据，平时与 ErrX 交替显示)
+            else if (fault_code != 0 || Sys_Mode_IsFaultLocked()) {
+                if (adjust_hold_ticks > 0 || flicker_cnt >= 10) {
+                    // 用户按键浏览期间(adjust_hold_ticks > 0)常显当前项；平时后半周期显示当前项
+                    Show_RenderItemData(dim2, SEG_W, SEG_Flag);
+                } else {
+                    // 前半周期显示故障代码 (如 Err1, Err3 等)
+                    SEG_Flag[0] = SEG_Flag[1] = SEG_Flag[2] = SEG_Flag[3] = 0;
+                    SEG_W[0] = 14; // E
+                    SEG_W[1] = 28; // r
+                    SEG_W[2] = 28; // r
+                    if (fault_code >= 1 && fault_code <= 9) {
+                        SEG_W[3] = fault_code;
+                    } else {
+                        SEG_W[3] = 18; // -
+                    }
+                }
+            }
+            // 3.3 无故障正常就绪/运行状态正常显示
+            else {
+                Show_RenderItemData(dim2, SEG_W, SEG_Flag);
+            }
         }
 
         // 3. 调用中间层驱动转换段码并写入 TM1650 芯片

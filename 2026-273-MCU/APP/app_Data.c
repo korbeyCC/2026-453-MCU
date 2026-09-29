@@ -65,15 +65,15 @@ void APP_Data_Init(void)
         app_data.stall_detect_time_ms = 600;
     }
 
-    // PID 控制参数防御与旧 Flash 兼容自愈 (0xFFFF 或 0 异常自愈至默认配置)
-    if (app_data.pid_kp_x100 == 0 || app_data.pid_kp_x100 > 999) {
-        app_data.pid_kp_x100 = 30; // 默认 0.30
+    // PID 控制参数防御与旧 Flash 兼容自愈 (0xFFFF 异常自愈至默认配置，允许为 0 纯裸跑)
+    if (app_data.pid_kp_x1000 > 9999) {
+        app_data.pid_kp_x1000 = 300; // 默认 0.300
     }
-    if (app_data.pid_ki_x1000 > 500) {
+    if (app_data.pid_ki_x1000 > 5000) {
         app_data.pid_ki_x1000 = 1; // 默认 0.001
     }
-    if (app_data.pid_kd_x100 > 999) {
-        app_data.pid_kd_x100 = 0; // 默认 0.00
+    if (app_data.pid_kd_x1000 > 9999) {
+        app_data.pid_kd_x1000 = 0; // 默认 0.000
     }
     if (app_data.pid_diff_low_thresh < 10 || app_data.pid_diff_low_thresh > 500) {
         app_data.pid_diff_low_thresh = 50; // 默认 50 counts
@@ -160,9 +160,9 @@ void APP_Data_ResetDefault(void)
     // ===================================================================
     // 第三页设置菜单参数 (-P3- PID 控制器配置项 q0 ~ q9)
     // ===================================================================
-    app_data.pid_kp_x100              = 30;   // q0: PID Kp 比例增益 (放大 100 倍, 30 -> 0.30)
+    app_data.pid_kp_x1000             = 300;  // q0: PID Kp 比例增益 (放大 1000 倍, 300 -> 0.300)
     app_data.pid_ki_x1000             = 1;    // q1: PID Ki 积分增益 (放大 1000 倍, 1 -> 0.001)
-    app_data.pid_kd_x100              = 0;    // q2: PID Kd 微分增益 (放大 100 倍, 0 -> 0.00)
+    app_data.pid_kd_x1000             = 0;    // q2: PID Kd 微分增益 (放大 1000 倍, 0 -> 0.000)
     app_data.pid_diff_low_thresh      = 50;   // q3: PID 动态限幅低偏差门限 (counts, 默认 50)
     app_data.pid_diff_high_thresh     = 1900; // q4: PID 动态限幅高偏差门限 (counts, 默认 1900)
     app_data.pid_out_max_low          = 300;  // q5: 小偏差 PID 限幅转速 (RPM, 默认 300)

@@ -35,9 +35,9 @@ typedef struct
     uint16_t show_current_mode;       // 显示模式: 0: 仅位置, 1: 仅实时电流, 2: 8项综合监测(4位置+4现场电流) - 对应 P1 菜单 q11
     uint16_t driver_stall_percent;    // 驱动器堵转限流百分比 (50 ~ 250%, 默认 150%) - 对应 P1 菜单 q12
     uint16_t stall_detect_time_ms;    // 堵转判定防抖时间 (单位: ms, 100 ~ 2000ms, 默认 600ms) - 对应 P1 菜单 q13
-    uint16_t pid_kp_x100;          // PID Kp 比例增益 (放大 100 倍, 30 -> 0.30) - 对应 P3 菜单 q0
+    uint16_t pid_kp_x1000;         // PID Kp 比例增益 (放大 1000 倍, 300 -> 0.300) - 对应 P3 菜单 q0
     uint16_t pid_ki_x1000;         // PID Ki 积分增益 (放大 1000 倍, 1 -> 0.001) - 对应 P3 菜单 q1
-    uint16_t pid_kd_x100;          // PID Kd 微分增益 (放大 100 倍, 0 -> 0.00) - 对应 P3 菜单 q2
+    uint16_t pid_kd_x1000;         // PID Kd 微分增益 (放大 1000 倍, 0 -> 0.000) - 对应 P3 菜单 q2
     uint16_t pid_diff_low_thresh;  // PID 动态限幅低偏差门限 (counts, 默认 50) - 对应 P3 菜单 q3
     uint16_t pid_diff_high_thresh; // PID 动态限幅高偏差门限 (counts, 默认 1900) - 对应 P3 菜单 q4
     uint16_t pid_out_max_low;      // 小偏差 PID 限幅转速 (RPM, 默认 300) - 对应 P3 菜单 q5

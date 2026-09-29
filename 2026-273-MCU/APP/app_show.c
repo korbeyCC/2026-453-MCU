@@ -284,13 +284,13 @@ void APP_ShowTask(void *pvParameters)
             // 2. 后 500ms（或调值期间）显示当前项的具体参数数值
             else {
                 switch (dim2) {
-                    case 0: { // q0: Kp (pid_kp_x100: 如 30 -> " 0.30")
-                        uint16_t val = app_data.pid_kp_x100;
-                        SEG_W[0]     = (val >= 1000) ? (uint8_t)((val / 1000) % 10) : 19;
+                    case 0: { // q0: Kp (pid_kp_x1000: 如 300 -> "0.300", 35 -> "0.035", 0 -> "0.000")
+                        uint16_t val = app_data.pid_kp_x1000;
+                        SEG_W[0]     = (uint8_t)((val / 1000) % 10);
                         SEG_W[1]     = (uint8_t)((val / 100) % 10);
                         SEG_W[2]     = (uint8_t)((val / 10) % 10);
                         SEG_W[3]     = (uint8_t)(val % 10);
-                        SEG_Flag[1]  = 1; // 点亮第二位小数点
+                        SEG_Flag[0]  = 1; // 点亮第一位小数点
                         break;
                     }
 
@@ -304,13 +304,13 @@ void APP_ShowTask(void *pvParameters)
                         break;
                     }
 
-                    case 2: { // q2: Kd (pid_kd_x100: 如 0 -> " 0.00")
-                        uint16_t val = app_data.pid_kd_x100;
-                        SEG_W[0]     = (val >= 1000) ? (uint8_t)((val / 1000) % 10) : 19;
+                    case 2: { // q2: Kd (pid_kd_x1000: 如 0 -> "0.000", 25 -> "0.025")
+                        uint16_t val = app_data.pid_kd_x1000;
+                        SEG_W[0]     = (uint8_t)((val / 1000) % 10);
                         SEG_W[1]     = (uint8_t)((val / 100) % 10);
                         SEG_W[2]     = (uint8_t)((val / 10) % 10);
                         SEG_W[3]     = (uint8_t)(val % 10);
-                        SEG_Flag[1]  = 1; // 点亮第二位小数点
+                        SEG_Flag[0]  = 1; // 点亮第一位小数点
                         break;
                     }
 

@@ -254,9 +254,9 @@ void APP_Control_UpdateParamsFromAppData(void)
     g_sys_context.max_travel_hall    = (int32_t)roundf(app_data.max_travel_range_mm * g_sys_context.counts_per_mm);
 
     // 同步刷新 4 轴 PID 控制增益 (Kp, Ki, Kd)
-    float cur_kp = (float)app_data.pid_kp_x100 / 100.0f;
+    float cur_kp = (float)app_data.pid_kp_x1000 / 1000.0f;
     float cur_ki = (float)app_data.pid_ki_x1000 / 1000.0f;
-    float cur_kd = (float)app_data.pid_kd_x100 / 100.0f;
+    float cur_kd = (float)app_data.pid_kd_x1000 / 1000.0f;
     for (int i = 0; i < 4; i++) {
         motor_pids[i].Kp = cur_kp;
         motor_pids[i].Ki = cur_ki;
@@ -718,9 +718,9 @@ void APP_ControlTask(void *pvParameters)
     g_sys_context.base_speed        = 0;
     g_sys_context.system_fault_code = 0;
 
-    float init_kp = (float)app_data.pid_kp_x100 / 100.0f;
+    float init_kp = (float)app_data.pid_kp_x1000 / 1000.0f;
     float init_ki = (float)app_data.pid_ki_x1000 / 1000.0f;
-    float init_kd = (float)app_data.pid_kd_x100 / 100.0f;
+    float init_kd = (float)app_data.pid_kd_x1000 / 1000.0f;
     for (int i = 0; i < 4; i++) {
         g_sys_context.g_motor_status[i].driver_status_word = 0;
         g_sys_context.g_motor_status[i].driver_fault_code  = 0;
@@ -1849,9 +1849,9 @@ void APP_ControlTask(void *pvParameters)
                     APP_Control_UpdateStateAndStatistics();
 
                     // 重置 4 轴 PID 控制器历史状态
-                    float cur_kp = (float)app_data.pid_kp_x100 / 100.0f;
+                    float cur_kp = (float)app_data.pid_kp_x1000 / 1000.0f;
                     float cur_ki = (float)app_data.pid_ki_x1000 / 1000.0f;
-                    float cur_kd = (float)app_data.pid_kd_x100 / 100.0f;
+                    float cur_kd = (float)app_data.pid_kd_x1000 / 1000.0f;
                     for (int i = 0; i < 4; i++) {
                         APP_PID_Init(&motor_pids[i], cur_kp, cur_ki, cur_kd,
                                      PID_DEFAULT_DEADZONE, PID_DEFAULT_OUT_MAX, PID_DEFAULT_OUT_MIN, PID_DEFAULT_IOUT_MAX);

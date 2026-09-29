@@ -362,10 +362,16 @@ void APP_Control_ResetSystemContext(void)
     // 2. 刷新 4 轴运行内存中的绝对位置为 Flash 恢复后的初始安装位置
     for (int i = 0; i < 4; i++) {
         g_sys_context.g_motor_status[i].current_abs_hall = app_data.motor_abs_halls[i];
+        g_sys_context.g_motor_status[i].base_abs_hall    = app_data.motor_abs_halls[i];
+        g_sys_context.g_motor_status[i].start_drive_hall = g_sys_context.g_motor_status[i].hall_value;
+        g_sys_context.g_motor_status[i].last_motion_cmd  = CMD_STOP;
+        g_sys_context.g_motor_status[i].target_cmd       = CMD_STOP;
         g_sys_context.g_motor_status[i].stall_cnt        = 0;
         g_sys_context.g_motor_status[i].current_deciA    = 0;
         g_sys_context.g_motor_status[i].current_speed    = 0;
         g_sys_context.g_motor_status[i].target_speed     = 0;
+        g_sys_context.delta_h[i]                         = 0.0f;
+        g_sys_context.travel_rel[i]                      = (float)(app_data.motor_abs_halls[i] - app_data.min_mount_halls[i]);
     }
 
     // 3. 复位系统状态机、错误码与微调标志
@@ -374,7 +380,9 @@ void APP_Control_ResetSystemContext(void)
     g_sys_context.active_motor_mask = App_Data_GetColumnMotorMask();
     g_sys_context.is_single_tuning  = false;
     g_sys_context.is_total_tuning   = false;
-    g_sys_context.max_travel_diff   = 0;
+    g_sys_context.max_travel_diff   = 0.0f;
+    g_sys_context.avg_travel        = 0.0f;
+    g_sys_context.avg_delta_h       = 0.0f;
     MID_Brake_Lock(); // 系统复位锁定抱闸自锁
 }
 

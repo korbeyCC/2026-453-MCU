@@ -392,8 +392,10 @@ void APP_Control_StartSingleTune(uint8_t m_idx)
     // 动则强锁：发生任何位移控制动作前强制锁死当前柱体模式，防范未锁定态空中变动拓扑
     APP_Control_EnsureColumnModeLocked();
 
+    uint8_t tune_cmd = (g_sys_context.single_tune_dir == 0) ? CMD_FORWARD : CMD_REVERSE;
+
     for (int i = 0; i < 4; i++) {
-        g_sys_context.g_motor_status[i].last_motion_cmd  = CMD_STOP;
+        g_sys_context.g_motor_status[i].last_motion_cmd  = (i == m_idx) ? tune_cmd : CMD_STOP;
         g_sys_context.g_motor_status[i].start_drive_hall = g_sys_context.g_motor_status[i].hall_value;
         g_sys_context.g_motor_status[i].base_abs_hall    = g_sys_context.g_motor_status[i].current_abs_hall;
     }
@@ -1778,7 +1780,7 @@ void APP_ControlTask(void *pvParameters)
                                 xQueueSend(g_motor_ctrl_queue, &idle_stop_msg, pdMS_TO_TICKS(10));
                                 Debug_Printf("[SYS] Motor %d Settled & Stable: Sent 0x0005 CMD_IDLE_STOP.\r\n", i + 1);
 
-                                // 若该轴为单轴微调目标轴，在彻底停稳后根据真实最终脉冲精确结算 min_mount_halls
+                                // 若该轴为单轴微调目标轴，在彻底停稳后根据真实最终脉冲精确结算绝对高度 current_abs_hall
                                 if (g_sys_context.is_single_tuning && i == g_sys_context.single_tune_motor_idx) {
                                     g_sys_context.is_single_tuning = false; // 消费微调标记
                                     uint32_t final_hall            = g_sys_context.g_motor_status[i].hall_value;
@@ -1786,28 +1788,55 @@ void APP_ControlTask(void *pvParameters)
                                     uint32_t abs_pulse             = (raw_diff >= 0) ? (uint32_t)raw_diff : (uint32_t)(-raw_diff);
 
                                     int32_t tune_delta = (g_sys_context.single_tune_dir == 0) ? (int32_t)abs_pulse : -(int32_t)abs_pulse;
-                                    app_data.min_mount_halls[i] += tune_delta;
-                                    Debug_Printf("[SYS] Single Tune Final Settled! Motor %d (Dir=%s) FinalDelta=%d, New min_mount_hall=%d.\r\n",
+
+                                    // 1. 核心：将微调的真实物理位移准确累加至该轴当前绝对高度 current_abs_hall
+                                    g_sys_context.g_motor_status[i].current_abs_hall = g_sys_context.single_tune_orig_abs_hall + tune_delta;
+
+                                    // 2. 仅当所有立柱均在底部机械安装面时，单轴微调才计入底座零点 min_mount_halls (基准标定)；半空中微调调平绝不篡改零点
+                                    if (APP_Control_IsAllColumnsAtBottom()) {
+                                        app_data.min_mount_halls[i] += tune_delta;
+                                        Debug_Printf("[SYS] At Bottom Baseline: Motor %d New min_mount_hall=%d (Delta=%d).\r\n",
+                                                     i + 1, app_data.min_mount_halls[i], tune_delta);
+                                    }
+
+                                    // 3. 重新结算该轴真实相对伸出行程 travel_rel
+                                    g_sys_context.travel_rel[i] = (float)(g_sys_context.g_motor_status[i].current_abs_hall - app_data.min_mount_halls[i]);
+
+                                    Debug_Printf("[SYS] Single Tune Final Settled! Motor %d (Dir=%s) FinalDelta=%d, New AbsHall=%d, TravelRel=%.1f.\r\n",
                                                  i + 1, (g_sys_context.single_tune_dir == 0) ? "UP" : "DOWN",
-                                                 tune_delta, app_data.min_mount_halls[i]);
+                                                 tune_delta, g_sys_context.g_motor_status[i].current_abs_hall,
+                                                 g_sys_context.travel_rel[i]);
                                 } else if (g_sys_context.is_total_tuning && g_sys_context.system_fault_code == FAULT_CODE_NONE) {
-                                    // 四柱一键微调停稳后（且无故障报错），将各轴真实物理位移增量精准计入起点高度 (调平零点)
+                                    // 四柱一键微调停稳后（且无故障报错），将各轴真实物理位移增量精准计入绝对高度
                                     uint32_t final_hall = g_sys_context.g_motor_status[i].hall_value;
                                     int32_t raw_diff    = (int32_t)(final_hall - g_sys_context.g_motor_status[i].start_drive_hall);
                                     uint32_t abs_pulse  = (raw_diff >= 0) ? (uint32_t)raw_diff : (uint32_t)(-raw_diff);
 
                                     bool is_up         = (g_sys_context.g_motor_status[i].last_motion_cmd == CMD_FORWARD);
                                     int32_t tune_delta = is_up ? (int32_t)abs_pulse : -(int32_t)abs_pulse;
-                                    app_data.min_mount_halls[i] += tune_delta;
-                                    Debug_Printf("[SYS] Total Tune Axis Settled! Motor %d (Dir=%s) FinalDelta=%d, New min_mount_hall=%d.\r\n",
+
+                                    // 更新该轴的当前绝对高度
+                                    g_sys_context.g_motor_status[i].current_abs_hall = g_sys_context.g_motor_status[i].base_abs_hall + tune_delta;
+
+                                    if (APP_Control_IsAllColumnsAtBottom()) {
+                                        app_data.min_mount_halls[i] += tune_delta;
+                                        Debug_Printf("[SYS] At Bottom Baseline: Motor %d New min_mount_hall=%d (Delta=%d).\r\n",
+                                                     i + 1, app_data.min_mount_halls[i], tune_delta);
+                                    }
+
+                                    g_sys_context.travel_rel[i] = (float)(g_sys_context.g_motor_status[i].current_abs_hall - app_data.min_mount_halls[i]);
+
+                                    Debug_Printf("[SYS] Total Tune Axis Settled! Motor %d (Dir=%s) FinalDelta=%d, New AbsHall=%d, TravelRel=%.1f.\r\n",
                                                  i + 1, is_up ? "UP" : "DOWN",
-                                                 tune_delta, app_data.min_mount_halls[i]);
+                                                 tune_delta, g_sys_context.g_motor_status[i].current_abs_hall,
+                                                 g_sys_context.travel_rel[i]);
                                 }
 
                                 // 刷新该轴在内存中的绝对高度和基准
                                 app_data.motor_abs_halls[i]                      = g_sys_context.g_motor_status[i].current_abs_hall;
                                 g_sys_context.g_motor_status[i].base_abs_hall    = g_sys_context.g_motor_status[i].current_abs_hall;
                                 g_sys_context.g_motor_status[i].start_drive_hall = g_sys_context.g_motor_status[i].hall_value;
+                                g_sys_context.g_motor_status[i].last_motion_cmd  = CMD_STOP;
                                 g_sys_context.g_motor_status[i].stall_cnt        = 0;
                                 g_sys_context.delta_h[i]                         = 0.0f;
                             }

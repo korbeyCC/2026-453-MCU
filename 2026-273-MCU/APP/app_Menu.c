@@ -282,11 +282,19 @@ static void APP_Menu_AdjustParamP3(bool is_inc)
     adjust_hold_ticks = 30; // 调值期间 1.5s 保持数码管数字稳定不闪烁
 
     switch (dim2) {
-        case 0: // Set_W = 0: pid_kp_x1000 (0.000 ~ 9.999, 步进 0.001, 允许 0 纯裸跑)
+        case 0: // Set_W = 0: pid_kp_x1000 (0.000 ~ 9.999, 步进 0.005, 允许 0 纯裸跑)
             if (is_inc) {
-                if (app_data.pid_kp_x1000 < 9999) app_data.pid_kp_x1000++;
+                if (app_data.pid_kp_x1000 + 5 <= 9999) {
+                    app_data.pid_kp_x1000 += 5;
+                } else {
+                    app_data.pid_kp_x1000 = 9999;
+                }
             } else {
-                if (app_data.pid_kp_x1000 > 0) app_data.pid_kp_x1000--;
+                if (app_data.pid_kp_x1000 >= 5) {
+                    app_data.pid_kp_x1000 -= 5;
+                } else {
+                    app_data.pid_kp_x1000 = 0;
+                }
             }
             break;
 

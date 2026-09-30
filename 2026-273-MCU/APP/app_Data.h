@@ -18,8 +18,18 @@
 // 掉电保存高度行程等数据包结构体 (32位对齐)
 typedef struct
 {
-    int32_t min_mount_halls[4];       // 4路立柱安装起点高度绝对霍尔计数
-    int32_t motor_abs_halls[4];       // 4路立柱当前运行绝对霍尔位置计数
+    /**
+     * @brief 4路立柱安装起点高度绝对霍尔计数 (基准零点 / MinMount)
+     * @note 【重要架构说明】微调（无论是单轴微调还是四柱整体微调）核心使命即标定/校准零位起点高度！
+     *       微调停稳后必须无条件更新 min_mount_halls[i] += tune_delta 并存盘 Flash，严禁阻断！
+     */
+    int32_t min_mount_halls[4];
+
+    /**
+     * @brief 4路立柱当前运行绝对霍尔位置计数 (SavedAbs)
+     * @note 实时绝对高度，微调停稳后同步更新为最新物理位置并存盘 Flash，确保数码管显示不回弹。
+     */
+    int32_t motor_abs_halls[4];
     int32_t max_travel_range_mm;      // 升降总行程范围 (单位: mm，默认 2000)  1
     uint16_t reduction_ratio;         // 减速比 (默认 30)
     uint16_t target_speed_mm_min;     // 整体运行速度 (单位: mm/min，默认 600) 2
@@ -27,7 +37,11 @@ typedef struct
     uint16_t max_sync_diff_mm;        // 最大同步差阈值 (单位: mm，默认 5) 4
     uint16_t lead_mm;                 // 丝杆导程 (单位: mm，默认 8)
     uint16_t hall_coef;               // 霍尔系数 (默认 30)
-    uint16_t single_tune_step_mm;     // 单轴微调步进距离 (单位: 1mm，默认 1mm，4路共享) - 对应 P1 菜单 q8
+    /**
+     * @brief 微调单步步进距离 (单位: 1mm，默认 2mm，4路共享) - 对应 P1 菜单 q8
+     * @note 【重要】单轴微调 (待机态短按 K1~K4) 与四柱整体同步微调 (待机态长按 K5) 均共享此单步步进值。
+     */
+    uint16_t single_tune_step_mm;
     uint16_t motor_dir_invert;        // 丝杆运动方向极性 (0: 默认正向, 1: 极性反转，默认 1) - 对应 P1 菜单 q3
     uint16_t rebound_travel_mm;       // 堵转反弹行程 (单位: mm，默认 1000mm = 1米) - 对应 P1 菜单 q9
     uint16_t column_mode;             // 柱体模式: 0: 4柱(00), 12, 13, 14, 23, 24, 34 - 对应 P1 菜单 q10

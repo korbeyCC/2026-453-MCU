@@ -387,7 +387,13 @@ void APP_Control_ResetSystemContext(void)
 }
 
 /**
- * @brief 外部发起单轴微调
+ * @brief 外部发起单轴微调 (待机态短按 K1~K4 触发对应 1~4 轴独立微调)
+ * @param m_idx 目标电机通道 (0~3)
+ * @note 【核心业务架构原则】
+ *       1. 业务定义：在本项目中，单轴微调的核心使命是“现场物理调平与单轴安装起点标定”！
+ *       2. 运行过程：目标轴按单步步长运行（默认 2mm，半速），其余轴抱闸闭锁静止；
+ *       3. 停稳结算：停稳后必须同时更新该轴 current_abs_hall 与安装起点高度 app_data.min_mount_halls[m_idx]！
+ *          保证数码管显示保持最新位置，且该轴安装零点成功更新归档至 Flash。严禁阻止起点更新！
  */
 void APP_Control_StartSingleTune(uint8_t m_idx)
 {
@@ -458,6 +464,11 @@ void APP_Control_CancelSingleTune(void)
 
 /**
  * @brief 外部发起四柱一键同步微调 (待机态长按 K5 触发)
+ * @note 【核心业务架构原则】
+ *       1. 业务定义：四柱整体同步微调的核心使命是“整机基准安装起点高度统一标定与平移”！
+ *       2. 运行过程：所有使能轴按单步步长同步运行（默认 2mm，半速），轴间采用平行 PID 纠偏；
+ *       3. 停稳结算：停稳后必须同时更新所有使能轴 current_abs_hall 与安装起点高度 app_data.min_mount_halls[i]！
+ *          保证整机底座零点随微调平移并归档至 Flash，相对伸出行程保持守恒。严禁套用底部门禁阻断！
  */
 void APP_Control_StartTotalTune(void)
 {
@@ -824,7 +835,14 @@ void APP_ControlTask(void *pvParameters)
                     break;
                 }
 
+                // ==============================================================================
                 // 2. 检查面板按键直发微调 (K1 ~ K4 单轴微调，K5 长按四柱/双柱一键同步微调)
+                // 【核心业务交互说明】：
+                // - K1~K4 短按 (LEASS)：发起对应 1~4 轴独立微调 (仅目标轴运行 single_tune_step_mm 步长，半速)；
+                // - K5 长按 (LONG)：发起整机四柱一键同步微调 (全使能轴增量平行 PID 纠偏运行 single_tune_step_mm 步长，半速)；
+                // - 微调方向：由 Sys_View_GetTuneDir() 决定 (在待机态短按 K5 可在 UP/DOWN 之间切换，数码管及LED同步指示)；
+                // - 核心目的：单轴与整体微调均为现场调平标定零位起点，停稳后均无条件更新 min_mount_halls 零点并写 Flash！
+                // ==============================================================================
                 if (has_event && mb_src == SYS_MOTION_SRC_KEY) {
                     if (mb_id <= MID_KEY_ID_K4 && mb_evt == MID_KEY_EVT_LEASS) {
                         uint8_t m_idx = (uint8_t)(mb_id - MID_KEY_ID_K1);
@@ -1788,7 +1806,15 @@ void APP_ControlTask(void *pvParameters)
                                 xQueueSend(g_motor_ctrl_queue, &idle_stop_msg, pdMS_TO_TICKS(10));
                                 Debug_Printf("[SYS] Motor %d Settled & Stable: Sent 0x0005 CMD_IDLE_STOP.\r\n", i + 1);
 
-                                // 若该轴为单轴微调目标轴，在彻底停稳后根据真实最终脉冲精确结算绝对高度 current_abs_hall
+                                // ==============================================================================
+                                // 【微调停稳结算核心业务规范 (Single Tune & Total Tune)】
+                                // 业务定义：在 453 重载升降系统中，“微调”的本质即现场标定/校准零位起点高度 (min_mount_halls)！
+                                // 严禁后续任何开发者或智能体篡改或删除以下逻辑：
+                                //   1. 必须无条件更新当前绝对高度：current_abs_hall 累加物理位移 tune_delta，确保数码管显示保持最新位置不回跳；
+                                //   2. 必须无条件更新安装起点高度：app_data.min_mount_halls[i] += tune_delta，确保起点零位随微调更新并存盘 Flash；
+                                //   3. 相对伸出行程守恒：travel_rel[i] = current_abs_hall - min_mount_halls[i]，两者同向同量平移，不突发虚假极差；
+                                //   4. 严禁套用 APP_Control_IsAllColumnsAtBottom() 等门禁阻断 min_mount_halls 的更新！
+                                // ==============================================================================
                                 if (g_sys_context.is_single_tuning && i == g_sys_context.single_tune_motor_idx) {
                                     g_sys_context.is_single_tuning = false; // 消费微调标记
                                     uint32_t final_hall            = g_sys_context.g_motor_status[i].hall_value;
@@ -1797,13 +1823,13 @@ void APP_ControlTask(void *pvParameters)
 
                                     int32_t tune_delta = (g_sys_context.single_tune_dir == 0) ? (int32_t)abs_pulse : -(int32_t)abs_pulse;
 
-                                    // 1. 核心：将微调的真实物理位移准确累加至该轴当前绝对高度 current_abs_hall
+                                    // 1. 核心：将微调的真实物理位移准确累加至该轴当前绝对高度 current_abs_hall (数码管常显最新位置)
                                     g_sys_context.g_motor_status[i].current_abs_hall = g_sys_context.single_tune_orig_abs_hall + tune_delta;
 
                                     // 2. 单轴微调核心功能：将真实物理位移增量精准计入该轴的安装起点高度 (更新该轴的零点)
                                     app_data.min_mount_halls[i] += tune_delta;
 
-                                    // 3. 重新结算该轴真实相对伸出行程 travel_rel
+                                    // 3. 重新结算该轴真实相对伸出行程 travel_rel (保持守恒)
                                     g_sys_context.travel_rel[i] = (float)(g_sys_context.g_motor_status[i].current_abs_hall - app_data.min_mount_halls[i]);
 
                                     Debug_Printf("[SYS] Single Tune Final Settled! Motor %d (Dir=%s) FinalDelta=%d, New AbsHall=%d, New min_mount_hall=%d, TravelRel=%.1f.\r\n",

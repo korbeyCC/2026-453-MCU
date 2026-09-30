@@ -66,9 +66,10 @@ typedef enum {
     SYS_STEP_Boot = 0, // 系统刚上电引导启动（等待硬件初始化）
     SYS_STEP_READY,    // 系统配置完成，就绪待命（等待输入）
 
-    SYS_STEP_SINGLE_TUNE, // 单路立柱微调控制中
-    SYS_STEP_TOTAL_TUNE,  // 四柱一键同步微调控制中 (增量平行 PID + 逐轴定长截断)
-    SYS_STEP_TUNE_DONE,   // 微调/停机结束 (Flash 归档与对齐校验)
+    // === 微调核心状态机阶段 ===
+    SYS_STEP_SINGLE_TUNE, // 单路立柱微调控制中 (目标轴按 single_tune_step_mm 单步位移，停稳后更新该轴零点 min_mount_halls)
+    SYS_STEP_TOTAL_TUNE,  // 四柱一键同步微调控制中 (全使能轴平行 PID 纠偏同步微动，停稳后四轴同步平移零点 min_mount_halls)
+    SYS_STEP_TUNE_DONE,   // 微调停机静止结算与归档 (无条件同步更新 current_abs_hall 与 min_mount_halls，并持久化至 Flash)
     SYS_STEP_AUTO_ALIGN,  // 四轴自主台面平行恢复 (自愈重平控制中)
 
     SYS_STEP_TOTAL_RUNNING, // 整体运行调速阶段（定频 PID 纠偏泵）
@@ -125,16 +126,16 @@ typedef struct {
     uint8_t system_fault_code;            // 故障代码 (0:正常, 1:过流堵转, 2:通信中断, 3:同步差超限)
     volatile uint32_t hall_update_seq[4]; // 4 轴霍尔成功更新打卡序列号
 
-    // 单轴微调与过流反弹控制状态字段
+    // 微调控制状态字段 (微调核心功能：停稳后同步更新该轴 current_abs_hall 与 min_mount_halls 起点高度)
     uint8_t active_motor_mask;          // 当前运动参与的电机掩码 (单轴微调为 1<<m_idx, 四轴联动为 0x0F)
-    volatile bool is_single_tuning;     // 是否正在执行单轴微调标志 (严格防护 Flash min_mount_halls 污染)
+    volatile bool is_single_tuning;     // 是否正在执行单轴微调标志 (微调停稳后同步更新该轴 current_abs 与 min_mount_halls 零点)
     uint8_t single_tune_dir;            // 微调方向 (0: 正转/上升, 1: 反转/下降)
     uint8_t single_tune_motor_idx;      // 当前微调的目标电机 (0~3)
     uint32_t single_tune_start_hall;    // 微调开始时的驱动器原始霍尔起点
-    int32_t single_tune_orig_abs_hall;  // 微调开始时的起点绝对霍尔高度
+    int32_t single_tune_orig_abs_hall;  // 微调开始时的起点绝对霍尔高度 (用于准确累加物理位移)
     uint32_t single_tune_target_counts; // 单轴微调目标霍尔步计数
     // 四柱同步一键微调状态字段
-    volatile bool is_total_tuning;     // 是否正在执行四柱同步微调标志
+    volatile bool is_total_tuning;     // 是否正在执行四柱同步微调标志 (停稳后四轴同步平移更新零点 min_mount_halls)
     uint32_t total_tune_target_counts; // 四柱微调目标霍尔步计数
 
     uint8_t rebound_cmd;            // 反弹运动指令 (CMD_FORWARD 或 CMD_REVERSE)
@@ -151,9 +152,24 @@ extern bool g_manual_light_on; // D 键手动控制灯带一键开关标志 (tru
 void APP_Control_UpdateParamsFromAppData(void);
 void APP_Control_ResetSystemContext(void);
 void APP_Control_UpdateStateAndStatistics(void);
+/**
+ * @brief 外部发起单轴微调 (待机态短按 K1~K4 触发对应 1~4 轴独立微调)
+ * @param m_idx 目标电机通道 (0~3)
+ * @note 停稳后必须同时更新该轴 current_abs_hall 与安装起点高度 app_data.min_mount_halls[m_idx]！
+ */
 void APP_Control_StartSingleTune(uint8_t m_idx);
+
+/**
+ * @brief 取消/提前结束单轴微调 (遇到用户按键打断或异常时调用)
+ */
 void APP_Control_CancelSingleTune(void);
+
+/**
+ * @brief 外部发起四柱一键同步微调 (待机态长按 K5 触发)
+ * @note 停稳后必须同时更新所有使能轴 current_abs_hall 与安装起点高度 app_data.min_mount_halls[i]！
+ */
 void APP_Control_StartTotalTune(void);
+
 bool APP_Control_ClearFault(void);
 void APP_Control_EmergencyStop(void);
 void APP_ControlTask(void *pvParameters);

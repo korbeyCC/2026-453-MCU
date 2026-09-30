@@ -197,7 +197,13 @@ static Event_Result_t Filter_Level2_MenuFocus(const Sys_Event_t *p_evt)
             return EVENT_CONSUMED;
         }
 
-        // A. K1 ~ K4: 4 轴微调动作键 -> 仅短按直接路由给控制任务，由其在 SYS_STEP_READY 内自主启动微调！
+        // ==============================================================================
+        // 【微调按键事件路由规范】
+        // A. K1 ~ K4 短按 (LEASS)：分别对应 1~4 轴独立微调动作，直接送控制邮箱由 APP_ControlTask 启动微调；
+        // B. K5 长按 (LONG)：四柱一键同步微调主令，直接送控制任务邮箱启动全使能轴微调；
+        // C. K5 短按 (LEASS)：切换微调方向 (UP/DOWN 翻转)，路由给菜单任务处理；
+        // D. K6 短按/长按：切屏/长按进入参数菜单，路由给菜单任务处理。
+        // ==============================================================================
         if (p_evt->id <= MID_KEY_ID_K4 && s_sys_mode == SYS_MODE_STANDBY) {
             if (p_evt->event_type == MID_KEY_EVT_LEASS) {
                 Sys_Mailbox_PostMotionCmd(SYS_MOTION_SRC_KEY, p_evt->id, p_evt->event_type);
@@ -205,7 +211,6 @@ static Event_Result_t Filter_Level2_MenuFocus(const Sys_Event_t *p_evt)
             }
         }
 
-        // B. K5 长按 (MID_KEY_EVT_LONG) -> 四柱一键同步微调主令直接送控制任务邮箱！
         if (p_evt->id == MID_KEY_ID_K5 && p_evt->event_type == MID_KEY_EVT_LONG && s_sys_mode == SYS_MODE_STANDBY) {
             Sys_Mailbox_PostMotionCmd(SYS_MOTION_SRC_KEY, p_evt->id, p_evt->event_type);
             return EVENT_CONSUMED;

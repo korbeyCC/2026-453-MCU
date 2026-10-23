@@ -110,28 +110,70 @@ void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size)
     }
 }
 
+// ========================== 串口硬件底层与错误处理辅助函数 ==========================
+/**
+ * @brief  硬件级彻底清空串口错误状态与 FIFO 残余
+ * @param  huart 目标串口句柄
+ * @note   严格遵循 STM32F103 参考手册：按序读 SR 再读 DR 以彻底清除 ORE/NE/FE/PE 标志，并复位 HAL 库内部状态
+ */
+static inline void clean_uart_hardware_and_flags(UART_HandleTypeDef *huart)
+{
+    if (huart == NULL) return;
+
+    // 1. 安全终止当前 DMA，防止异常数据继续写入内存
+    HAL_UART_DMAStop(huart);
+
+    // 2. 硬件级严格按序读 SR 再读 DR，彻底清除 ORE/NE/FE/PE 标志及移位寄存器/数据寄存器中残存的脏字节
+    volatile uint32_t dummy_sr = huart->Instance->SR;
+    volatile uint32_t dummy_dr = huart->Instance->DR;
+    (void)dummy_sr;
+    (void)dummy_dr;
+
+    // 3. 清空 HAL 库所有错误和空闲标志
+    __HAL_UART_CLEAR_OREFLAG(huart);
+    __HAL_UART_CLEAR_NEFLAG(huart);
+    __HAL_UART_CLEAR_FEFLAG(huart);
+    __HAL_UART_CLEAR_PEFLAG(huart);
+    __HAL_UART_CLEAR_IDLEFLAG(huart);
+
+    // 4. 强制复位 HAL 库句柄状态，确保后续 Receive_DMA 不会被 HAL_BUSY 拒绝
+    huart->ErrorCode     = HAL_UART_ERROR_NONE;
+    huart->RxState       = HAL_UART_STATE_READY;
+    huart->ReceptionType = HAL_UART_RECEPTION_TOIDLE;
+}
+
+/**
+ * @brief  重置主站接收缓冲区与控制标志位
+ * @param  master 目标 Modbus 主站句柄
+ */
+static inline void reset_master_rx(Modbus_Master_t *master)
+{
+    if (master == NULL) return;
+    memset(master->rx_buf, 0, sizeof(master->rx_buf));
+    master->rx_complete = 0;
+    master->rx_count    = 0;
+    master->rx_error    = 0;
+}
+
 // ========================== 485 硬件通信错误中断强回调函数 ==========================
 /**
  * @brief  重写 HAL 库串口通信错误中断回调 (ORE/NE/FE/PE 硬件错误自愈复位)
- * @note   在电机大电流强 EMI 干扰下自动清除硬件错误标志并重置 DMA，杜绝串口假死锁死
+ * @note   在电机大电流强 EMI 干扰、热插拔或总线毛刺下自动清除硬件错误标志并打标，杜绝串口假死锁死
+ * @note   【架构核心规范】：
+ *         1. 中断内仅负责物理层清标志与标记 rx_error，绝不在中断内将 state 粗暴改为 IDLE，绝不丢弃上层回调；
+ *         2. 状态机流转与回调通知统一推迟至任务层 (MID_Modbus_Process_1ms) 执行，确保 comm_error 正确累加且线程安全。
  */
 void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
 {
     if (huart == NULL) return;
 
-    __HAL_UART_CLEAR_OREFLAG(huart);
-    __HAL_UART_CLEAR_NEFLAG(huart);
-    __HAL_UART_CLEAR_FEFLAG(huart);
-    __HAL_UART_CLEAR_PEFLAG(huart);
-    huart->ErrorCode = HAL_UART_ERROR_NONE;
+    clean_uart_hardware_and_flags(huart);
 
     for (int i = 0; i < 4; i++) {
         if (huart == modbus_masters[i].huart) {
-            HAL_UART_DMAStop(huart);
-            modbus_masters[i].state       = MODBUS_STATE_IDLE;
+            modbus_masters[i].rx_error    = 1; // 仅打上错误标记，交由 1ms 任务层优雅结算与通知
             modbus_masters[i].rx_complete = 0;
             modbus_masters[i].rx_count    = 0;
-            HAL_UARTEx_ReceiveToIdle_DMA(huart, modbus_masters[i].rx_buf, sizeof(modbus_masters[i].rx_buf));
             break;
         }
     }
@@ -169,15 +211,9 @@ static void send_read_cmd(Modbus_Master_t *master, uint16_t startAddr, uint16_t 
 {
     uint16_t crc;
 
-    // 发送前重置 DMA 状态并清空完成标志，彻底杜绝 HAL_BUSY 锁死及脏数据拼接
-    HAL_UART_DMAStop(master->huart);
-    __HAL_UART_CLEAR_OREFLAG(master->huart);
-    __HAL_UART_CLEAR_NEFLAG(master->huart);
-    __HAL_UART_CLEAR_FEFLAG(master->huart);
-    __HAL_UART_CLEAR_PEFLAG(master->huart);
-    master->huart->ErrorCode = HAL_UART_ERROR_NONE;
-    master->rx_count    = 0;
-    master->rx_complete = 0;
+    // 发送前重置 DMA 状态并硬件级清空错误标志与脏数据，彻底杜绝 HAL_BUSY 锁死及残余乱码拼接
+    clean_uart_hardware_and_flags(master->huart);
+    reset_master_rx(master);
     master->timeout_cnt = 0;
 
     master->tx_buf[0] = master->slave_addr;
@@ -207,26 +243,13 @@ static void apply_uart_baud(UART_HandleTypeDef *huart, uint32_t baudrate)
     HAL_UART_Init(huart);
 }
 
-static void reset_master_rx(Modbus_Master_t *master)
-{
-    memset(master->rx_buf, 0, sizeof(master->rx_buf));
-    master->rx_complete = 0;
-    master->rx_count    = 0;
-}
-
 // ========================== 内部：组包发送写单个寄存器命令 ==========================
 static void send_write_single_cmd(Modbus_Master_t *master, uint16_t regAddr, uint16_t value, bool start_rx)
 {
     uint16_t crc;
 
-    HAL_UART_DMAStop(master->huart);
-    __HAL_UART_CLEAR_OREFLAG(master->huart);
-    __HAL_UART_CLEAR_NEFLAG(master->huart);
-    __HAL_UART_CLEAR_FEFLAG(master->huart);
-    __HAL_UART_CLEAR_PEFLAG(master->huart);
-    master->huart->ErrorCode = HAL_UART_ERROR_NONE;
-    master->rx_count    = 0;
-    master->rx_complete = 0;
+    clean_uart_hardware_and_flags(master->huart);
+    reset_master_rx(master);
     master->timeout_cnt = 0;
 
     master->tx_buf[0] = master->slave_addr;
@@ -257,14 +280,8 @@ static void send_write_multiple_cmd(Modbus_Master_t *master, uint16_t startAddr,
     uint16_t i;
     uint16_t tx_len;
 
-    HAL_UART_DMAStop(master->huart);
-    __HAL_UART_CLEAR_OREFLAG(master->huart);
-    __HAL_UART_CLEAR_NEFLAG(master->huart);
-    __HAL_UART_CLEAR_FEFLAG(master->huart);
-    __HAL_UART_CLEAR_PEFLAG(master->huart);
-    master->huart->ErrorCode = HAL_UART_ERROR_NONE;
-    master->rx_count    = 0;
-    master->rx_complete = 0;
+    clean_uart_hardware_and_flags(master->huart);
+    reset_master_rx(master);
     master->timeout_cnt = 0;
 
     master->tx_buf[0] = master->slave_addr;
@@ -347,11 +364,8 @@ void MID_Modbus_Init(void)
 
     // 3. 重置各串口 DMA 为就绪，此时不挂载接收，发送命令时才触发挂载
     for (int i = 0; i < 4; i++) {
-        memset(modbus_masters[i].rx_buf, 0, sizeof(modbus_masters[i].rx_buf));
-        modbus_masters[i].rx_complete = 0;
-        modbus_masters[i].rx_count    = 0;
-
-        HAL_UART_DMAStop(modbus_masters[i].huart);
+        reset_master_rx(&modbus_masters[i]);
+        clean_uart_hardware_and_flags(modbus_masters[i].huart);
     }
 }
 
@@ -407,8 +421,9 @@ bool MID_Modbus_WriteSingleRegThenSwitchBaud(Modbus_Master_t *master, uint16_t r
     while (__HAL_UART_GET_FLAG(master->huart, UART_FLAG_TC) == RESET) {
     }
 
-    /* 3. 物理帧发送完毕，立刻切换本地波特率至 115200，准备接收驱动器以 115200 发回的模式 B 应答 */
+    /* 3. 物理帧发送完毕，立刻切换本地波特率至 115200，并硬件级清空错误标志与缓冲区 */
     apply_uart_baud(master->huart, baudrate);
+    clean_uart_hardware_and_flags(master->huart);
     reset_master_rx(master);
     master->timeout_cnt = 0;
     HAL_UARTEx_ReceiveToIdle_DMA(master->huart, master->rx_buf, sizeof(master->rx_buf));
@@ -444,21 +459,40 @@ void MID_Modbus_Process_1ms(void)
 
         switch (m->state) {
             case MODBUS_STATE_IDLE:
+                if (m->rx_error) {
+                    m->rx_error = 0; // 待机/空闲态下的总线杂波，直接清除标志
+                }
                 break;
 
             case MODBUS_STATE_WAIT_READ_RESP:
-                m->timeout_cnt += MODBUS_INTERVAL_MS;
-                if (m->timeout_cnt >= MODBUS_READ_TIMEOUT_MS) {
-                    HAL_UART_DMAStop(m->huart); // 超时强制关闭本次 DMA，防止污染
-                    m->state       = MODBUS_STATE_IDLE;
+                // 1. 硬件通信错误响应 (ORE/NE/FE/PE)，毫秒级主动通知失败并累加 comm_error，无需盲等 30ms 超时
+                if (m->rx_error) {
+                    m->rx_error    = 0;
                     m->rx_complete = 0;
+                    m->state       = MODBUS_STATE_IDLE;
                     if (m->read_cb != NULL) {
-                        m->read_cb(NULL, 0); // 传入 success = 0 代表超时失败
-                        m->read_cb = NULL;
+                        modbus_read_callback_t cb = m->read_cb;
+                        m->read_cb                = NULL;
+                        cb(NULL, 0); // 传入 success = 0 代表通信失败，触发上层 comm_error 正常累加
                     }
                     break;
                 }
 
+                // 2. 超时管理
+                m->timeout_cnt += MODBUS_INTERVAL_MS;
+                if (m->timeout_cnt >= MODBUS_READ_TIMEOUT_MS) {
+                    clean_uart_hardware_and_flags(m->huart); // 超时强制关闭本次 DMA，防止污染
+                    m->state       = MODBUS_STATE_IDLE;
+                    m->rx_complete = 0;
+                    if (m->read_cb != NULL) {
+                        modbus_read_callback_t cb = m->read_cb;
+                        m->read_cb                = NULL;
+                        cb(NULL, 0); // 传入 success = 0 代表超时失败
+                    }
+                    break;
+                }
+
+                // 3. 正常接收完成解析
                 if (m->rx_complete) {
                     m->rx_complete = 0;
                     if (parse_response(m, m->temp_buf, m->expected_reg_cnt)) {
@@ -468,29 +502,46 @@ void MID_Modbus_Process_1ms(void)
                     }
                     m->state = MODBUS_STATE_IDLE;
                     if (m->read_cb != NULL) {
-                        m->read_cb(m->temp_buf, status_ok);
-                        m->read_cb = NULL;
+                        modbus_read_callback_t cb = m->read_cb;
+                        m->read_cb                = NULL;
+                        cb(m->temp_buf, status_ok);
                     }
                 }
                 break;
 
             case MODBUS_STATE_WAIT_WRITE_RESP:
-                m->timeout_cnt += MODBUS_INTERVAL_MS;
-                if (m->timeout_cnt >= MODBUS_WRITE_TIMEOUT_MS) {
-                    HAL_UART_DMAStop(m->huart); // 超时强制关闭 DMA
-                    m->state        = MODBUS_STATE_IDLE;
+                // 1. 硬件通信错误响应 (ORE/NE/FE/PE)，毫秒级主动通知失败并累加 retry_cnt
+                if (m->rx_error) {
+                    m->rx_error     = 0;
                     m->rx_complete  = 0;
                     m->last_ex_code = 0;
+                    m->state        = MODBUS_STATE_IDLE;
                     if (m->write_cb != NULL) {
-                        m->write_cb(0); // 传入 success = 0
-                        m->write_cb = NULL;
+                        modbus_write_callback_t cb = m->write_cb;
+                        m->write_cb                 = NULL;
+                        cb(0); // 传入 success = 0 代表写入失败，触发重试计数累加
                     }
                     break;
                 }
 
+                // 2. 超时管理
+                m->timeout_cnt += MODBUS_INTERVAL_MS;
+                if (m->timeout_cnt >= MODBUS_WRITE_TIMEOUT_MS) {
+                    clean_uart_hardware_and_flags(m->huart); // 超时强制关闭 DMA
+                    m->state        = MODBUS_STATE_IDLE;
+                    m->rx_complete  = 0;
+                    m->last_ex_code = 0;
+                    if (m->write_cb != NULL) {
+                        modbus_write_callback_t cb = m->write_cb;
+                        m->write_cb                 = NULL;
+                        cb(0); // 传入 success = 0
+                    }
+                    break;
+                }
+
+                // 3. 正常接收完成解析
                 if (m->rx_complete) {
                     m->rx_complete = 0;
-                    // 写命令回执：正常 8 字节回显，或 5 字节异常帧 8x/xx
                     m->last_ex_code = 0;
                     if (m->rx_count >= 8 && m->rx_buf[1] == m->tx_buf[1]) {
                         status_ok = 1;
@@ -501,8 +552,9 @@ void MID_Modbus_Process_1ms(void)
                     }
                     m->state = MODBUS_STATE_IDLE;
                     if (m->write_cb != NULL) {
-                        m->write_cb(status_ok);
-                        m->write_cb = NULL;
+                        modbus_write_callback_t cb = m->write_cb;
+                        m->write_cb                 = NULL;
+                        cb(status_ok);
                     }
                 }
                 break;
@@ -526,6 +578,7 @@ void MID_Modbus_SetMasterBaudRate(Modbus_Master_t *master, uint32_t baudrate)
     }
 
     apply_uart_baud(master->huart, baudrate);
+    clean_uart_hardware_and_flags(master->huart);
     reset_master_rx(master);
     master->timeout_cnt = 0;
     master->state       = MODBUS_STATE_IDLE;

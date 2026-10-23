@@ -26,6 +26,7 @@ typedef struct {
     uint8_t rx_buf[64];            // 接收缓冲区
     volatile uint16_t rx_count;    // 实际接收到的字节数
     volatile uint8_t rx_complete;  // 接收完成标志位
+    volatile uint8_t rx_error;     // 通信硬件错误标志位 (ORE/NE/FE/PE)，由中断置位，供任务层安全消费
     
     uint16_t timeout_cnt;          // 超时计数器 (ms)
     uint8_t last_ex_code;          // 最近一次写应答异常码，0 表示无异常

@@ -25,11 +25,16 @@ static Event_Result_t Filter_Level0_Safety(const Sys_Event_t *p_evt)
 {
     if (p_evt == NULL) return EVENT_PASS_THROUGH;
 
-    // 遥控器 A 键 (MID_SIGNAL_REMOT_2): 无论何时按下均作为急停/制动指令无条件拦截
+    // 若系统已处于严重故障锁死态，放行给 Level 1 故障层处理消警复位，绝不作为急停误吞 C 键
+    if (Sys_Mode_IsFaultLocked()) {
+        return EVENT_PASS_THROUGH;
+    }
+
+    // 遥控器 C 键 (MID_SIGNAL_REMOT_2): 无论何时按下均作为急停/制动指令无条件拦截
     if (p_evt->source == SYS_EVT_SRC_SIGNAL && p_evt->id == MID_SIGNAL_REMOT_2) {
         if (p_evt->event_type == MID_SIGNAL_EVT_TRIGGER || p_evt->event_type == MID_SIGNAL_EVT_LONG) {
             APP_Control_EmergencyStop();
-            Debug_Printf("[LEPA Level 0] E-Stop Intercepted via Remote A Key (Direct Action)!\r\n");
+            Debug_Printf("[LEPA Level 0] E-Stop Intercepted via Remote C Key (Direct Action)!\r\n");
             return EVENT_CONSUMED; // 就地消费，终止下传
         }
     }
@@ -92,15 +97,16 @@ static Event_Result_t Filter_Level1_FaultClear(const Sys_Event_t *p_evt)
             return EVENT_CONSUMED;
         }
 
-        // C. 明确消警事件：仅当板载长按 K5 (复位键) 或遥控器触发信号时，才允许执行消警！
+        // C. 明确消警事件：仅当板载长按 K5 (方向键) 约 1 秒，或遥控停止键 C 时，才允许执行消警！
         bool is_clear_cmd = false;
         if (p_evt->source == SYS_EVT_SRC_KEY) {
             if (p_evt->id == MID_KEY_ID_K5 && p_evt->event_type == MID_KEY_EVT_LONG) {
-                is_clear_cmd = true;
+                is_clear_cmd = true; // 板载仅允许长按 K5 (方向键) 约 1 秒消警
             }
         } else if (p_evt->source == SYS_EVT_SRC_SIGNAL) {
-            if (p_evt->event_type == MID_SIGNAL_EVT_TRIGGER || p_evt->event_type == MID_SIGNAL_EVT_LONG) {
-                is_clear_cmd = true; // 遥控任意按键复位 (特别是遥控 A 键)
+            if (p_evt->id == MID_SIGNAL_REMOT_2 &&
+                (p_evt->event_type == MID_SIGNAL_EVT_TRIGGER || p_evt->event_type == MID_SIGNAL_EVT_LONG)) {
+                is_clear_cmd = true; // 遥控仅允许停止键 C (REMOT_2) 消警复位
             }
         }
 

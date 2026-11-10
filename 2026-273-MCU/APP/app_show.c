@@ -214,6 +214,7 @@ void APP_ShowTask(void *pvParameters)
                         break;
                     }
 
+#if MENU_CONFIG_SHOW_MECH_PARAMS
                     case P1_ITEM_DRIVER_STALL_PCT: {
                         // 显示驱动器百分比：消除千位前导零，如 150 显示为 " 150"
                         uint32_t param_val = app_data.driver_stall_percent;
@@ -224,23 +225,24 @@ void APP_ShowTask(void *pvParameters)
                         SEG_W[3] = (uint8_t)(param_val % 10);
                         break;
                     }
+#endif
 
                     default: {
                         uint32_t param_val = 0;
                         switch ((P1_MenuItem_t)dim2) {
                             case P1_ITEM_RESET_FACTORY:    param_val = reset_factory_flag; break;
                             case P1_ITEM_MAX_TRAVEL:       param_val = app_data.max_travel_range_mm; break;
-                            case P1_ITEM_TARGET_SPEED:     param_val = app_data.target_speed_mm_min; break;
+                            case P1_ITEM_STALL_CURRENT:    param_val = app_data.stall_current_threshold; break;
+                            case P1_ITEM_REBOUND_TRAVEL:   param_val = app_data.rebound_travel_mm; break;
 #if MENU_CONFIG_SHOW_MECH_PARAMS
+                            case P1_ITEM_TARGET_SPEED:     param_val = app_data.target_speed_mm_min; break;
                             case P1_ITEM_MOTOR_DIR_INVERT: param_val = app_data.motor_dir_invert; break;
+                            case P1_ITEM_MAX_SYNC_DIFF:    param_val = app_data.max_sync_diff_mm; break;
                             case P1_ITEM_LEAD_MM:          param_val = app_data.lead_mm; break;
                             case P1_ITEM_REDUCTION_RATIO:  param_val = app_data.reduction_ratio; break;
+                            case P1_ITEM_SINGLE_TUNE_STEP: param_val = app_data.single_tune_step_mm; break;
                             case P1_ITEM_SHOW_CURRENT_MODE:param_val = app_data.show_current_mode; break;
 #endif
-                            case P1_ITEM_MAX_SYNC_DIFF:    param_val = app_data.max_sync_diff_mm; break;
-                            case P1_ITEM_STALL_CURRENT:    param_val = app_data.stall_current_threshold; break;
-                            case P1_ITEM_SINGLE_TUNE_STEP: param_val = app_data.single_tune_step_mm; break;
-                            case P1_ITEM_REBOUND_TRAVEL:   param_val = app_data.rebound_travel_mm; break;
                             default:                       param_val = 0; break;
                         }
 

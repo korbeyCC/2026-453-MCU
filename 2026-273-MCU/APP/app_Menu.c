@@ -91,6 +91,7 @@ static void APP_Menu_AdjustParam(bool is_inc)
             }
             break;
 
+#if MENU_CONFIG_SHOW_MECH_PARAMS
         case P1_ITEM_TARGET_SPEED: // target_speed_mm_min (100 ~ 2000 mm/min)
             if (is_inc) {
                 if (app_data.target_speed_mm_min <= 1950)
@@ -105,7 +106,6 @@ static void APP_Menu_AdjustParam(bool is_inc)
             }
             break;
 
-#if MENU_CONFIG_SHOW_MECH_PARAMS
         case P1_ITEM_MOTOR_DIR_INVERT: // motor_dir_invert (0: 默认正向, 1: 极性反转)
             if (is_inc) {
                 if (app_data.motor_dir_invert < 1)
@@ -119,7 +119,6 @@ static void APP_Menu_AdjustParam(bool is_inc)
                     app_data.motor_dir_invert = 0;
             }
             break;
-#endif
 
         case P1_ITEM_MAX_SYNC_DIFF: // max_sync_diff_mm (1 ~ 50 mm)
             if (is_inc) {
@@ -128,6 +127,7 @@ static void APP_Menu_AdjustParam(bool is_inc)
                 if (app_data.max_sync_diff_mm > 1) app_data.max_sync_diff_mm--;
             }
             break;
+#endif
 
         case P1_ITEM_STALL_CURRENT: // stall_current_threshold (限制在 [STALL_CURRENT_THRESHOLD_MIN, STALL_CURRENT_THRESHOLD_MAX] 之内)
             if (is_inc) {
@@ -164,6 +164,7 @@ static void APP_Menu_AdjustParam(bool is_inc)
             break;
 #endif
 
+#if MENU_CONFIG_SHOW_MECH_PARAMS
         case P1_ITEM_SINGLE_TUNE_STEP: // single_tune_step_mm (1 ~ 200 mm，默认 2mm)
             if (is_inc) {
                 if (app_data.single_tune_step_mm < 200) app_data.single_tune_step_mm++;
@@ -171,6 +172,7 @@ static void APP_Menu_AdjustParam(bool is_inc)
                 if (app_data.single_tune_step_mm > 1) app_data.single_tune_step_mm--;
             }
             break;
+#endif
 
         case P1_ITEM_REBOUND_TRAVEL: // rebound_travel_mm (10 ~ 5000 mm，默认 500mm)
             if (is_inc) {
@@ -201,9 +203,16 @@ static void APP_Menu_AdjustParam(bool is_inc)
                 break;
             }
 
+#if MENU_CONFIG_SHOW_MECH_PARAMS
             static const uint16_t s_modes[7] = {0, 12, 13, 14, 23, 24, 34};
-            int8_t cur_idx                   = 0;
-            for (int i = 0; i < 7; i++) {
+            const uint8_t mode_count         = 7;
+#else
+            // 客户交付模式：双柱只要 12 柱，仅提供四柱 (00) 与双柱 (12) 切换
+            static const uint16_t s_modes[2] = {0, 12};
+            const uint8_t mode_count         = 2;
+#endif
+            int8_t cur_idx = 0;
+            for (int i = 0; i < mode_count; i++) {
                 if (s_edit_column_mode == s_modes[i]) {
                     cur_idx = (int8_t)i;
                     break;
@@ -211,22 +220,27 @@ static void APP_Menu_AdjustParam(bool is_inc)
             }
 
             if (app_data.column_mode_locked == 0) {
-                // 未锁定态 (出厂默认或重置出厂后)：允许在 00 与 6 种双柱模式之间任意自由切换
+                // 未锁定态 (出厂默认或重置出厂后)：允许在 00 与允许的双柱模式之间切换
                 if (is_inc) {
-                    cur_idx = (cur_idx + 1) % 7;
+                    cur_idx = (cur_idx + 1) % mode_count;
                 } else {
-                    cur_idx = (cur_idx + 6) % 7;
+                    cur_idx = (cur_idx + mode_count - 1) % mode_count;
                 }
                 s_edit_column_mode = s_modes[cur_idx];
             } else {
-                // 已锁定态：允许在 6 种双柱组合之间切换，但绝不能切换回 00！
-                if (cur_idx < 1) cur_idx = 1;
-                if (is_inc) {
-                    cur_idx = 1 + ((cur_idx - 1 + 1) % 6);
+                // 已锁定态：允许在双柱组合之间切换，但绝不能切换回 00！
+                if (mode_count <= 2) {
+                    // 仅有 12 柱时，锁定态只能保持 12 柱 (若需恢复四柱需在 q0 恢复出厂)
+                    s_edit_column_mode = 12;
                 } else {
-                    cur_idx = 1 + ((cur_idx - 1 + 5) % 6);
+                    if (cur_idx < 1) cur_idx = 1;
+                    if (is_inc) {
+                        cur_idx = 1 + ((cur_idx - 1 + 1) % (mode_count - 1));
+                    } else {
+                        cur_idx = 1 + ((cur_idx - 1 + (mode_count - 2)) % (mode_count - 1));
+                    }
+                    s_edit_column_mode = s_modes[cur_idx];
                 }
-                s_edit_column_mode = s_modes[cur_idx];
             }
             break;
         }
@@ -247,6 +261,7 @@ static void APP_Menu_AdjustParam(bool is_inc)
             break;
 #endif
 
+#if MENU_CONFIG_SHOW_MECH_PARAMS
         case P1_ITEM_DRIVER_STALL_PCT: // driver_stall_percent (50% ~ 250%, 步进 10%, 默认 150%)
             if (is_inc) {
                 if (app_data.driver_stall_percent <= 240)
@@ -260,6 +275,7 @@ static void APP_Menu_AdjustParam(bool is_inc)
                     app_data.driver_stall_percent = 50;
             }
             break;
+#endif
 
         case P1_ITEM_STALL_DETECT_TIME: // stall_detect_time_ms (100ms ~ 2000ms, 步进 100ms, 默认 600ms)
             if (is_inc) {

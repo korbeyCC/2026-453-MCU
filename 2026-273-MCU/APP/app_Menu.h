@@ -25,23 +25,23 @@
 typedef enum {
     P1_ITEM_RESET_FACTORY = 0, // 恢复出厂设置开关 (调7生效)
     P1_ITEM_MAX_TRAVEL,        // 升降最大行程上限 (mm)
-    P1_ITEM_TARGET_SPEED,      // 整体运行速度 (mm/min)
 #if MENU_CONFIG_SHOW_MECH_PARAMS
+    P1_ITEM_TARGET_SPEED,      // 整体运行速度 (mm/min)
     P1_ITEM_MOTOR_DIR_INVERT,  // 丝杆旋转方向极性 (0: 正向, 1: 反向)
-#endif
     P1_ITEM_MAX_SYNC_DIFF,     // 四角最大允许高低误差 (mm)
+#endif
     P1_ITEM_STALL_CURRENT,     // 堵转过流保护电流 (0.01A)
 #if MENU_CONFIG_SHOW_MECH_PARAMS
     P1_ITEM_LEAD_MM,           // 丝杆导程 (mm)
     P1_ITEM_REDUCTION_RATIO,   // 减速箱减速比
-#endif
     P1_ITEM_SINGLE_TUNE_STEP,  // 微调移动距离 (mm)
+#endif
     P1_ITEM_REBOUND_TRAVEL,    // 下降防夹反弹退回距离 (mm)
     P1_ITEM_COLUMN_MODE,       // 柱体工作模式 (00, 12, 13, 14, 23, 24, 34)
 #if MENU_CONFIG_SHOW_MECH_PARAMS
     P1_ITEM_SHOW_CURRENT_MODE, // 数码管显示模式 (0: 仅位置, 1: 仅实时电流, 2: 8项综合)
-#endif
     P1_ITEM_DRIVER_STALL_PCT,  // 驱动器堵转限流百分比 (%)
+#endif
     P1_ITEM_STALL_DETECT_TIME, // 堵转判定防抖时间 (0.1s)
     P1_ITEM_COUNT              // 当前使能的 P1 菜单项总数
 } P1_MenuItem_t;

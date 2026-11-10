@@ -68,8 +68,8 @@ static void APP_Menu_AdjustParam(bool is_inc)
 {
     adjust_hold_ticks = 30; // 调值期间 1.5s 保持数码管数字稳定不闪烁
 
-    switch (dim2) {
-        case 0: // reset_factory_flag (必须设为 7 才能触发恢复出厂设置，防误触)
+    switch ((P1_MenuItem_t)dim2) {
+        case P1_ITEM_RESET_FACTORY: // reset_factory_flag (必须设为 7 才能触发恢复出厂设置，防误触)
             if (is_inc) {
                 if (reset_factory_flag < 9) reset_factory_flag++;
             } else {
@@ -77,7 +77,7 @@ static void APP_Menu_AdjustParam(bool is_inc)
             }
             break;
 
-        case 1: // Set_W = 1: max_travel_range_mm (100 ~ 5000mm)
+        case P1_ITEM_MAX_TRAVEL: // max_travel_range_mm (100 ~ 5000mm)
             if (is_inc) {
                 if (app_data.max_travel_range_mm <= 4950)
                     app_data.max_travel_range_mm += 50;
@@ -91,7 +91,7 @@ static void APP_Menu_AdjustParam(bool is_inc)
             }
             break;
 
-        case 2: // Set_W = 2: target_speed_mm_min (100 ~ 2000 mm/min)
+        case P1_ITEM_TARGET_SPEED: // target_speed_mm_min (100 ~ 2000 mm/min)
             if (is_inc) {
                 if (app_data.target_speed_mm_min <= 1950)
                     app_data.target_speed_mm_min += 50;
@@ -105,7 +105,8 @@ static void APP_Menu_AdjustParam(bool is_inc)
             }
             break;
 
-        case 3: // Set_W = 3: motor_dir_invert (0: 默认正向, 1: 极性反转)
+#if MENU_CONFIG_SHOW_MECH_PARAMS
+        case P1_ITEM_MOTOR_DIR_INVERT: // motor_dir_invert (0: 默认正向, 1: 极性反转)
             if (is_inc) {
                 if (app_data.motor_dir_invert < 1)
                     app_data.motor_dir_invert++;
@@ -118,8 +119,9 @@ static void APP_Menu_AdjustParam(bool is_inc)
                     app_data.motor_dir_invert = 0;
             }
             break;
+#endif
 
-        case 4: // Set_W = 4: max_sync_diff_mm (1 ~ 50 mm)
+        case P1_ITEM_MAX_SYNC_DIFF: // max_sync_diff_mm (1 ~ 50 mm)
             if (is_inc) {
                 if (app_data.max_sync_diff_mm < 50) app_data.max_sync_diff_mm++;
             } else {
@@ -127,7 +129,7 @@ static void APP_Menu_AdjustParam(bool is_inc)
             }
             break;
 
-        case 5: // Set_W = 5: stall_current_threshold (限制在 [STALL_CURRENT_THRESHOLD_MIN, STALL_CURRENT_THRESHOLD_MAX] 之内)
+        case P1_ITEM_STALL_CURRENT: // stall_current_threshold (限制在 [STALL_CURRENT_THRESHOLD_MIN, STALL_CURRENT_THRESHOLD_MAX] 之内)
             if (is_inc) {
                 if (app_data.stall_current_threshold + 10 <= STALL_CURRENT_THRESHOLD_MAX)
                     app_data.stall_current_threshold += 10;
@@ -144,7 +146,8 @@ static void APP_Menu_AdjustParam(bool is_inc)
 #endif
             break;
 
-        case 6: // Set_W = 6: lead_mm (1 ~ 50 mm)
+#if MENU_CONFIG_SHOW_MECH_PARAMS
+        case P1_ITEM_LEAD_MM: // lead_mm (1 ~ 50 mm)
             if (is_inc) {
                 if (app_data.lead_mm < 50) app_data.lead_mm++;
             } else {
@@ -152,15 +155,16 @@ static void APP_Menu_AdjustParam(bool is_inc)
             }
             break;
 
-        case 7: // Set_W = 7: reduction_ratio (1 ~ 200)
+        case P1_ITEM_REDUCTION_RATIO: // reduction_ratio (1 ~ 200)
             if (is_inc) {
                 if (app_data.reduction_ratio < 200) app_data.reduction_ratio++;
             } else {
                 if (app_data.reduction_ratio > 1) app_data.reduction_ratio--;
             }
             break;
+#endif
 
-        case 8: // Set_W = 8: single_tune_step_mm (1 ~ 200 mm，默认 1mm)
+        case P1_ITEM_SINGLE_TUNE_STEP: // single_tune_step_mm (1 ~ 200 mm，默认 2mm)
             if (is_inc) {
                 if (app_data.single_tune_step_mm < 200) app_data.single_tune_step_mm++;
             } else {
@@ -168,7 +172,7 @@ static void APP_Menu_AdjustParam(bool is_inc)
             }
             break;
 
-        case 9: // Set_W = 9: rebound_travel_mm (10 ~ 5000 mm，默认 1000mm)
+        case P1_ITEM_REBOUND_TRAVEL: // rebound_travel_mm (10 ~ 5000 mm，默认 500mm)
             if (is_inc) {
                 if (app_data.rebound_travel_mm <= 4990)
                     app_data.rebound_travel_mm += 10;
@@ -182,7 +186,7 @@ static void APP_Menu_AdjustParam(bool is_inc)
             }
             break;
 
-        case 10: { // Set_W = 10: column_mode (0: 四柱 "00", 12, 13, 14, 23, 24, 34)
+        case P1_ITEM_COLUMN_MODE: { // column_mode (0: 四柱 "00", 12, 13, 14, 23, 24, 34)
             // 1. 已锁定且为四柱模式：只能看，不能调！
             if (app_data.column_mode_locked == 1 && app_data.column_mode == 0) {
                 s_edit_column_mode = 0;
@@ -227,7 +231,8 @@ static void APP_Menu_AdjustParam(bool is_inc)
             break;
         }
 
-        case 11: // Set_W = 11: show_current_mode (0: 显示位置, 1: 实时显示当前电机电流, 2: 8项综合监测模式)
+#if MENU_CONFIG_SHOW_MECH_PARAMS
+        case P1_ITEM_SHOW_CURRENT_MODE: // show_current_mode (0: 显示位置, 1: 实时显示当前电机电流, 2: 8项综合监测模式)
             if (is_inc) {
                 if (app_data.show_current_mode < 2)
                     app_data.show_current_mode++;
@@ -240,8 +245,9 @@ static void APP_Menu_AdjustParam(bool is_inc)
                     app_data.show_current_mode = 0;
             }
             break;
+#endif
 
-        case 12: // Set_W = 12: driver_stall_percent (50% ~ 250%, 步进 10%, 默认 150%)
+        case P1_ITEM_DRIVER_STALL_PCT: // driver_stall_percent (50% ~ 250%, 步进 10%, 默认 150%)
             if (is_inc) {
                 if (app_data.driver_stall_percent <= 240)
                     app_data.driver_stall_percent += 10;
@@ -255,7 +261,7 @@ static void APP_Menu_AdjustParam(bool is_inc)
             }
             break;
 
-        case 13: // Set_W = 13: stall_detect_time_ms (100ms ~ 2000ms, 步进 100ms, 默认 600ms)
+        case P1_ITEM_STALL_DETECT_TIME: // stall_detect_time_ms (100ms ~ 2000ms, 步进 100ms, 默认 600ms)
             if (is_inc) {
                 if (app_data.stall_detect_time_ms <= 1900)
                     app_data.stall_detect_time_ms += 100;
@@ -274,6 +280,7 @@ static void APP_Menu_AdjustParam(bool is_inc)
     }
 }
 
+#if MENU_CONFIG_ENABLE_P3_PID_MENU
 /**
  * @brief 第三页 PID 控制参数设置层 (dim1 == 3) 参数加减调节通用辅助函数
  */
@@ -410,6 +417,7 @@ static void APP_Menu_AdjustParamP3(bool is_inc)
             break;
     }
 }
+#endif
 
 void APP_MenuTask(void *pvParameters)
 {
@@ -464,7 +472,11 @@ void APP_MenuTask(void *pvParameters)
             // 维度长按切换：长按 K6 (设置键) 切换一维 dim1 (0 -> 1 -> 2 -> 3 -> 0)
             // ====================================================
             if (msg.key_id == MID_KEY_ID_K6 && msg.event == MID_KEY_EVT_LONG) {
-                uint8_t next_dim1 = (dim1 + 1) % 4;
+#if MENU_CONFIG_ENABLE_P3_PID_MENU
+                uint8_t next_dim1 = (dim1 + 1) % 4; // 0 -> 1 -> 2 -> 3 -> 0
+#else
+                uint8_t next_dim1 = (dim1 + 1) % 3; // 0 -> 1 -> 2 -> 0 (客户模式：屏蔽第3页PID菜单)
+#endif
 
                 // 门禁检查：若试图进入设置模式 (dim1 == 1 或 dim1 == 3)，必须确保电机未处于运动或调平状态
                 if ((next_dim1 == 1 || next_dim1 == 3) && !Sys_Mode_CanEnterMenu()) {
@@ -489,12 +501,14 @@ void APP_MenuTask(void *pvParameters)
                         Debug_Printf("[SYS] Menu Level 1 Params Saved to Flash (ColumnMode=%d, Locked=1).\r\n", app_data.column_mode);
                     }
                 }
+#if MENU_CONFIG_ENABLE_P3_PID_MENU
                 // 如果离开第三页 PID 设置模式 (dim1 == 3)，存盘 Flash 并刷新 PID 参数
                 else if (dim1 == 3) {
                     APP_Data_Storage();
                     Sys_Notify_ParamsUpdated();
                     Debug_Printf("[SYS] Menu Level 3 (PID) Params Saved to Flash & Applied.\r\n");
                 }
+#endif
 
                 dim1              = next_dim1;
                 dim2              = 0; // 切入新维度时均从第 0 项 (0) 开始！
@@ -505,8 +519,10 @@ void APP_MenuTask(void *pvParameters)
                     Sys_Mode_Set(SYS_MODE_MENU_CONFIG);        // 切入设置模式，独占按键并安全封锁电机
                 } else if (dim1 == 2) {
                     Sys_Mode_Set(SYS_MODE_DEBUG_CALIB); // 切入深度调试层
+#if MENU_CONFIG_ENABLE_P3_PID_MENU
                 } else if (dim1 == 3) {
                     Sys_Mode_Set(SYS_MODE_MENU_CONFIG); // 切入第三页 PID 设置模式，独占按键安全封锁电机
+#endif
                 } else {
                     if (Sys_View_GetFaultCode() != FAULT_CODE_NONE || Sys_Mode_IsFaultLocked()) {
                         Sys_Mode_Set(SYS_MODE_FAULT_LOCKED); // 存在未消除故障时严格恢复为故障锁死态
@@ -566,18 +582,18 @@ void APP_MenuTask(void *pvParameters)
             // 维度 1：常规应用设置层 (dim1 == 1, dim2 为 0~13, 其中 (1,0) 为恢复出厂开关)
             // ====================================================
             else if (dim1 == 1) {
-                // A. 短按 K6：前进到下一项 (dim2++)。在最后一项 (dim2 == 13) 按 K6 时保存 Flash 并退出至 dim1 = 0
+                // A. 短按 K6：前进到下一项 (dim2++)。在最后一项 (dim2 == P1_ITEM_COUNT - 1) 按 K6 时保存 Flash 并退出至 dim1 = 0
                 if (msg.key_id == MID_KEY_ID_K6 && msg.event == MID_KEY_EVT_LEASS) {
-                    if (dim2 < 13) {
+                    if (dim2 < P1_ITEM_COUNT - 1) {
                         dim2++;
                         adjust_hold_ticks = 0;
 
                         char buf[10];
                         snprintf(buf, sizeof(buf), "-q%d-", dim2);
                         APP_Menu_SetPrompt(buf, 20); // 切换项目显示 "-q0-", "-q1-"... 1.0s
-                        Debug_Printf("[SYS] Setting Next Item: dim2 = %d\r\n", dim2);
+                        Debug_Printf("[SYS] Setting Next Item: dim2 = %d (Max=%d)\r\n", dim2, P1_ITEM_COUNT - 1);
                     } else {
-                        // 最后一项 (13) 按 K6：检查 (1,0) 是否调至 7 (q0 == 7 触发恢复出厂)
+                        // 最后一项按 K6：检查 (1,0) 是否调至 7 (q0 == 7 触发恢复出厂)
                         if (reset_factory_flag == 7) {
                             reset_factory_flag = 0;
                             APP_Data_ResetDefault();   // 恢复全部出厂默认参数并存盘 Flash (解除锁定)
@@ -655,6 +671,7 @@ void APP_MenuTask(void *pvParameters)
                     Debug_Printf("[SYS] Read-Only Mode: K1/K2 Param Adjustment Ignored.\r\n");
                 }
             }
+#if MENU_CONFIG_ENABLE_P3_PID_MENU
             // ====================================================
             // 维度 3：第三页 PID 控制参数设置层 (dim1 == 3, dim2 为 0~9)
             // ====================================================
@@ -701,6 +718,7 @@ void APP_MenuTask(void *pvParameters)
                     APP_Menu_AdjustParamP3(msg.key_id == MID_KEY_ID_K1);
                 }
             }
+#endif
         }
 
         vTaskDelayUntil(&pxPreviousWakeTime, pdMS_TO_TICKS(50));

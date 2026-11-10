@@ -186,58 +186,70 @@ void APP_ShowTask(void *pvParameters)
             }
             // 2. 后 500ms（或调值期间）显示当前项的具体参数数值
             else {
-                if (dim2 == 10) {
-                    // q10 柱体模式显示："-00-", "-12-", "-13-", "-14-", "-23-", "-24-", "-34-"
-                    uint16_t m = APP_Menu_GetEditingColumnMode();
-                    SEG_W[0]   = 18; // -
-                    if (m == 0) {
-                        SEG_W[1] = 0;
-                        SEG_W[2] = 0;
-                    } else {
-                        SEG_W[1] = (uint8_t)((m / 10) % 10);
-                        SEG_W[2] = (uint8_t)(m % 10);
-                    }
-                    SEG_W[3] = 18; // -
-                } else if (dim2 == 13) {
-                    // q13 堵转判定防抖时间显示：以 0.1s 为单位带小数点，如 600ms 显示 "  0.6", 1200ms 显示 "  1.2"
-                    uint16_t val_01s = app_data.stall_detect_time_ms / 100;
-                    if (val_01s > 99) val_01s = 99;
-                    SEG_W[0] = 19; // 空白
-                    SEG_W[1] = 19; // 空白
-                    SEG_W[2] = (uint8_t)((val_01s / 10) % 10);
-                    SEG_W[3] = (uint8_t)(val_01s % 10);
-                    SEG_Flag[2] = 1; // 小数点点亮在第二位(从0开始算第2位，即第3个数码管)
-                } else {
-                    uint32_t param_val = 0;
-                    switch (dim2) {
-                        case 0: param_val = reset_factory_flag; break; // (1, 0) 项显示恢复出厂开关
-                        case 1: param_val = app_data.max_travel_range_mm; break;
-                        case 2: param_val = app_data.target_speed_mm_min; break;
-                        case 3: param_val = app_data.motor_dir_invert; break;
-                        case 4: param_val = app_data.max_sync_diff_mm; break;
-                        case 5: param_val = app_data.stall_current_threshold; break;
-                        case 6: param_val = app_data.lead_mm; break;
-                        case 7: param_val = app_data.reduction_ratio; break;
-                        case 8: param_val = app_data.single_tune_step_mm; break;
-                        case 9: param_val = app_data.rebound_travel_mm; break;
-                        case 11: param_val = app_data.show_current_mode; break;
-                        case 12: param_val = app_data.driver_stall_percent; break;
-                        default: param_val = 0; break;
+                switch ((P1_MenuItem_t)dim2) {
+                    case P1_ITEM_COLUMN_MODE: {
+                        // 柱体模式显示："-00-", "-12-", "-13-", "-14-", "-23-", "-24-", "-34-"
+                        uint16_t m = APP_Menu_GetEditingColumnMode();
+                        SEG_W[0]   = 18; // -
+                        if (m == 0) {
+                            SEG_W[1] = 0;
+                            SEG_W[2] = 0;
+                        } else {
+                            SEG_W[1] = (uint8_t)((m / 10) % 10);
+                            SEG_W[2] = (uint8_t)(m % 10);
+                        }
+                        SEG_W[3] = 18; // -
+                        break;
                     }
 
-                    if (param_val > 9999) param_val = 9999;
+                    case P1_ITEM_STALL_DETECT_TIME: {
+                        // 堵转判定防抖时间显示：以 0.1s 为单位带小数点，如 600ms 显示 "  0.6", 1200ms 显示 "  1.2"
+                        uint16_t val_01s = app_data.stall_detect_time_ms / 100;
+                        if (val_01s > 99) val_01s = 99;
+                        SEG_W[0] = 19; // 空白
+                        SEG_W[1] = 19; // 空白
+                        SEG_W[2] = (uint8_t)((val_01s / 10) % 10);
+                        SEG_W[3] = (uint8_t)(val_01s % 10);
+                        SEG_Flag[2] = 1; // 小数点点亮在第二位(从0开始算第2位，即第3个数码管)
+                        break;
+                    }
 
-                    if (dim2 == 12) {
-                        // q12 显示驱动器百分比：消除千位前导零，如 150 显示为 " 150"
+                    case P1_ITEM_DRIVER_STALL_PCT: {
+                        // 显示驱动器百分比：消除千位前导零，如 150 显示为 " 150"
+                        uint32_t param_val = app_data.driver_stall_percent;
+                        if (param_val > 9999) param_val = 9999;
                         SEG_W[0] = (param_val >= 1000) ? (uint8_t)((param_val / 1000) % 10) : 19;
                         SEG_W[1] = (uint8_t)((param_val / 100) % 10);
                         SEG_W[2] = (uint8_t)((param_val / 10) % 10);
                         SEG_W[3] = (uint8_t)(param_val % 10);
-                    } else {
+                        break;
+                    }
+
+                    default: {
+                        uint32_t param_val = 0;
+                        switch ((P1_MenuItem_t)dim2) {
+                            case P1_ITEM_RESET_FACTORY:    param_val = reset_factory_flag; break;
+                            case P1_ITEM_MAX_TRAVEL:       param_val = app_data.max_travel_range_mm; break;
+                            case P1_ITEM_TARGET_SPEED:     param_val = app_data.target_speed_mm_min; break;
+#if MENU_CONFIG_SHOW_MECH_PARAMS
+                            case P1_ITEM_MOTOR_DIR_INVERT: param_val = app_data.motor_dir_invert; break;
+                            case P1_ITEM_LEAD_MM:          param_val = app_data.lead_mm; break;
+                            case P1_ITEM_REDUCTION_RATIO:  param_val = app_data.reduction_ratio; break;
+                            case P1_ITEM_SHOW_CURRENT_MODE:param_val = app_data.show_current_mode; break;
+#endif
+                            case P1_ITEM_MAX_SYNC_DIFF:    param_val = app_data.max_sync_diff_mm; break;
+                            case P1_ITEM_STALL_CURRENT:    param_val = app_data.stall_current_threshold; break;
+                            case P1_ITEM_SINGLE_TUNE_STEP: param_val = app_data.single_tune_step_mm; break;
+                            case P1_ITEM_REBOUND_TRAVEL:   param_val = app_data.rebound_travel_mm; break;
+                            default:                       param_val = 0; break;
+                        }
+
+                        if (param_val > 9999) param_val = 9999;
                         SEG_W[0] = (uint8_t)((param_val / 1000) % 10);
                         SEG_W[1] = (uint8_t)((param_val / 100) % 10);
                         SEG_W[2] = (uint8_t)((param_val / 10) % 10);
                         SEG_W[3] = (uint8_t)(param_val % 10);
+                        break;
                     }
                 }
             }
@@ -268,8 +280,9 @@ void APP_ShowTask(void *pvParameters)
                 SEG_Flag[m_idx] = 1; // 点亮小数点指示电机编号
             }
         }
+#if MENU_CONFIG_ENABLE_P3_PID_MENU
         // ====================================================
-        // 模式四：第三页 PID 控制参数设置层 (dim1 == 3, dim2 为 0~8)
+        // 模式四：第三页 PID 控制参数设置层 (dim1 == 3, dim2 为 0~9)
         // ====================================================
         else if (dim1 == 3) {
             SEG_Flag[0] = SEG_Flag[1] = SEG_Flag[2] = SEG_Flag[3] = 0;
@@ -278,7 +291,7 @@ void APP_ShowTask(void *pvParameters)
             if (adjust_hold_ticks == 0 && flicker_cnt < 10) {
                 SEG_W[0] = 18;        // -
                 SEG_W[1] = 16;        // q
-                SEG_W[2] = dim2 % 10; // 0 ~ 8
+                SEG_W[2] = dim2 % 10; // 0 ~ 9
                 SEG_W[3] = 18;        // -
             }
             // 2. 后 500ms（或调值期间）显示当前项的具体参数数值
@@ -350,6 +363,7 @@ void APP_ShowTask(void *pvParameters)
                 }
             }
         }
+#endif
         // ====================================================
         // 优先级 3：主界面 & 实时监测层 (dim1 == 0)
         // ====================================================

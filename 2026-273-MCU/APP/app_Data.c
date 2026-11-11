@@ -7,6 +7,7 @@
 
 APP_DATA_HandleTypeDef app_data;
 uint8_t EEPROMSet = 0;
+bool g_auto_factory_reset_on_boot = false;
 
 /**
  * @brief  初始化参数系统，读出 Flash 记忆值并进行未初始化检测
@@ -16,8 +17,14 @@ void APP_Data_Init(void)
     uint32_t addr = MID_FLASH_AddressTransition(0);
     MID_FLASH_ReadData(&addr, sizeof(APP_DATA_HandleTypeDef), (uint16_t *)&app_data);
 
+    // 检查上次是否使用了强制点动脱困并标记了开机自动恢复出厂设置 (0x55AA)
+    if (app_data.force_jog_reset_flag == FORCE_JOG_RESET_MAGIC) {
+        g_auto_factory_reset_on_boot = true;
+        APP_Data_ResetDefault(); // 自动恢复全部出厂默认设置并存盘清除标记
+        Debug_Printf("[SYS] Detected Force Jog Reset Flag (0x55AA) on Boot! Auto Restored Factory Default.\r\n");
+    }
     // 如果 Flash 尚未初始化
-    if (app_data.min_mount_halls[0] == -1 ||
+    else if (app_data.min_mount_halls[0] == -1 ||
         app_data.min_mount_halls[0] == 0x7FFFFFFF ||
         app_data.max_travel_range_mm <= 0 ||
         app_data.reduction_ratio == 0xFFFF ||
@@ -155,7 +162,9 @@ void APP_Data_ResetDefault(void)
     app_data.stall_detect_time_ms    = 800;  // q13: 堵转判定防抖时间 (单位: ms, 默认 1000ms = 1.0s)
 
     // 非菜单硬件常数
-    app_data.hall_coef = 30; // 霍尔传感器每转计数系数 (默认 30)
+    app_data.hall_coef           = 30; // 霍尔传感器每转计数系数 (默认 30)
+    app_data.force_jog_reset_flag = 0;  // 清除强制脱困重启重置标记
+    app_data.reserved             = 0;
 
     // ===================================================================
     // 第三页设置菜单参数 (-P3- PID 控制器配置项 q0 ~ q9)

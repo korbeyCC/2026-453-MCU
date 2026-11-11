@@ -15,6 +15,8 @@
 #define STALL_CURRENT_THRESHOLD_MIN 50                                                                              // 下限: 0.50A
 #define STALL_CURRENT_THRESHOLD_MAX ((DRIVER_RATED_STALL_CURRENT_DECI_A * app_data.driver_stall_percent) / 100) // 上限联动驱动器限流
 
+#define FORCE_JOG_RESET_MAGIC 0x55AA // 强制脱困模式开机自动恢复出厂魔数标记
+
 // 掉电保存高度行程等数据包结构体 (32位对齐)
 typedef struct
 {
@@ -59,10 +61,13 @@ typedef struct
     uint16_t pid_iout_max_low;     // 小偏差 PID 积分限幅 (RPM, 默认 20) - 对应 P3 菜单 q7
     uint16_t pid_iout_max_high;    // 大偏差 PID 积分限幅 (RPM, 默认 40) - 对应 P3 菜单 q8
     uint16_t pid_lag_bias_factor_x100; // 落后轴偏好权重因子 (放大 100 倍, 20 -> 0.20) - 对应 P3 菜单 q9
+    uint16_t force_jog_reset_flag;     // 强制运动脱困重启恢复出厂标志 (0x55AA: 需开机恢复出厂, 0: 正常)
+    uint16_t reserved;                 // 32 位对齐保留字段
 } APP_DATA_HandleTypeDef;
 
 extern APP_DATA_HandleTypeDef app_data;
 extern uint8_t EEPROMSet;
+extern bool g_auto_factory_reset_on_boot;
 
 void APP_Data_Init(void);
 void APP_Data_Storage(void);

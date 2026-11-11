@@ -22,6 +22,11 @@ static uint8_t CharToSegIndex(char c)
     if (c == 'N' || c == 'n') return 27; // n
     if (c == 'W' || c == 'w') return 26; // W
     if (c == 'q' || c == 'Q') return 16; // q
+    if (c == 'L' || c == 'l') return 22; // L
+    if (c == 'O' || c == 'o') return 24; // o
+    if (c == 'C' || c == 'c') return 12; // C
+    if (c == 'S' || c == 's') return 5;  // 5 / S
+    if (c == 't' || c == 'T') return 23; // t
     return 19; // 空白
 }
 
@@ -405,7 +410,19 @@ void APP_ShowTask(void *pvParameters)
                     }
                 }
             }
-            // 3.3 无故障正常就绪/运行状态正常显示
+            // 3.3 强制脱困锁定报警显示 (平时与 -LoC 交替显示：前半秒显示 -LoC，后半秒显示当前位置/电流数据；调值/浏览时常显数据)
+            else if (Sys_Mode_IsForceJogLocked()) {
+                if (adjust_hold_ticks > 0 || flicker_cnt >= 10) {
+                    Show_RenderItemData(dim2, SEG_W, SEG_Flag);
+                } else {
+                    SEG_Flag[0] = SEG_Flag[1] = SEG_Flag[2] = SEG_Flag[3] = 0;
+                    SEG_W[0] = 18; // -
+                    SEG_W[1] = 22; // L
+                    SEG_W[2] = 24; // o
+                    SEG_W[3] = 12; // C
+                }
+            }
+            // 3.4 无故障正常就绪/运行状态正常显示
             else {
                 Show_RenderItemData(dim2, SEG_W, SEG_Flag);
             }

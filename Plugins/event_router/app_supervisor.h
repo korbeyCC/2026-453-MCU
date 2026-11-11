@@ -72,6 +72,16 @@ bool Sys_Mode_IsMenuActive(void);
  */
 bool Sys_Mode_IsFaultLocked(void);
 
+/**
+ * @brief  查询系统当前是否处于强制脱困自锁状态 (禁止常规控制，仅允许强制点动或恢复出厂)
+ */
+bool Sys_Mode_IsForceJogLocked(void);
+
+/**
+ * @brief  设置系统强制脱困自锁状态
+ */
+void Sys_Mode_SetForceJogLocked(bool locked);
+
 // ==============================================================================
 // 4. 系统只读视图模型接口 (System View Model / Telemetry) —— 供 app_show / app_Menu 纯读
 // ==============================================================================

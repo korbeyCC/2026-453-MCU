@@ -376,6 +376,7 @@ void APP_Control_ResetSystemContext(void)
 
     // 3. 复位系统状态机、错误码与微调标志
     g_sys_context.system_fault_code = FAULT_CODE_NONE;
+    Sys_Mode_SetForceJogLocked(false);
     g_sys_context.system_step       = SYS_STEP_READY;
     g_sys_context.active_motor_mask = App_Data_GetColumnMotorMask();
     g_sys_context.is_single_tuning  = false;
@@ -621,6 +622,12 @@ void APP_Control_StartForceJog(uint8_t dir, MID_Signal_ID sig_id)
         g_sys_context.g_motor_status[i].stall_cnt        = 0;
     }
 
+    Sys_Mode_SetForceJogLocked(true);
+    if (app_data.force_jog_reset_flag != FORCE_JOG_RESET_MAGIC) {
+        app_data.force_jog_reset_flag = FORCE_JOG_RESET_MAGIC;
+        APP_Data_Storage();
+        Debug_Printf("[SYS] Flash Force Jog Reset Flag (0x55AA) Marked! Next Reboot will Auto Reset.\r\n");
+    }
     g_sys_context.system_step = SYS_STEP_FORCE_JOG;
     Sys_Mode_Set(SYS_MODE_MOTION);
 
@@ -866,6 +873,11 @@ void APP_ControlTask(void *pvParameters)
             // === Boot 状态：等待硬件初始化完成并执行物理参数换算 ===
             case SYS_STEP_Boot: {
                 if (g_sys_context.is_hardware_ready) {
+                    if (g_auto_factory_reset_on_boot) {
+                        APP_Menu_SetPrompt("-rSt-", 30);
+                        MID_Buzzer_TriggerBeep(200);
+                        g_auto_factory_reset_on_boot = false;
+                    }
                     // 同步 Flash 保存的高度绝对起点至监控内存，初始化起点与行程
                     for (int i = 0; i < 4; i++) {
                         g_sys_context.g_motor_status[i].current_abs_hall = app_data.motor_abs_halls[i];
@@ -982,6 +994,12 @@ void APP_ControlTask(void *pvParameters)
                     }
 
                     if (is_normal_start) {
+                        if (Sys_Mode_IsForceJogLocked()) {
+                            APP_Menu_SetPrompt("-LoC", 20);
+                            MID_Buzzer_TriggerBeep(50);
+                            Debug_Printf("[SYS] Normal Motion Blocked! System in FORCE_JOG_LOCKED mode. Reboot or Factory Reset required.\r\n");
+                            break;
+                        }
                         Motor_Ctrl_Msg_t speed_msg;
                         Motor_Ctrl_Msg_t cmd_msg;
                         bool action_valid = false;

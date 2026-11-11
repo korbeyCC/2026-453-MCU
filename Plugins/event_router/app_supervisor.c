@@ -11,6 +11,7 @@
 // 静态状态与变量定义
 // ==============================================================================
 static volatile System_Mode_t s_sys_mode = SYS_MODE_STANDBY;
+static bool s_force_jog_locked           = false;
 static volatile uint8_t s_tune_dir = 0; // 0: 上升/正转 -UP-, 1: 下降/反转 -dn-
 
 // ==============================================================================
@@ -213,12 +214,24 @@ static Event_Result_t Filter_Level2_MenuFocus(const Sys_Event_t *p_evt)
         // ==============================================================================
         if (p_evt->id <= MID_KEY_ID_K4 && s_sys_mode == SYS_MODE_STANDBY) {
             if (p_evt->event_type == MID_KEY_EVT_LEASS) {
+                if (Sys_Mode_IsForceJogLocked()) {
+                    APP_Menu_SetPrompt("-LoC", 20);
+                    MID_Buzzer_TriggerBeep(50);
+                    Debug_Printf("[LEPA Level 2] Single Tune Blocked! System in FORCE_JOG_LOCKED mode.\r\n");
+                    return EVENT_CONSUMED;
+                }
                 Sys_Mailbox_PostMotionCmd(SYS_MOTION_SRC_KEY, p_evt->id, p_evt->event_type);
                 return EVENT_CONSUMED;
             }
         }
 
         if (p_evt->id == MID_KEY_ID_K5 && p_evt->event_type == MID_KEY_EVT_LONG && s_sys_mode == SYS_MODE_STANDBY) {
+            if (Sys_Mode_IsForceJogLocked()) {
+                APP_Menu_SetPrompt("-LoC", 20);
+                MID_Buzzer_TriggerBeep(50);
+                Debug_Printf("[LEPA Level 2] Total Tune Blocked! System in FORCE_JOG_LOCKED mode.\r\n");
+                return EVENT_CONSUMED;
+            }
             Sys_Mailbox_PostMotionCmd(SYS_MOTION_SRC_KEY, p_evt->id, p_evt->event_type);
             return EVENT_CONSUMED;
         }
@@ -331,6 +344,16 @@ bool Sys_Mode_IsFaultLocked(void)
     return (s_sys_mode == SYS_MODE_FAULT_LOCKED || g_sys_context.system_step == SYS_STEP_FAULT_STOP);
 }
 
+bool Sys_Mode_IsForceJogLocked(void)
+{
+    return s_force_jog_locked;
+}
+
+void Sys_Mode_SetForceJogLocked(bool locked)
+{
+    s_force_jog_locked = locked;
+}
+
 // ==============================================================================
 // 系统只读视图模型实现 (View Model)
 // ==============================================================================
@@ -423,6 +446,7 @@ void Sys_Notify_ParamsUpdated(void)
 
 void Sys_Notify_FactoryReset(void)
 {
+    Sys_Mode_SetForceJogLocked(false);
     APP_Control_ResetSystemContext();
 }
 

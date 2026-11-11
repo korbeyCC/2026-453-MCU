@@ -36,21 +36,27 @@ typedef struct
     uint32_t active_start_tick; /* 触发时刻的系统tick (ms) */
     bool long_reported;         /* 是否已上报长触发 */
     bool active_reported;       /* 是否已上报触发 */
+    bool hold_5s_reported;      /* 是否已上报 5 秒超长按触发 */
+    uint8_t release_cnt;        /* 释放防抖滤波计数器 (150ms 滤波防空中掉帧) */
 } MID_SIGNAL_HandleTypeDef;
 
 /* ========== 时间参数 ========== */
-#define MID_SIGNAL_SCAN_PERIOD_MS  5  // 信号轮询扫描周期ms
-#define MID_SIGNAL_DEBOUNCE_TICKS  2  // 消抖所需连续次数 (2 * 20 = 40ms)
-#define MID_SIGNAL_SHORT_MAX_TICKS 40 // 短周期上限 (40 * 20 = 800ms)
-#define MID_SIGNAL_LONG_TICKS      50 // 长周期判定阈值 (50 * 20 = 1000ms)
+#define MID_SIGNAL_SCAN_PERIOD_MS       5    // 信号轮询扫描周期ms
+#define MID_SIGNAL_DEBOUNCE_TICKS       2    // 按下消抖所需连续次数 (2 * 5 = 10ms)
+#define MID_SIGNAL_RELEASE_FILTER_TICKS 30   // 释放滤波所需连续次数 (30 * 5 = 150ms)
+#define MID_SIGNAL_SHORT_MAX_TICKS      200  // 短按有效释放上限 (200 * 5 = 1000ms)
+#define MID_SIGNAL_LONG_TICKS           200  // 常规长周期判定阈值 (1000ms)
+#define MID_SIGNAL_HOLD_5S_MS           5000 // 持续按住满 5000ms 触发超长按
 
 /* ========== 事件类型 ========== */
 typedef enum {
     MID_SIGNAL_EVT_NONE = 0,
-    MID_SIGNAL_EVT_TRIGGER, // 信号检测到触发生效
-    MID_SIGNAL_EVT_RELEASE, // 信号撤销释放
-    MID_SIGNAL_EVT_LONG,    // 持续长触发生效
-    MID_SIGNAL_EVT_LONG_REP // 持续长触发重复事件
+    MID_SIGNAL_EVT_TRIGGER,       // 信号检测到触发生效 (刚按下)
+    MID_SIGNAL_EVT_RELEASE,       // 信号撤销释放 (确认松手)
+    MID_SIGNAL_EVT_LONG,          // 持续长触发生效 (默认 1s)
+    MID_SIGNAL_EVT_LONG_REP,      // 持续长触发重复事件
+    MID_SIGNAL_EVT_SHORT_RELEASE, // 短按有效释放事件 (按住 < 1.0s 松开，用于触发常规自锁升降)
+    MID_SIGNAL_EVT_HOLD_5S        // 持续按住满 5.0 秒超长按事件 (用于触发整体持续点动微调)
 } MID_Signal_EventType;
 
 /* 信号队列传输消息结构体 */

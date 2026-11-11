@@ -553,9 +553,100 @@ void APP_Control_StartTotalTune(void)
                  active_mask, (tune_dir == 0) ? "UP" : "DOWN", step_mm, target_counts, tune_rpm);
 }
 
+static MID_Signal_ID s_force_jog_sig_id = MID_SIGNAL_COUNT;
+
 /**
- * @brief 系统紧急停止 (Direct Action，直接动作切断输出并停机)
+ * @brief 停止强行点动脱困模式并安全锁死抱闸
+ * @note 纯控制上下，停稳后绝不修改 min_mount_halls，绝不写 Flash！
  */
+void APP_Control_StopForceJog(void)
+{
+    uint8_t active_mask = App_Data_GetColumnMotorMask();
+    xQueueReset(g_motor_ctrl_queue);
+
+    for (int i = 0; i < 4; i++) {
+        g_sys_context.g_motor_status[i].target_cmd   = CMD_STOP;
+        g_sys_context.g_motor_status[i].target_speed = 0;
+    }
+
+    Motor_Ctrl_Msg_t stop_msg = {CMD_STOP, active_mask, 0};
+    xQueueSend(g_motor_ctrl_queue, &stop_msg, pdMS_TO_TICKS(10));
+
+    // 延时 60ms 确保电机停转，随后抱闸断电抱死
+    vTaskDelay(pdMS_TO_TICKS(60));
+    MID_Brake_Lock();
+
+    // 更新各轴采样基准，防止下次正常启动时霍尔增量突变
+    for (int i = 0; i < 4; i++) {
+        g_sys_context.g_motor_status[i].start_drive_hall = g_sys_context.g_motor_status[i].hall_value;
+        g_sys_context.g_motor_status[i].base_abs_hall    = g_sys_context.g_motor_status[i].current_abs_hall;
+        g_sys_context.g_motor_status[i].last_motion_cmd  = CMD_STOP;
+        g_sys_context.g_motor_status[i].stall_cnt        = 0;
+    }
+
+    g_sys_context.system_step = SYS_STEP_READY;
+    Sys_Mode_Set(SYS_MODE_STANDBY);
+    MID_Buzzer_TriggerBeep(40); // 提示停机完成
+    Debug_Printf("[SYS] Force Jog Stopped & Brake Locked. Returning to READY.\r\n");
+}
+
+/**
+ * @brief 启动强行点动脱困模式 (遥控器上下键长按 5 秒触发)
+ * @param dir 0: 上升, 1: 下降
+ * @param sig_id 绑定的遥控信号 ID (MID_SIGNAL_REMOT_4 或 MID_SIGNAL_REMOT_3)
+ */
+void APP_Control_StartForceJog(uint8_t dir, MID_Signal_ID sig_id)
+{
+    if (g_sys_context.system_step != SYS_STEP_READY) return;
+    if (!Sys_Mode_CanRunMotion()) return; // 调参或故障锁定下禁止动作
+
+    // 强锁当前柱体模式，防拓扑变动
+    APP_Control_EnsureColumnModeLocked();
+
+    uint8_t active_mask = App_Data_GetColumnMotorMask();
+    s_force_jog_sig_id  = sig_id;
+
+    // 采用平稳半速 (基准速度的一半，保底 100 RPM)
+    uint16_t jog_rpm = g_sys_context.calc_base_rpm / 2;
+    if (jog_rpm < 100) jog_rpm = 100;
+
+    uint8_t motion_cmd = (dir == 0) ? CMD_FORWARD : CMD_REVERSE;
+
+    for (int i = 0; i < 4; i++) {
+        g_sys_context.g_motor_status[i].last_motion_cmd  = motion_cmd;
+        g_sys_context.g_motor_status[i].start_drive_hall = g_sys_context.g_motor_status[i].hall_value;
+        g_sys_context.g_motor_status[i].base_abs_hall    = g_sys_context.g_motor_status[i].current_abs_hall;
+        g_sys_context.g_motor_status[i].target_cmd       = (active_mask & (1 << i)) ? motion_cmd : CMD_STOP;
+        g_sys_context.g_motor_status[i].target_speed     = (active_mask & (1 << i)) ? jog_rpm : 0;
+        g_sys_context.g_motor_status[i].stall_cnt        = 0;
+    }
+
+    g_sys_context.system_step = SYS_STEP_FORCE_JOG;
+    Sys_Mode_Set(SYS_MODE_MOTION);
+
+    // 通电松开抱闸，等待 80ms 机械脱开
+    MID_Brake_Release();
+    vTaskDelay(pdMS_TO_TICKS(80));
+
+    xQueueReset(g_motor_ctrl_queue);
+
+    Motor_Ctrl_Msg_t speed_msg = {CMD_SET_SPEED, active_mask, jog_rpm};
+    Motor_Ctrl_Msg_t cmd_msg   = {(Motor_Cmd_Type_t)motion_cmd, active_mask, 0};
+
+    xQueueSend(g_motor_ctrl_queue, &speed_msg, pdMS_TO_TICKS(10));
+    xQueueSend(g_motor_ctrl_queue, &cmd_msg, pdMS_TO_TICKS(10));
+
+    if (dir == 0) {
+        APP_Menu_SetPrompt("-CU-", 25);
+    } else {
+        APP_Menu_SetPrompt("-Cd-", 25);
+    }
+    MID_Buzzer_TriggerBeep(200); // 蜂鸣器长鸣 200ms 提示进入点动
+
+    Debug_Printf("[SYS] Enter FORCE_JOG: Mask=0x%02X, Dir=%s, SigID=%d, Speed=%dRPM\r\n",
+                 active_mask, (dir == 0) ? "UP" : "DOWN", sig_id, jog_rpm);
+}
+
 void APP_Control_EmergencyStop(void)
 {
     uint8_t active_mask = App_Data_GetColumnMotorMask();
@@ -575,11 +666,14 @@ void APP_Control_EmergencyStop(void)
     g_sys_context.is_single_tuning = false;
     g_sys_context.is_total_tuning  = false;
 
-    // 3. 切入停机归档
-    if (g_sys_context.system_step == SYS_STEP_TOTAL_RUNNING ||
-        g_sys_context.system_step == SYS_STEP_AUTO_ALIGN ||
-        g_sys_context.system_step == SYS_STEP_SINGLE_TUNE ||
-        g_sys_context.system_step == SYS_STEP_TOTAL_REBOUND) {
+    // 3. 停机归档 (包含常规运行、自愈调平、单柱微调、整体微调与防夹反弹)
+    if (g_sys_context.system_step == SYS_STEP_FORCE_JOG) {
+        APP_Control_StopForceJog();
+    } else if (g_sys_context.system_step == SYS_STEP_TOTAL_RUNNING ||
+               g_sys_context.system_step == SYS_STEP_AUTO_ALIGN ||
+               g_sys_context.system_step == SYS_STEP_SINGLE_TUNE ||
+               g_sys_context.system_step == SYS_STEP_TOTAL_TUNE ||
+               g_sys_context.system_step == SYS_STEP_TOTAL_REBOUND) {
         APP_Control_PrepareStopSettling(active_mask, SYS_STEP_TOTAL_DONE);
     }
     Debug_Printf("[SYS] Emergency Stop Executed! All Active Motors Stopped.\r\n");
@@ -865,182 +959,204 @@ void APP_ControlTask(void *pvParameters)
                     }
                 }
 
-                // 3. 检查遥控信号触发下行 / 上行
-                if (has_event && mb_src == SYS_MOTION_SRC_SIGNAL && sig_msg.event == MID_SIGNAL_EVT_TRIGGER) {
-                    Motor_Ctrl_Msg_t speed_msg;
-                    Motor_Ctrl_Msg_t cmd_msg;
-                    bool action_valid = false;
-
-                    int16_t run_rpm = (g_sys_context.calc_base_rpm > 0) ? g_sys_context.calc_base_rpm : 2400;
-
-                    switch (sig_msg.signal_id) {
-                        case MID_SIGNAL_REMOT_3:
-                        case MID_SIGNAL_BUTON_DW: { // B 键 (REMOT_3) & 外接信号下行 (PC7)
-                            // 权威门禁检查：调参中或故障锁定下严禁启动运动
-                            if (!Sys_Mode_CanRunMotion()) {
-                                Debug_Printf("[SYS] Down Start Blocked by Supervisor Gate!\r\n");
-                                break;
-                            }
-
-                            // 启动前安全检查：如果有使能轴已到达或低于底部零点 (travel_rel <= 0)，禁止启动下行！
-                            bool limit_blocked = false;
-                            for (int i = 0; i < 4; i++) {
-                                if (!(active_mask & (1 << i))) continue;
-                                float tr = (float)(g_sys_context.g_motor_status[i].current_abs_hall - app_data.min_mount_halls[i]);
-                                if (tr <= 0.0f) {
-                                    limit_blocked = true;
-                                    Debug_Printf("[SYS] Down Start Blocked! Motor %d reached bottom limit (Travel=%.1f <= 0)\r\n", i + 1, tr);
-                                    break;
-                                }
-                            }
-                            if (limit_blocked) break;
-
-                            // 启动前极差检查：若当前四柱存在严重不同步超差，先触发自动重平调齐，调平后再由用户启动
-                            if (g_sys_context.max_travel_diff > (float)g_sys_context.max_sync_diff_hall) {
-                                APP_Control_EnsureColumnModeLocked();
-                                for (int i = 0; i < 4; i++) {
-                                    g_sys_context.g_motor_status[i].base_abs_hall    = g_sys_context.g_motor_status[i].current_abs_hall;
-                                    g_sys_context.g_motor_status[i].start_drive_hall = g_sys_context.g_motor_status[i].hall_value;
-                                }
-                                g_sys_context.active_motor_mask = active_mask;
-                                g_sys_context.system_step       = SYS_STEP_AUTO_ALIGN;
-                                Sys_Mode_Set(SYS_MODE_AUTO_ALIGN);
-                                MID_Brake_Release();           // 启动自愈重平前通电松开抱闸
-                                vTaskDelay(pdMS_TO_TICKS(80)); // 硬件脱开延时 80ms
-                                break;
-                            }
-
-                            // 动则强锁：发生任何位移控制动作前强制锁死当前柱体模式，防范未锁定态空中变动拓扑
-                            APP_Control_EnsureColumnModeLocked();
-
-                            g_sys_context.is_single_tuning  = false;
-                            g_sys_context.is_total_tuning   = false;
-                            g_sys_context.active_motor_mask = active_mask;
-                            g_sys_context.base_speed        = run_rpm;
-
-                            speed_msg.cmd_type   = CMD_SET_SPEED;
-                            speed_msg.motor_mask = active_mask;
-                            speed_msg.speed_rpm  = 300; // 起点转速 300 RPM
-
-                            cmd_msg.cmd_type   = CMD_REVERSE;
-                            cmd_msg.motor_mask = active_mask;
-                            cmd_msg.speed_rpm  = 0;
-
-                            for (int i = 0; i < 4; i++) {
-                                g_sys_context.g_motor_status[i].start_drive_hall = g_sys_context.g_motor_status[i].hall_value;
-                                g_sys_context.g_motor_status[i].base_abs_hall    = g_sys_context.g_motor_status[i].current_abs_hall;
-                                g_sys_context.g_motor_status[i].target_cmd       = CMD_REVERSE;
-                                g_sys_context.g_motor_status[i].target_speed     = 300;
-                                g_sys_context.g_motor_status[i].stall_cnt        = 0;
-                                g_sys_context.delta_h[i]                         = 0.0f;
-                                last_sent_speed[i]                               = 300;
-                            }
-                            g_sys_context.avg_delta_h = 0.0f;
-                            g_sys_context.max_dh_diff = 0.0f;
-
-                            // 453 机械抱闸安全时序：启动前先通电松开抱闸，延时 80ms 等待机械脱开
-                            MID_Brake_Release();
-                            vTaskDelay(pdMS_TO_TICKS(80));
-
-                            xQueueReset(g_motor_ctrl_queue);
-                            xQueueSend(g_motor_ctrl_queue, &speed_msg, pdMS_TO_TICKS(10));
-                            xQueueSend(g_motor_ctrl_queue, &cmd_msg, pdMS_TO_TICKS(10));
-
-                            action_valid              = true;
-                            g_sys_context.ramp_cnt    = 0; // 重置 1000ms 缓启动计数
-                            g_sys_context.system_step = SYS_STEP_TOTAL_RUNNING;
-                            Sys_Mode_Set(SYS_MODE_MOTION); // 同步系统模式为运动态
+                // 3. 检查遥控信号触发下行 / 上行 (支持短按松手常规全速运行，与长按 5 秒持续微调)
+                if (has_event && mb_src == SYS_MOTION_SRC_SIGNAL) {
+                    // 分支 3.1: 长按 5.0 秒持续微调启动 (HOLD_5S)
+                    if (sig_msg.event == MID_SIGNAL_EVT_HOLD_5S) {
+                        if (sig_msg.signal_id == MID_SIGNAL_REMOT_4) {
+                            APP_Control_StartForceJog(0, MID_SIGNAL_REMOT_4); // 持续向上微调
+                            break;
+                        } else if (sig_msg.signal_id == MID_SIGNAL_REMOT_3) {
+                            APP_Control_StartForceJog(1, MID_SIGNAL_REMOT_3); // 持续向下微调
                             break;
                         }
-
-                        case MID_SIGNAL_REMOT_4:
-                        case MID_SIGNAL_BUTON_UP: { // 遥控上行 & 外接信号上行 (PC8)
-                            // 权威门禁检查：调参中或故障锁定下严禁启动运动
-                            if (!Sys_Mode_CanRunMotion()) {
-                                Debug_Printf("[SYS] Up Start Blocked by Supervisor Gate!\r\n");
-                                break;
-                            }
-
-                            // 启动前安全检查：如果有使能轴已到达或超过最大行程上限 (travel_rel >= max_travel_hall)，禁止启动上行！
-                            bool limit_blocked = false;
-                            for (int i = 0; i < 4; i++) {
-                                if (!(active_mask & (1 << i))) continue;
-                                float tr = (float)(g_sys_context.g_motor_status[i].current_abs_hall - app_data.min_mount_halls[i]);
-                                if (tr >= (float)g_sys_context.max_travel_hall) {
-                                    limit_blocked = true;
-                                    Debug_Printf("[SYS] Up Start Blocked! Motor %d reached max travel limit (Travel=%.1f >= Limit=%d)\r\n",
-                                                 i + 1, tr, g_sys_context.max_travel_hall);
-                                    break;
-                                }
-                            }
-                            if (limit_blocked) break;
-
-                            // 启动前极差检查：若当前四柱存在严重不同步超差，先触发自动重平调齐，调平后再由用户启动
-                            if (g_sys_context.max_travel_diff > (float)g_sys_context.max_sync_diff_hall) {
-                                APP_Control_EnsureColumnModeLocked();
-                                for (int i = 0; i < 4; i++) {
-                                    g_sys_context.g_motor_status[i].base_abs_hall    = g_sys_context.g_motor_status[i].current_abs_hall;
-                                    g_sys_context.g_motor_status[i].start_drive_hall = g_sys_context.g_motor_status[i].hall_value;
-                                }
-                                g_sys_context.active_motor_mask = active_mask;
-                                g_sys_context.system_step       = SYS_STEP_AUTO_ALIGN;
-                                Sys_Mode_Set(SYS_MODE_AUTO_ALIGN);
-                                MID_Brake_Release();           // 启动自愈重平前通电松开抱闸
-                                vTaskDelay(pdMS_TO_TICKS(80)); // 硬件脱开延时 80ms
-                                break;
-                            }
-
-                            // 动则强锁：发生任何位移控制动作前强制锁死当前柱体模式，防范未锁定态空中变动拓扑
-                            APP_Control_EnsureColumnModeLocked();
-
-                            g_sys_context.is_single_tuning  = false;
-                            g_sys_context.is_total_tuning   = false;
-                            g_sys_context.active_motor_mask = active_mask;
-                            g_sys_context.base_speed        = run_rpm;
-
-                            speed_msg.cmd_type   = CMD_SET_SPEED;
-                            speed_msg.motor_mask = active_mask;
-                            speed_msg.speed_rpm  = 300; // 起点转速 300 RPM
-
-                            cmd_msg.cmd_type   = CMD_FORWARD;
-                            cmd_msg.motor_mask = active_mask;
-                            cmd_msg.speed_rpm  = 0;
-
-                            for (int i = 0; i < 4; i++) {
-                                g_sys_context.g_motor_status[i].start_drive_hall = g_sys_context.g_motor_status[i].hall_value;
-                                g_sys_context.g_motor_status[i].base_abs_hall    = g_sys_context.g_motor_status[i].current_abs_hall;
-                                g_sys_context.g_motor_status[i].target_cmd       = CMD_FORWARD;
-                                g_sys_context.g_motor_status[i].target_speed     = 300;
-                                g_sys_context.g_motor_status[i].stall_cnt        = 0;
-                                g_sys_context.delta_h[i]                         = 0.0f;
-                                last_sent_speed[i]                               = 300;
-                            }
-                            g_sys_context.avg_delta_h = 0.0f;
-                            g_sys_context.max_dh_diff = 0.0f;
-
-                            // 453 机械抱闸安全时序：启动前先通电松开抱闸，延时 80ms 等待机械脱开
-                            MID_Brake_Release();
-                            vTaskDelay(pdMS_TO_TICKS(80));
-
-                            xQueueReset(g_motor_ctrl_queue);
-                            xQueueSend(g_motor_ctrl_queue, &speed_msg, pdMS_TO_TICKS(10));
-                            xQueueSend(g_motor_ctrl_queue, &cmd_msg, pdMS_TO_TICKS(10));
-
-                            action_valid              = true;
-                            g_sys_context.ramp_cnt    = 0; // 重置 1000ms 缓启动计数
-                            g_sys_context.system_step = SYS_STEP_TOTAL_RUNNING;
-                            Sys_Mode_Set(SYS_MODE_MOTION); // 同步系统模式为运动态
-                            break;
-                        }
-
-                        default:
-                            break;
                     }
 
-                    if (action_valid) {
-                        Sys_Mailbox_ClearMotionCmd();
-                        MID_SIGNAL_Msg dummy_msg;
-                        while (MID_Signal_GetEvent(&dummy_msg, 0) == pdTRUE);
+                    // 分支 3.2: 常规全速自锁升降 (遥控 SHORT_RELEASE 或 外接按钮 TRIGGER / SHORT_RELEASE)
+                    bool is_normal_start = false;
+                    if (sig_msg.event == MID_SIGNAL_EVT_SHORT_RELEASE) {
+                        is_normal_start = true;
+                    } else if ((sig_msg.signal_id == MID_SIGNAL_BUTON_DW || sig_msg.signal_id == MID_SIGNAL_BUTON_UP) &&
+                               sig_msg.event == MID_SIGNAL_EVT_TRIGGER) {
+                        is_normal_start = true;
+                    }
+
+                    if (is_normal_start) {
+                        Motor_Ctrl_Msg_t speed_msg;
+                        Motor_Ctrl_Msg_t cmd_msg;
+                        bool action_valid = false;
+
+                        int16_t run_rpm = (g_sys_context.calc_base_rpm > 0) ? g_sys_context.calc_base_rpm : 2400;
+
+                        switch (sig_msg.signal_id) {
+                            case MID_SIGNAL_REMOT_3:
+                            case MID_SIGNAL_BUTON_DW: { // B 键 (REMOT_3) & 外接信号下行 (PC7)
+                                // 权威门禁检查：调参中或故障锁定下严禁启动运动
+                                if (!Sys_Mode_CanRunMotion()) {
+                                    Debug_Printf("[SYS] Down Start Blocked by Supervisor Gate!\r\n");
+                                    break;
+                                }
+
+                                // 启动前安全检查：如果有使能轴已到达或低于底部零点 (travel_rel <= 0)，禁止启动下行！
+                                bool limit_blocked = false;
+                                for (int i = 0; i < 4; i++) {
+                                    if (!(active_mask & (1 << i))) continue;
+                                    float tr = (float)(g_sys_context.g_motor_status[i].current_abs_hall - app_data.min_mount_halls[i]);
+                                    if (tr <= 0.0f) {
+                                        limit_blocked = true;
+                                        Debug_Printf("[SYS] Down Start Blocked! Motor %d reached bottom limit (Travel=%.1f <= 0)\r\n", i + 1, tr);
+                                        break;
+                                    }
+                                }
+                                if (limit_blocked) break;
+
+                                // 启动前极差检查：若当前四柱存在严重不同步超差，先触发自动重平调齐，调平后再由用户启动
+                                if (g_sys_context.max_travel_diff > (float)g_sys_context.max_sync_diff_hall) {
+                                    APP_Control_EnsureColumnModeLocked();
+                                    for (int i = 0; i < 4; i++) {
+                                        g_sys_context.g_motor_status[i].base_abs_hall    = g_sys_context.g_motor_status[i].current_abs_hall;
+                                        g_sys_context.g_motor_status[i].start_drive_hall = g_sys_context.g_motor_status[i].hall_value;
+                                    }
+                                    g_sys_context.active_motor_mask = active_mask;
+                                    g_sys_context.system_step       = SYS_STEP_AUTO_ALIGN;
+                                    Sys_Mode_Set(SYS_MODE_AUTO_ALIGN);
+                                    MID_Brake_Release();           // 启动自愈重平前通电松开抱闸
+                                    vTaskDelay(pdMS_TO_TICKS(80)); // 硬件脱开延时 80ms
+                                    break;
+                                }
+
+                                // 动则强锁：发生任何位移控制动作前强制锁死当前柱体模式，防范未锁定态空中变动拓扑
+                                APP_Control_EnsureColumnModeLocked();
+
+                                g_sys_context.is_single_tuning  = false;
+                                g_sys_context.is_total_tuning   = false;
+                                g_sys_context.active_motor_mask = active_mask;
+                                g_sys_context.base_speed        = run_rpm;
+
+                                speed_msg.cmd_type   = CMD_SET_SPEED;
+                                speed_msg.motor_mask = active_mask;
+                                speed_msg.speed_rpm  = 300; // 起点转速 300 RPM
+
+                                cmd_msg.cmd_type   = CMD_REVERSE;
+                                cmd_msg.motor_mask = active_mask;
+                                cmd_msg.speed_rpm  = 0;
+
+                                for (int i = 0; i < 4; i++) {
+                                    g_sys_context.g_motor_status[i].start_drive_hall = g_sys_context.g_motor_status[i].hall_value;
+                                    g_sys_context.g_motor_status[i].base_abs_hall    = g_sys_context.g_motor_status[i].current_abs_hall;
+                                    g_sys_context.g_motor_status[i].target_cmd       = CMD_REVERSE;
+                                    g_sys_context.g_motor_status[i].target_speed     = 300;
+                                    g_sys_context.g_motor_status[i].stall_cnt        = 0;
+                                    g_sys_context.delta_h[i]                         = 0.0f;
+                                    last_sent_speed[i]                               = 300;
+                                }
+                                g_sys_context.avg_delta_h = 0.0f;
+                                g_sys_context.max_dh_diff = 0.0f;
+
+                                // 453 机械抱闸安全时序：启动前先通电松开抱闸，延时 80ms 等待机械脱开
+                                MID_Brake_Release();
+                                vTaskDelay(pdMS_TO_TICKS(80));
+
+                                xQueueReset(g_motor_ctrl_queue);
+                                xQueueSend(g_motor_ctrl_queue, &speed_msg, pdMS_TO_TICKS(10));
+                                xQueueSend(g_motor_ctrl_queue, &cmd_msg, pdMS_TO_TICKS(10));
+
+                                action_valid              = true;
+                                g_sys_context.ramp_cnt    = 0; // 重置 1000ms 缓启动计数
+                                g_sys_context.system_step = SYS_STEP_TOTAL_RUNNING;
+                                Sys_Mode_Set(SYS_MODE_MOTION); // 同步系统模式为运动态
+                                break;
+                            }
+
+                            case MID_SIGNAL_REMOT_4:
+                            case MID_SIGNAL_BUTON_UP: { // 遥控上行 & 外接信号上行 (PC8)
+                                // 权威门禁检查：调参中或故障锁定下严禁启动运动
+                                if (!Sys_Mode_CanRunMotion()) {
+                                    Debug_Printf("[SYS] Up Start Blocked by Supervisor Gate!\r\n");
+                                    break;
+                                }
+
+                                // 启动前安全检查：如果有使能轴已到达或超过最大行程上限 (travel_rel >= max_travel_hall)，禁止启动上行！
+                                bool limit_blocked = false;
+                                for (int i = 0; i < 4; i++) {
+                                    if (!(active_mask & (1 << i))) continue;
+                                    float tr = (float)(g_sys_context.g_motor_status[i].current_abs_hall - app_data.min_mount_halls[i]);
+                                    if (tr >= (float)g_sys_context.max_travel_hall) {
+                                        limit_blocked = true;
+                                        Debug_Printf("[SYS] Up Start Blocked! Motor %d reached max travel limit (Travel=%.1f >= Limit=%d)\r\n",
+                                                     i + 1, tr, g_sys_context.max_travel_hall);
+                                        break;
+                                    }
+                                }
+                                if (limit_blocked) break;
+
+                                // 启动前极差检查：若当前四柱存在严重不同步超差，先触发自动重平调齐，调平后再由用户启动
+                                if (g_sys_context.max_travel_diff > (float)g_sys_context.max_sync_diff_hall) {
+                                    APP_Control_EnsureColumnModeLocked();
+                                    for (int i = 0; i < 4; i++) {
+                                        g_sys_context.g_motor_status[i].base_abs_hall    = g_sys_context.g_motor_status[i].current_abs_hall;
+                                        g_sys_context.g_motor_status[i].start_drive_hall = g_sys_context.g_motor_status[i].hall_value;
+                                    }
+                                    g_sys_context.active_motor_mask = active_mask;
+                                    g_sys_context.system_step       = SYS_STEP_AUTO_ALIGN;
+                                    Sys_Mode_Set(SYS_MODE_AUTO_ALIGN);
+                                    MID_Brake_Release();           // 启动自愈重平前通电松开抱闸
+                                    vTaskDelay(pdMS_TO_TICKS(80)); // 硬件脱开延时 80ms
+                                    break;
+                                }
+
+                                // 动则强锁：发生任何位移控制动作前强制锁死当前柱体模式，防范未锁定态空中变动拓扑
+                                APP_Control_EnsureColumnModeLocked();
+
+                                g_sys_context.is_single_tuning  = false;
+                                g_sys_context.is_total_tuning   = false;
+                                g_sys_context.active_motor_mask = active_mask;
+                                g_sys_context.base_speed        = run_rpm;
+
+                                speed_msg.cmd_type   = CMD_SET_SPEED;
+                                speed_msg.motor_mask = active_mask;
+                                speed_msg.speed_rpm  = 300; // 起点转速 300 RPM
+
+                                cmd_msg.cmd_type   = CMD_FORWARD;
+                                cmd_msg.motor_mask = active_mask;
+                                cmd_msg.speed_rpm  = 0;
+
+                                for (int i = 0; i < 4; i++) {
+                                    g_sys_context.g_motor_status[i].start_drive_hall = g_sys_context.g_motor_status[i].hall_value;
+                                    g_sys_context.g_motor_status[i].base_abs_hall    = g_sys_context.g_motor_status[i].current_abs_hall;
+                                    g_sys_context.g_motor_status[i].target_cmd       = CMD_FORWARD;
+                                    g_sys_context.g_motor_status[i].target_speed     = 300;
+                                    g_sys_context.g_motor_status[i].stall_cnt        = 0;
+                                    g_sys_context.delta_h[i]                         = 0.0f;
+                                    last_sent_speed[i]                               = 300;
+                                }
+                                g_sys_context.avg_delta_h = 0.0f;
+                                g_sys_context.max_dh_diff = 0.0f;
+
+                                // 453 机械抱闸安全时序：启动前先通电松开抱闸，延时 80ms 等待机械脱开
+                                MID_Brake_Release();
+                                vTaskDelay(pdMS_TO_TICKS(80));
+
+                                xQueueReset(g_motor_ctrl_queue);
+                                xQueueSend(g_motor_ctrl_queue, &speed_msg, pdMS_TO_TICKS(10));
+                                xQueueSend(g_motor_ctrl_queue, &cmd_msg, pdMS_TO_TICKS(10));
+
+                                action_valid              = true;
+                                g_sys_context.ramp_cnt    = 0; // 重置 1000ms 缓启动计数
+                                g_sys_context.system_step = SYS_STEP_TOTAL_RUNNING;
+                                Sys_Mode_Set(SYS_MODE_MOTION); // 同步系统模式为运动态
+                                break;
+                            }
+
+                            default:
+                                break;
+                        }
+
+                        if (action_valid) {
+                            Sys_Mailbox_ClearMotionCmd();
+                            MID_SIGNAL_Msg dummy_msg;
+                            while (MID_Signal_GetEvent(&dummy_msg, 0) == pdTRUE);
+                        }
                     }
                 }
                 break;
@@ -1369,7 +1485,74 @@ void APP_ControlTask(void *pvParameters)
                 break;
             }
 
-            // === 核心运行调速阶段（定频 20ms 数据驱动 PID 泵 + 安防防线） ===
+            // === 强行点动脱困独立状态：纯控制上下，松手即停，不改零点，不写 Flash ===
+            case SYS_STEP_FORCE_JOG: {
+                // 0. 更新 4 轴状态 (仅刷新当前霍尔与电流，不改零点)
+                APP_Control_UpdateStateAndStatistics();
+
+                // 1. 用户按键打断检查 (遥控 C 键或面板任意按键立即制动锁死)
+                if (has_event) {
+                    if ((mb_src == SYS_MOTION_SRC_SIGNAL && sig_msg.signal_id == MID_SIGNAL_REMOT_2) ||
+                        (mb_src == SYS_MOTION_SRC_KEY)) {
+                        APP_Control_StopForceJog();
+                        break;
+                    }
+                }
+
+                // 2. 遥控按键松手检测 (放开按键才停止，带 150ms 释放消抖抗掉帧)
+                bool is_released = false;
+                if (has_event && mb_src == SYS_MOTION_SRC_SIGNAL &&
+                    sig_msg.event == MID_SIGNAL_EVT_RELEASE &&
+                    sig_msg.signal_id == s_force_jog_sig_id) {
+                    is_released = true;
+                } else if (!MID_Signal_GetState(s_force_jog_sig_id)) {
+                    is_released = true;
+                }
+
+                if (is_released) {
+                    APP_Control_StopForceJog();
+                    break;
+                }
+
+                // 3. 底层硬件过流堵转安全保护 (防止极端撞底或卡死烧电机)
+                bool has_stall = false;
+                for (int i = 0; i < 4; i++) {
+                    if (!(active_mask & (1 << i))) continue;
+                    if (g_sys_context.g_motor_status[i].current_deciA > app_data.stall_current_threshold) {
+                        g_sys_context.g_motor_status[i].stall_cnt++;
+                        if (g_sys_context.g_motor_status[i].stall_cnt >= SAFETY_STALL_MAX_CNT) {
+                            has_stall = true;
+                            Debug_Printf("[ERR] Force Jog OverCurrent Stall! Motor %d (Curr=%.2fA). Stop!\r\n",
+                                         i + 1, (float)g_sys_context.g_motor_status[i].current_deciA / 100.0f);
+                            break;
+                        }
+                    } else {
+                        if (g_sys_context.g_motor_status[i].stall_cnt > 0) {
+                            g_sys_context.g_motor_status[i].stall_cnt--;
+                        }
+                    }
+                }
+
+                if (has_stall) {
+                    xQueueReset(g_motor_ctrl_queue);
+                    for (int i = 0; i < 4; i++) {
+                        g_sys_context.g_motor_status[i].target_cmd   = CMD_STOP;
+                        g_sys_context.g_motor_status[i].target_speed = 0;
+                        last_sent_speed[i]                           = 0;
+                    }
+                    Motor_Ctrl_Msg_t stop_msg       = {CMD_STOP, active_mask, 0};
+                    g_sys_context.system_fault_code = FAULT_CODE_STALL; // 堵转报 Err1
+                    MID_Brake_Lock();                                   // 立即抱死抱闸
+                    g_sys_context.system_step = SYS_STEP_FAULT_STOP;
+                    Sys_Mode_Set(SYS_MODE_FAULT_LOCKED);
+                    xQueueSend(g_motor_ctrl_queue, &stop_msg, pdMS_TO_TICKS(10));
+                    break;
+                }
+
+                APP_Control_DebugPrint();
+                break;
+            }
+
             case SYS_STEP_TOTAL_RUNNING: {
                 // 0. 采样屏障锁存等待 (Barrier Alignment)：若某轴霍尔恰好落后了微微秒 (正在接收 ACK)，让出 1ms 等其合流
                 static uint32_t last_hall_seq[4] = {0};
@@ -1843,7 +2026,12 @@ void APP_ControlTask(void *pvParameters)
                                     int32_t raw_diff    = (int32_t)(final_hall - g_sys_context.g_motor_status[i].start_drive_hall);
                                     uint32_t abs_pulse  = (raw_diff >= 0) ? (uint32_t)raw_diff : (uint32_t)(-raw_diff);
 
-                                    bool is_up         = (Sys_View_GetTuneDir() == 0) || (g_sys_context.g_motor_status[i].last_motion_cmd == CMD_FORWARD);
+                                    bool is_up = (Sys_View_GetTuneDir() == 0);
+                                    if (g_sys_context.g_motor_status[i].last_motion_cmd == CMD_REVERSE) {
+                                        is_up = false;
+                                    } else if (g_sys_context.g_motor_status[i].last_motion_cmd == CMD_FORWARD) {
+                                        is_up = true;
+                                    }
                                     int32_t tune_delta = is_up ? (int32_t)abs_pulse : -(int32_t)abs_pulse;
 
                                     // 1. 同步更新该轴的当前绝对高度

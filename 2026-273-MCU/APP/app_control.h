@@ -75,6 +75,7 @@ typedef enum {
     SYS_STEP_TOTAL_RUNNING, // 整体运行调速阶段（定频 PID 纠偏泵）
     SYS_STEP_TOTAL_REBOUND, // 仅下降防夹触发的反方向反弹阶段 (退避 30mm)
     SYS_STEP_TOTAL_DONE,    // 整体结束停机中 (逐轴静止判定与 Flash 归档)
+    SYS_STEP_FORCE_JOG,     // 强行点动脱困模式 (遥控长按 5 秒触发，纯控制上下，松手即停，不改零点，不写 Flash)
     SYS_STEP_FAULT_STOP     // 致命故障急停状态 (抱闸咬死自锁)
 } Motor_ctl_Step_t;
 
@@ -142,7 +143,7 @@ typedef struct {
     uint32_t rebound_start_hall[4]; // 反弹开始时 4 轴原始霍尔读数
     uint32_t rebound_target_counts; // 反弹目标霍尔增量计数 (30mm * counts_per_mm)
 
-    uint16_t fault_frozen_current[4]; // 故障/报警发生瞬间冻结保存的现场电流 (单位: 0.01A)
+    uint16_t fault_frozen_current[4]; // 故障/堵转瞬间冻结相电流现场 (单位: 0.01A)
 } Sys_Ctrl_Context_t;
 
 // 全局外部变量声明
@@ -169,6 +170,14 @@ void APP_Control_CancelSingleTune(void);
  * @note 停稳后必须同时更新所有使能轴 current_abs_hall 与安装起点高度 app_data.min_mount_halls[i]！
  */
 void APP_Control_StartTotalTune(void);
+
+/**
+ * @brief 启动强行点动脱困模式 (遥控器上下键长按 5 秒触发，纯控制上下，松手即停，不改零点，不写 Flash)
+ * @param dir 0: 上升, 1: 下降
+ * @param sig_id 绑定的遥控信号 ID (MID_SIGNAL_REMOT_4 或 MID_SIGNAL_REMOT_3)
+ */
+void APP_Control_StartForceJog(uint8_t dir, MID_Signal_ID sig_id);
+void APP_Control_StopForceJog(void);
 
 bool APP_Control_ClearFault(void);
 void APP_Control_EmergencyStop(void);

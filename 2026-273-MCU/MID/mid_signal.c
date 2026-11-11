@@ -13,6 +13,8 @@ static void MID_Signal_Init(MID_SIGNAL_HandleTypeDef *sig, MID_Signal_ID id)
     sig->active_start_tick = 0;
     sig->long_reported     = false;
     sig->active_reported   = false;
+    sig->hold_5s_reported  = false;
+    sig->release_cnt       = 0;
 }
 
 void MID_SIGNAL_HardwareBinding(void)
@@ -84,7 +86,7 @@ static void MID_Signal_Report(MID_Signal_ID id, MID_Signal_EventType evt)
     xQueueSend(mid_Signal_queue, &msg, 0);
 }
 
-// 单路信号消抖状态机扫描（完全参照 mid_key 的细分状态机结构）
+// 单路信号消抖状态机扫描 (支持 150ms 释放滤波防空中掉帧、短按松手触发、按住满 5 秒超长按触发)
 static void MID_Signal_ScanSingle(MID_SIGNAL_HandleTypeDef *sig, uint32_t nowMs)
 {
     bool is_phys_active = MID_Signal_ReadPhysState(sig->ID);
@@ -105,6 +107,8 @@ static void MID_Signal_ScanSingle(MID_SIGNAL_HandleTypeDef *sig, uint32_t nowMs)
                     sig->active_start_tick = nowMs;
                     sig->long_reported     = false;
                     sig->active_reported   = false;
+                    sig->hold_5s_reported  = false;
+                    sig->release_cnt       = 0;
                 }
             } else {
                 sig->state = SIGNAL_ST_IDLE;
@@ -112,40 +116,49 @@ static void MID_Signal_ScanSingle(MID_SIGNAL_HandleTypeDef *sig, uint32_t nowMs)
             break;
 
         case SIGNAL_ST_ACTIVE:
-            if (!is_phys_active) {
+        case SIGNAL_ST_LONG_WAIT:
+            if (is_phys_active) {
+                sig->release_cnt = 0; // 只要引脚高电平就重置释放计数
                 uint32_t duration = nowMs - sig->active_start_tick;
-                if (duration <= MID_SIGNAL_SHORT_MAX_TICKS * MID_SIGNAL_SCAN_PERIOD_MS) {
-                    MID_Signal_Report(sig->ID, MID_SIGNAL_EVT_RELEASE);
-                }
-                sig->state = SIGNAL_ST_IDLE;
-            } else {
-                uint32_t duration = nowMs - sig->active_start_tick;
-                if (duration > MID_SIGNAL_SHORT_MAX_TICKS * MID_SIGNAL_SCAN_PERIOD_MS) {
-                    sig->state = SIGNAL_ST_LONG_WAIT;
-                }
 
+                // 首次按下触发通知 (用于急停 C 键与照明 D 键即时生效)
                 if (!sig->active_reported) {
                     sig->active_reported = true;
                     MID_Signal_Report(sig->ID, MID_SIGNAL_EVT_TRIGGER);
                 }
-            }
-            break;
 
-        case SIGNAL_ST_LONG_WAIT:
-            if (!is_phys_active) {
-                MID_Signal_Report(sig->ID, MID_SIGNAL_EVT_RELEASE);
-                sig->state = SIGNAL_ST_IDLE;
-            } else {
-                uint32_t duration = nowMs - sig->active_start_tick;
-                if (!sig->long_reported && duration >= MID_SIGNAL_LONG_TICKS * MID_SIGNAL_SCAN_PERIOD_MS) {
-                    MID_Signal_Report(sig->ID, MID_SIGNAL_EVT_LONG);
+                // 常规长按 (1.0s) 通知
+                if (!sig->long_reported && duration >= (MID_SIGNAL_LONG_TICKS * MID_SIGNAL_SCAN_PERIOD_MS)) {
                     sig->long_reported = true;
-                } else if (sig->long_reported && duration >= MID_SIGNAL_LONG_TICKS * MID_SIGNAL_SCAN_PERIOD_MS) {
-                    // 长按期间以 100ms 为周期上报重复触发事件，便于应用层进行持续增减调节
-                    // 由于 20ms 执行一次，每隔 5 次触发上报一个 LONG_REP
-                    if ((duration % 100) < MID_SIGNAL_SCAN_PERIOD_MS) {
-                        MID_Signal_Report(sig->ID, MID_SIGNAL_EVT_LONG_REP);
+                    MID_Signal_Report(sig->ID, MID_SIGNAL_EVT_LONG);
+                }
+
+                // 超长按 5.0 秒 (5000ms) 通知 (启动整体持续点动微调)
+                if (!sig->hold_5s_reported && duration >= MID_SIGNAL_HOLD_5S_MS) {
+                    sig->hold_5s_reported = true;
+                    MID_Signal_Report(sig->ID, MID_SIGNAL_EVT_HOLD_5S);
+                }
+
+                if (duration > (MID_SIGNAL_SHORT_MAX_TICKS * MID_SIGNAL_SCAN_PERIOD_MS)) {
+                    sig->state = SIGNAL_ST_LONG_WAIT;
+                }
+            } else {
+                // 引脚低电平：执行 150ms 释放滤波 (防 433MHz 空中瞬时掉帧)
+                sig->release_cnt++;
+                if (sig->release_cnt >= MID_SIGNAL_RELEASE_FILTER_TICKS) {
+                    uint32_t press_duration = nowMs - sig->active_start_tick;
+
+                    if (sig->hold_5s_reported) {
+                        // 已经激活过 5 秒超长按持续微调 -> 确认松手，上报 RELEASE 触发刹停
+                        MID_Signal_Report(sig->ID, MID_SIGNAL_EVT_RELEASE);
+                    } else if (press_duration < (MID_SIGNAL_SHORT_MAX_TICKS * MID_SIGNAL_SCAN_PERIOD_MS)) {
+                        // 按住时间小于 1.0 秒即松开 -> 确认为普通短按松手，上报 SHORT_RELEASE 触发常规自锁升降
+                        MID_Signal_Report(sig->ID, MID_SIGNAL_EVT_SHORT_RELEASE);
+                    } else {
+                        // 按住 1.0 秒 ~ 5.0 秒之间松开 -> 判定为放弃或误触，静默回到空闲，不动作
                     }
+
+                    sig->state = SIGNAL_ST_IDLE;
                 }
             }
             break;

@@ -166,6 +166,7 @@ static Event_Result_t Filter_Level2_MenuFocus(const Sys_Event_t *p_evt)
     if (g_sys_context.system_step == SYS_STEP_SINGLE_TUNE ||
         g_sys_context.system_step == SYS_STEP_TOTAL_TUNE ||
         g_sys_context.system_step == SYS_STEP_TOTAL_RUNNING ||
+        g_sys_context.system_step == SYS_STEP_FORCE_JOG ||
         g_sys_context.system_step == SYS_STEP_TOTAL_REBOUND ||
         g_sys_context.system_step == SYS_STEP_AUTO_ALIGN) {
         if (p_evt->source == SYS_EVT_SRC_KEY) {
@@ -311,6 +312,8 @@ bool Sys_Mode_CanEnterMenu(void)
     if (g_sys_context.system_step == SYS_STEP_TOTAL_RUNNING ||
         g_sys_context.system_step == SYS_STEP_AUTO_ALIGN ||
         g_sys_context.system_step == SYS_STEP_SINGLE_TUNE ||
+        g_sys_context.system_step == SYS_STEP_TOTAL_TUNE ||
+        g_sys_context.system_step == SYS_STEP_FORCE_JOG ||
         g_sys_context.system_step == SYS_STEP_TOTAL_REBOUND) {
         return false;
     }
@@ -390,7 +393,8 @@ Sys_Indicator_State_t Sys_View_GetIndicatorState(void)
         return SYS_IND_FAULT;
     } else if (g_sys_context.system_step == SYS_STEP_TOTAL_RUNNING ||
                g_sys_context.system_step == SYS_STEP_SINGLE_TUNE ||
-               g_sys_context.system_step == SYS_STEP_TOTAL_REBOUND ||
+               g_sys_context.system_step == SYS_STEP_FORCE_JOG ||
+        g_sys_context.system_step == SYS_STEP_TOTAL_REBOUND ||
                g_sys_context.system_step == SYS_STEP_AUTO_ALIGN) {
         return SYS_IND_RUNNING;
     } else {
